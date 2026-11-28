@@ -20,7 +20,32 @@
   border-radius: var(--radius-full);
   background: var(--color-text-inverse);
   box-shadow: var(--effect-shadow-sm);
-  transition: transform var(--duration-fast) var(--ease-out);
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+.ui-switch--loading > span {
+  opacity: 0;
+}
+.ui-switch__spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  /* OFF 灰轨道（--color-switch-track-off #c2c2c2）上的启用场景是主场景：
+     白色（inverse）在其上对比度仅 ~1.7:1，必须用深色 token 才可辨识。 */
+  color: var(--color-text-strong);
+  animation: ui-switch-spin 1s linear infinite;
+}
+.ui-switch--checked .ui-switch__spinner {
+  color: var(--color-text-inverse);
+}
+@keyframes ui-switch-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .ui-switch--checked {
   border-color: var(--color-action-primary);
@@ -36,4 +61,10 @@
 .ui-switch:disabled {
   cursor: not-allowed;
   opacity: 0.56;
+}
+/* loading 期间 spinner 本身就是处理中反馈，disabled 的整块减淡会让 OFF 轨道上的
+   深色 spinner 淡到不可辨识：抵消之。与上一条特异性同为 (0,2,0)，靠源码顺序取胜，
+   必须保持在其后。 */
+.ui-switch--loading:disabled {
+  opacity: 1;
 }

@@ -7,9 +7,15 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def reset_harness_packages_state(path: Path | None = None) -> None:
+def get_harness_packages_file() -> Path:
+    """Resolve the current instance ledger without importing the evolving SDK."""
     from jiuwenswarm.common.utils import get_user_workspace_dir
-    path = path or get_user_workspace_dir() / "auto-harness" / "harness-packages.json"
+
+    return get_user_workspace_dir() / "auto-harness" / "harness-packages.json"
+
+
+def reset_harness_packages_state(path: Path | None = None) -> None:
+    path = path or get_harness_packages_file()
     try:
         if not path.exists():
             return

@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import get_type_hints
 
 import pytest
+
+import agent_gateway.extensions as extensions
+import agent_gateway.extensions.sdk as extension_sdk
 from agent_gateway.extensions.manager import (
     ExtensionManager,
     _enabled_extension_filter,

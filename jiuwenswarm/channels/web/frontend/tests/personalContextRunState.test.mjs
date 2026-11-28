@@ -158,6 +158,15 @@ async function renderStatus({ runState, completed = 0, failed = 0, pending = fal
       card: dom.window.document.querySelector('.pc-services__status-text')?.textContent,
       activeCount: dom.window.document.querySelector('.pc-services__stat-card:last-child .pc-services__stat-number')?.textContent,
       result: dom.window.document.querySelector('[data-testid="personal-context-service-result"]')?.textContent,
+      failureStage: dom.window.document.querySelector('[data-testid="personal-context-service-failure-stage"]')?.textContent,
+      failureCode: dom.window.document.querySelector('[data-testid="personal-context-service-failure-code"]')?.textContent,
+      failureMessage: dom.window.document.querySelector('[data-testid="personal-context-service-failure-message"]')?.textContent,
+      failureCounts: dom.window.document.querySelector('[data-testid="personal-context-service-failure-counts"]')?.textContent,
+      failureItems: [...dom.window.document.querySelectorAll('.pc-services__failure-item')].map((item) => ({
+        ref: item.querySelector('.pc-services__failure-item-ref')?.textContent,
+        message: item.querySelector('.pc-services__failure-item-message')?.textContent,
+      })),
+      failureOmitted: dom.window.document.querySelector('[data-testid="personal-context-service-failure-omitted"]')?.textContent,
       runDisabled: [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === 'personalContext.services.actionRunNow')?.disabled,
       runHint: dom.window.document.querySelector('[data-testid="personal-context-service-run-hint"]')?.textContent,
     };
@@ -216,6 +225,56 @@ test('a system failure still displays failure', async () => {
   assert.equal((await renderStatus({ runState: 'failed', failed: 1 })).card, 'personalContext.services.stateFailed');
 });
 
+test('a failed run explains the stages, business code, counts and failed items', async () => {
+  const card = await renderStatus({
+    runState: 'failed',
+    failed: 2,
+    result: {
+      last_error_stage: 'scan',
+      last_error_code: '154002',
+      item_errors: [
+        { item_ref: 'E:/DO WORK/a.log', code: 154002, message: 'personalContext.errors.fileError', failed_at: '2026-11-24T15:16:25Z' },
+        { item_ref: 'E:/DO WORK/b.log', code: 154002, message: 'personalContext.errors.fileError', failed_at: '2026-11-24T15:16:26Z' },
+      ],
+      omitted_item_errors: 3,
+    },
+  });
+  assert.equal(card.failureStage, 'personalContext.services.failureStage.scan');
+  assert.equal(card.failureCode, 'personalContext.services.failureCode:154002');
+  assert.equal(card.failureMessage, 'failed to fetch');
+  assert.equal(card.failureCounts, 'personalContext.services.failureCounts:2/0/2');
+  assert.deepEqual(card.failureItems, [
+    { ref: 'E:/DO WORK/a.log', message: 'personalContext.errors.fileError' },
+    { ref: 'E:/DO WORK/b.log', message: 'personalContext.errors.fileError' },
+  ]);
+  assert.equal(card.failureOmitted, 'personalContext.services.failureOmitted:3');
+});
+
+test('a partially completed run still lists its failed items', async () => {
+  const card = await renderStatus({
+    runState: 'partial_succeeded',
+    completed: 8,
+    failed: 2,
+    result: {
+      last_error_stage: '',
+      last_error_code: '',
+      item_errors: [
+        { item_ref: 'E:/DO WORK/c.log', code: 154002, message: 'personalContext.errors.fileError', failed_at: '2026-11-24T15:16:27Z' },
+      ],
+    },
+  });
+  assert.equal(card.failureStage, undefined);
+  assert.equal(card.failureCode, undefined);
+  assert.equal(card.failureCounts, 'personalContext.services.failureCounts:10/8/2');
+  assert.equal(card.failureItems.length, 1);
+});
+
+test('a successful run renders no failure panel', async () => {
+  const card = await renderStatus({ runState: 'succeeded', completed: 3 });
+  assert.equal(card.failureStage, undefined);
+  assert.equal(card.failureCounts, undefined);
+});
+
 test('a stopping fetch remains visible in the active task count', async () => {
   assert.equal((await renderStatus({ runState: 'stopping' })).activeCount, '1');
 });
@@ -244,6 +303,71 @@ test('a completed run displays published nodes and files rather than fetched ite
   assert.equal(card.result, 'personalContext.services.createdNodes:4/4');
 });
 
+test('a successful run appends its token usage to the existing result line', async () => {
+  const result = {
+    created_node_count: 18, updated_node_count: 3,
+    capacity_maintenance: { status: 'over_limit', removed_count: 2 },
+  };
+  const usage = { total_tokens: 12_430, has_estimate: false, incomplete: false };
+  const card = await renderStatus({ runState: 'succeeded', result,
+    currentRun: { ...result, run_state: 'succeeded', token_usage: usage } });
+  assert.equal(card.result, [
+    'personalContext.services.createdNodes:18/18',
+    'personalContext.services.updatedNodes:3',
+    'personalContext.services.capacityRemoved:2',
+    'personalContext.services.capacityIncomplete',
+    'personalContext.services.tokenUsage:12.4K',
+  ].join(' · '));
+});
+
+test('historical token usage uses a short amount or an unavailable message', async () => {
+  const cases = [
+    [{ total_tokens: 0, has_estimate: false, incomplete: false }, 'tokenUsage:0'],
+    [{ total_tokens: 999, has_estimate: false, incomplete: false }, 'tokenUsage:999'],
+    [{ total_tokens: 1000, has_estimate: false, incomplete: false }, 'tokenUsage:1K'],
+    [{ total_tokens: null, has_estimate: false, incomplete: true }, 'tokenUsageUnavailable'],
+    [{ total_tokens: 0, has_estimate: false, incomplete: true }, 'tokenUsageUnavailable'],
+    [{ total_tokens: 250, has_estimate: true, incomplete: false }, 'tokenUsage:250'],
+    [{ total_tokens: 12_000, has_estimate: false, incomplete: true }, 'tokenUsage:12K'],
+  ];
+  for (const [usage, expected] of cases) {
+    const result = { created_node_count: 1, updated_node_count: 0, token_usage: usage };
+    const card = await renderStatus({ runState: 'succeeded', result, currentRun: { run_state: 'idle' } });
+    assert.equal(card.result, `personalContext.services.createdNodes:1/1 · personalContext.services.${expected}`);
+  }
+});
+
+test('unchanged successful runs hide token amounts and unavailable messages', async () => {
+  const capacity_maintenance = { status: 'succeeded', removed_count: 2 };
+  for (const usage of [
+    undefined,
+    { total_tokens: 0, has_estimate: false, incomplete: false },
+    { total_tokens: 12_400, has_estimate: false, incomplete: false },
+    { total_tokens: 250, has_estimate: true, incomplete: false },
+    { total_tokens: null, has_estimate: false, incomplete: true },
+    { total_tokens: 0, has_estimate: false, incomplete: true },
+    { total_tokens: 12_000, has_estimate: false, incomplete: true },
+  ]) {
+    const result = { created_node_count: 0, updated_node_count: 0, no_new_content: true, token_usage: usage, capacity_maintenance };
+    for (const currentRun of [undefined, { run_state: 'idle' }]) {
+      const card = await renderStatus({ runState: 'succeeded', result, currentRun });
+      assert.equal(card.result, 'personalContext.services.noNewContent · personalContext.services.capacityRemoved:2');
+    }
+  }
+});
+
+test('token usage belongs only to the displayed successful run', async () => {
+  const token_usage = { total_tokens: 12_400, has_estimate: false, incomplete: false };
+  const previous = { created_node_count: 18, updated_node_count: 0, token_usage };
+  const current = { run_state: 'succeeded', created_node_count: 1, updated_node_count: 0 };
+  assert.equal((await renderStatus({ runState: 'succeeded', result: previous, currentRun: current })).result,
+    'personalContext.services.createdNodes:1/1');
+  for (const runState of ['partial_succeeded', 'failed', 'cancelled']) {
+    const card = await renderStatus({ runState, result: previous });
+    assert.ok(!card.result?.includes('tokenUsage'), runState);
+  }
+});
+
 test('no new content is explicit only for a successful unchanged run', async () => {
   const result = { created_node_count: 0, updated_node_count: 0, no_new_content: true };
   assert.equal((await renderStatus({ runState: 'succeeded', result })).result, 'personalContext.services.noNewContent');
@@ -256,6 +380,12 @@ test('no new content is explicit only for a successful unchanged run', async () 
 test('updates are distinguished from unchanged content, and historical unknown counts stay unknown', async () => {
   const updated = await renderStatus({ runState: 'succeeded', result: { created_node_count: 0, updated_node_count: 3 } });
   assert.equal(updated.result, 'personalContext.services.createdNodes:0/0 · personalContext.services.updatedNodes:3');
+  const withUsage = await renderStatus({ runState: 'succeeded', result: {
+    created_node_count: 0, updated_node_count: 3,
+    token_usage: { total_tokens: 400, has_estimate: false, incomplete: false },
+  } });
+  assert.equal(withUsage.result,
+    'personalContext.services.createdNodes:0/0 · personalContext.services.updatedNodes:3 · personalContext.services.tokenUsage:400');
   assert.equal((await renderStatus({ runState: 'succeeded', completed: 8 })).result, undefined);
 });
 

@@ -21,6 +21,36 @@ function stringifyPayloadForDedup(payload: Record<string, unknown>): string {
   }
 }
 
+/**
+ * chat.file 文件身份键（与 fileDownloadDedup.getFileIdentityKey 同口径）。
+ *
+ * 同一轮 send_file_to_user 共用同一个 request_id，只按 rid 去重会把同一轮里
+ * 先后到达的两个不同文件当成重复投递丢掉（文件卡片丢失）。给 chat.file 的去重键
+ * 追加文件身份（path 优先，无 path 退回 name+size），真重复投递（同 request_id
+ * 且同文件集合）仍能去重，不同文件各自成键。
+ */
+function buildChatFileIdentityKey(payload: Record<string, unknown>): string {
+  const files = payload.files;
+  if (!Array.isArray(files) || files.length === 0) return '';
+  const identities = files
+    .map((file) => {
+      if (!file || typeof file !== 'object') return '';
+      const f = file as Record<string, unknown>;
+      const rawPath = typeof f.path === 'string' ? f.path.trim() : '';
+      if (rawPath) {
+        const normalized = rawPath.replace(/\\/g, '/').replace(/\/+/g, '/').trim();
+        return `path:${normalized}`;
+      }
+      const name = typeof f.name === 'string' ? f.name.trim().toLowerCase() : '';
+      const size =
+        typeof f.size === 'number' && Number.isFinite(f.size) ? String(f.size) : '';
+      return `name:${name || 'unnamed'}|size:${size}`;
+    })
+    .filter(Boolean)
+    .sort();
+  return identities.length ? identities.join('|') : '';
+}
+
 export function makeEventDedupKey(eventName: string, payload: Record<string, unknown>): string {
   const payloadSessionId =
     typeof payload.session_id === 'string' ? payload.session_id : '';
@@ -56,7 +86,9 @@ export function makeEventDedupKey(eventName: string, payload: Record<string, unk
       ? `rid:${payloadRequestId}::tool:${toolCallId || stringifyPayloadForDedup(payload)}`
       : eventName === 'chat.tool_call' && toolCallId
         ? `rid:${payloadRequestId}::tool:${toolCallId}`
-        : `rid:${payloadRequestId}`
+        : eventName === 'chat.file'
+          ? `rid:${payloadRequestId}::files:${buildChatFileIdentityKey(payload)}`
+          : `rid:${payloadRequestId}`
     : stringifyPayloadForDedup(payload);
   const processingFlag =
     eventName === 'chat.processing_status'

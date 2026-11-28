@@ -20,7 +20,7 @@ from typing import Literal
 
 import yaml
 
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.paths import get_workspace_root_dir
 from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
     STATUSLINE_SETUP_AGENT_DESCRIPTION,
@@ -207,7 +207,9 @@ class AgentConfigService:
 
     @staticmethod
     def _get_user_agents_dir() -> Path:
-        return get_user_workspace_dir() / "agents"
+        from jiuwenswarm.common.paths import get_user_agents_dir
+
+        return get_user_agents_dir()
 
     def _get_project_agents_dir(self) -> Path:
         return self._workspace_dir / ".jiuwenswarm" / "agents"

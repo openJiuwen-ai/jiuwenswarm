@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownToLine } from 'lucide-react';
 import { MarkdownRenderer } from '../../MarkdownRenderer';
 import { CodePreview } from '../../ArtifactsPanel/CodePreview';
@@ -68,6 +68,8 @@ export function FilePreviewContent({
   onLinkClick,
 }: FilePreviewContentProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  // Single-slot reset timer: a slow older timer must not clear a newer feedback early.
+  const copyTimerRef = useRef<number | null>(null);
   const isMarkdown = file ? isMarkdownFilePath(file.path) : false;
   const isPython = file ? isPythonFilePath(file.path) : false;
   const isJson = file ? isJsonFilePath(file.path) : false;
@@ -91,8 +93,20 @@ export function FilePreviewContent({
     // a failed native save dialog (navigator.clipboard alone can stay denied).
     const ok = await writeClipboard(getPreviewCopyText(file.path, file.content));
     setCopyState(ok ? 'copied' : 'failed');
-    window.setTimeout(() => setCopyState('idle'), 1600);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => setCopyState('idle'), 1600);
   };
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    },
+    []
+  );
 
   const handleDownload = async () => {
     if (!file) return;

@@ -4,6 +4,10 @@
 
 Agent Team is a core collaboration feature of the JiuwenSwarm platform. It lets multiple agents form a team around one goal and complete complex work together. Unlike boosting a single agent’s capability, Agent Team emphasizes teamwork, division of labor, and continuous delivery.
 
+When a team member uses the messaging tool to send to human members, the main conversation displays a copy for each human recipient and labels the recipient. Direct messages appear only for the addressed human. Multicasts to both humans and AI members create display copies for the human recipients only. Broadcasts create a copy for each human recipient. A message addressed to two humans therefore appears twice, with a distinct recipient label on each copy.
+
+The enterprise edition can turn file paths under `team-workspace/artifacts/` in message text into file cards. The personal edition keeps these paths as text without generating additional cards. Existing personal-edition file cards sent through ordinary file messages remain available.
+
 ---
 
 ## Concepts

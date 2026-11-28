@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-import signal
 import shutil
 import stat
 import subprocess
@@ -30,6 +29,7 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     allow_from_valid,
     dingtalk_apps,
 )
+from jiuwenswarm.common.process_identity import ProcessIdentity, process_identity_matches, read_process_identity
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_distribution import (
     DWS_VERSION as _CLI_VERSION,
     install_managed_dws,
@@ -235,9 +235,9 @@ class LocalDingTalkCliRuntime:
         self._root = Path(root).resolve()
         self._cache_root = Path(cache_root).resolve() if cache_root is not None else self._root
         if workspace_root is None:
-            from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+            from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
-            workspace_root = default_data_dir() / "workspaces"
+            workspace_root = get_jiuwenmate_dir() / "workspaces"
         self._workspace_root = Path(workspace_root).resolve()
         self._config = config_loader or self._load_config
         self._dws_path = Path(dws_path).expanduser().absolute() if dws_path is not None else None
@@ -2152,18 +2152,45 @@ class LocalDingTalkCliRuntime:
             self._auth_status_cache.pop(key, None)
 
     @staticmethod
-    def _oauth_process_running(pid_path: Path) -> bool:
+    def _verified_oauth_process(pid_path: Path) -> tuple[Any, ProcessIdentity] | None:
+        """Return an owned process and birth identity; unknown ownership raises."""
         import psutil
 
         try:
-            pid = int(pid_path.read_text(encoding='utf-8'))
-            if pid <= 0:
-                return False
-            process = psutil.Process(pid)
-            return (process.is_running() and process.status() != psutil.STATUS_ZOMBIE
-                    and abs(process.create_time() - pid_path.stat().st_mtime) <= 5)
-        except (OSError, ValueError, psutil.Error):
+            record = json.loads(pid_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        pid = record.get("pid") if isinstance(record, dict) else record
+        if type(pid) is not int or pid <= 0:
+            return None
+        process = psutil.Process(pid)
+        if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+            return None
+        if isinstance(record, dict):
+            expected = record.get("process_identity")
+            if expected is None:
+                raise psutil.AccessDenied(pid, msg="OAuth process birth identity was unavailable at startup")
+            if not process_identity_matches(pid, expected, process=process):
+                return None
+        else:
+            # Legacy records stored only a PID and the file's creation moment.
+            expected = read_process_identity(pid, process=process)
+            if isinstance(expected, str):
+                raise psutil.AccessDenied(pid, msg="legacy OAuth timestamp cannot be verified using start ticks")
+            if abs(expected - pid_path.stat().st_mtime) > 5:
+                return None
+        return process, expected
+
+    @staticmethod
+    def _oauth_process_running(pid_path: Path) -> bool | None:
+        import psutil
+
+        try:
+            return LocalDingTalkCliRuntime._verified_oauth_process(pid_path) is not None
+        except (psutil.NoSuchProcess, ValueError):
             return False
+        except (OSError, psutil.Error):
+            return None
 
     def _dingtalk_auth_status(self, scope: DingTalkCliScope, *, recheck_finished: bool = True) -> dict[str, Any]:
         root = self._oauth_root(scope)
@@ -2267,7 +2294,7 @@ class LocalDingTalkCliRuntime:
                 and operation_id.startswith(f"{self._scope_digest(scope)}.")
             ):
                 _, pid_path, _ = self._oauth_paths(scope, operation_id)
-                if not self._oauth_process_running(pid_path):
+                if self._oauth_process_running(pid_path) is False:
                     self._clear_dingtalk_auth(scope, operation_id)
             return status
         current_path = self._oauth_current(scope)
@@ -2294,15 +2321,25 @@ class LocalDingTalkCliRuntime:
                 expired = time.time() - pid_path.stat().st_mtime >= _DINGTALK_AUTH_TIMEOUT_SECONDS
             except OSError:
                 expired = False
+            running = False if exit_path.exists() else self._oauth_process_running(pid_path)
+            if running is None:
+                return {"status": "error", "cli_version": _CLI_VERSION,
+                        "error_code": "authorization_process_unverified"}
             if expired:
-                if not exit_path.exists() and self._oauth_process_running(pid_path):
+                if running:
                     try:
-                        os.kill(int(pid_path.read_text(encoding='utf-8')), signal.SIGTERM)
-                    except (OSError, ValueError):
-                        pass
+                        self._stop_oauth_process(pid_path)
+                    except PersistentAgentError:
+                        logger.warning(
+                            "DingTalk authorization timeout cleanup failed; pending state retained", exc_info=True,
+                        )
+                        return {
+                            "status": "error", "cli_version": _CLI_VERSION,
+                            "error_code": "authorization_cleanup_failed",
+                        }
                     exit_path.write_text('expired', encoding='utf-8')
                 return {'status': 'error', 'cli_version': _CLI_VERSION, 'error_code': 'authorization_expired'}
-            if error or exit_path.exists() or not self._oauth_process_running(pid_path):
+            if error or not running:
                 # Login may finish after the earlier CLI status snapshot was read.
                 # Verify persisted credentials once before making failure terminal.
                 if recheck_finished:
@@ -2373,7 +2410,16 @@ class LocalDingTalkCliRuntime:
             except OSError as exc:
                 self._clear_dingtalk_auth(scope, operation_id)
                 raise PersistentAgentError("钉钉用户授权进程启动失败", code="DINGTALK_CLI_AUTH_START_FAILED") from exc
-        pid_path.write_text(str(process.pid), encoding="utf-8")
+        import psutil
+
+        try:
+            birth_identity = read_process_identity(process.pid)
+        except (psutil.Error, OSError):
+            # Retain unknown state; later checks must not grant PID-only authority.
+            birth_identity = None
+        pid_path.write_text(
+            json.dumps({"pid": process.pid, "process_identity": birth_identity}), encoding="utf-8",
+        )
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -2422,14 +2468,23 @@ class LocalDingTalkCliRuntime:
         import psutil
 
         try:
-            if not self._oauth_process_running(pid_path):
+            running = self._oauth_process_running(pid_path)
+            if running is False:
                 return
-            pid = int(pid_path.read_text(encoding="utf-8"))
-            os.kill(pid, signal.SIGTERM)
-            process = psutil.Process(pid)
+            if running is None:
+                raise psutil.AccessDenied(msg="OAuth process identity could not be verified")
+            verified = self._verified_oauth_process(pid_path)
+            if verified is None:
+                return
+            process, expected = verified
+            if not process_identity_matches(process.pid, expected, process=process):
+                return
+            process.terminate()
             try:
                 process.wait(timeout=3)
             except psutil.TimeoutExpired:
+                if not process_identity_matches(process.pid, expected, process=process):
+                    return
                 process.kill()
                 process.wait(timeout=3)
         except (ProcessLookupError, ValueError, psutil.NoSuchProcess):
@@ -2895,11 +2950,11 @@ class LocalDingTalkCliRuntime:
 def create_provider() -> LocalDingTalkCliRuntime:
     """Keep employee OAuth private while program caches survive workspace initialization."""
     from jiuwenswarm.common.utils import get_user_home
-    from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+    from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
     configured_dws = os.environ.get("JIUWENMATE_DWS_BIN", "").strip()
     dws_path = Path(configured_dws).expanduser() if configured_dws else None
-    root = Path(os.environ.get("JIUWENMATE_DINGTALK_CLI_HOME") or default_data_dir() / "dingtalk_cli")
+    root = Path(os.environ.get("JIUWENMATE_DINGTALK_CLI_HOME") or get_jiuwenmate_dir() / "dingtalk_cli")
     home = get_user_home()
     if sys.platform == "darwin":
         cache_root = home / "Library" / "Caches" / "WorkSwarm" / "dingtalk-cli"

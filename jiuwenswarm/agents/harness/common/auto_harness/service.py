@@ -1943,11 +1943,12 @@ class AutoHarnessService:
         )
 
     @staticmethod
-    def _map_chunk_to_response(
+    async def _map_chunk_to_response(
         chunk: Any,
         request_id: str,
         channel_id: Optional[str],
         current_stage_name: str,
+        parent_session_id: str | None = None,
     ) -> list[AgentResponseChunk]:
         """Map orchestrator chunk to AgentResponseChunk(s).
 
@@ -1962,13 +1963,16 @@ class AutoHarnessService:
 
         # Import _parse_stream_chunk from DeepAdapter to reuse OutputSchema parsing logic
         from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+        from jiuwenswarm.server.runtime.session.history_io import run_stream_parser
 
         # Handle OutputSchema - delegate to shared _parse_stream_chunk
         if isinstance(chunk, OutputSchema):
-            parsed = getattr(JiuWenSwarmDeepAdapter, '_parse_stream_chunk')(
+            parsed = await run_stream_parser(
+                JiuWenSwarmDeepAdapter.decode_stream_chunk,
                 chunk,
-                _has_streamed_content=False,
-                _stage=current_stage_name,
+                has_streamed_content=False,
+                stage=current_stage_name,
+                parent_session_id=parent_session_id,
             )
             if parsed is not None:
                 results.append(
@@ -2020,10 +2024,12 @@ class AutoHarnessService:
                 )
             elif "type" in chunk:
                 # Treat as OutputSchema-like dict, use _parse_stream_chunk
-                parsed = getattr(JiuWenSwarmDeepAdapter, '_parse_stream_chunk')(
+                parsed = await run_stream_parser(
+                    JiuWenSwarmDeepAdapter.decode_stream_chunk,
                     chunk,
-                    _has_streamed_content=False,
-                    _stage=current_stage_name,
+                    has_streamed_content=False,
+                    stage=current_stage_name,
+                    parent_session_id=parent_session_id,
                 )
                 if parsed is not None:
                     results.append(
@@ -2141,11 +2147,12 @@ class AutoHarnessService:
                         # Do NOT yield as should_suspend; continue consuming
                         is_interaction = False
 
-            for response_chunk in self._map_chunk_to_response(
+            for response_chunk in await self._map_chunk_to_response(
                 chunk,
                 request_id,
                 channel_id,
                 active_run.current_stage_name,
+                active_run.session_id,
             ):
                 yield response_chunk, is_interaction
 

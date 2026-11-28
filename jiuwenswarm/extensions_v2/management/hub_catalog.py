@@ -73,6 +73,10 @@ def hub_card(
         container, store, installed, active, enabled,
         record_status=record.status if record else "",
     )
+    if container is not None:
+        # A bundle has no standalone record; its switch follows the container,
+        # otherwise a disabled bundle would fall back to the record-less default.
+        enabled = active and overall in {"enabled", "partial"}
     installed_version_value = installed_version(index, package_name) or (
         record.version if record is not None else ""
     ) or (container.version if container is not None else "")
@@ -182,6 +186,9 @@ def hub_detail(
         container, store, installed, active, enabled, profile,
         record.status if record else "",
     )
+    if container is not None:
+        # See hub_card: a disabled bundle must not inherit the record-less default.
+        enabled = active and overall in {"enabled", "partial"}
     system_plugins = (
         _profile_system_plugins(profile, store)
         if is_bundle and container is None

@@ -998,7 +998,12 @@ async def test_file_rename_failure_preserves_files_and_metadata(service, tmp_pat
         target.write_text("existing", encoding="utf-8")
     if failure == "symlink":
         link = root / "linked.md"
-        link.symlink_to(source)
+        try:
+            link.symlink_to(source)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows account cannot create symbolic links")
+            raise
         source = link
     _publish_file(group, source)
     before = gs.read_group(group["group_id"]).get("file_overrides")
@@ -1096,7 +1101,12 @@ async def test_file_delete_does_not_follow_symlinks_out_of_workspace(service, tm
     target.write_text("keep", encoding="utf-8")
     link = gs.group_files.team_home(group["team_name"]) / "outputs" / "link.txt"
     link.parent.mkdir(parents=True)
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows account cannot create symbolic links")
+        raise
     _publish_file(group, link, name="link.txt")
     result = await service.file_delete(group["group_id"], {"path": str(link)}, user_id="owner", channel_id="web")
     assert result["file_removed"] is False
@@ -1336,3 +1346,178 @@ async def test_groups_saved_before_auto_reply_judge_by_default(service):
     assert "reply_rules" not in restored
     history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
     assert history["auto_replies"] == {}
+
+
+@pytest.mark.asyncio
+async def test_remove_member_offline_idempotent_conflict_and_former_members(service):
+    group = await create(service, members=[
+        {"kind": "agent_template", "id": "leader", "member_name": "writer", "display_name": "Writer"},
+        {"kind": "agent_group", "id": "team", "member_name": "lab", "display_name": "Lab Team"},
+    ])
+    group_id = group["group_id"]
+    args = dict(user_id="owner", channel_id="web", request_id="rm-1")
+
+    removed = await service.remove_member(group_id, {"member_name": "writer", "client_request_id": "rm-1"}, **args)
+    assert removed["status"] == "removed"
+    assert removed["event_type"] == "group.member.removed"
+    assert removed["member_name"] == "writer"
+    # Idempotent retry with the same client_request_id succeeds.
+    assert await service.remove_member(group_id, {"member_name": "writer", "client_request_id": "rm-1"}, **args) == removed
+
+    with pytest.raises(gs.GroupError) as conflict:
+        await service.remove_member(group_id, {"member_name": "lab", "client_request_id": "rm-1"}, **args)
+    assert conflict.value.code == "CONFLICT"
+
+    with pytest.raises(gs.GroupError) as missing:
+        await service.remove_member(group_id, {"member_name": "writer", "client_request_id": "rm-2"}, **args)
+    assert missing.value.code == "NOT_FOUND"
+
+    public = service.get(group_id, user_id="owner", channel_id="web")
+    assert [m["member_name"] for m in public["members"]] == ["lab"]
+    assert [m["member_name"] for m in public["former_members"]] == ["writer"]
+    assert "writer" not in gs.read_group(group_id)["compiled"]
+
+    # Removing the last AI member is allowed.
+    await service.remove_member(group_id, {"member_name": "lab", "client_request_id": "rm-3"}, **args)
+    public = service.get(group_id, user_id="owner", channel_id="web")
+    assert public["members"] == []
+    assert {m["member_name"] for m in public["former_members"]} == {"writer", "lab"}
+
+
+@pytest.mark.asyncio
+async def test_legacy_group_metadata_has_member_removal_defaults(service):
+    from jiuwenswarm.server.runtime.group_metadata import read_group as read_metadata
+
+    group_id = (await create(service))["group_id"]
+    state = gs.read_group(group_id)
+    state.pop("remove_receipts", None)
+    state.pop("former_members", None)
+    gs._save(state)
+
+    metadata = read_metadata(group_id, path=gs.group_path(group_id))
+    assert metadata["remove_receipts"] == {}
+    assert metadata["former_members"] == {}
+    assert gs.read_group(group_id) == metadata
+
+
+@pytest.mark.asyncio
+async def test_remove_member_online_shuts_down_runtime_and_cancels_work(service, monkeypatch):
+    from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+    from jiuwenswarm.server.runtime.group_questions import GroupQuestions, register_question_target
+
+    group = await create(service, members=[
+        {"kind": "agent_group", "id": "team", "member_name": "lab", "display_name": "Lab Team"},
+    ])
+    group_id = group["group_id"]
+
+    # Seed an active private-team execution and a pending question for the member.
+    store = GroupExecutions(group_id)
+    store.save({
+        "exec-1": {
+            "execution_id": "exec-1",
+            "member_name": "lab",
+            "execution_kind": "team",
+            "status": "running",
+            "phase": "executing",
+            "revision": 1,
+            "created_at": 100.0,
+            "updated_at": 100.0,
+            "team_session_id": "private-session-1",
+        }
+    })
+    class _DummyTarget:
+        pass
+
+    dummy_target = _DummyTarget()
+    questions = GroupQuestions(group_id)
+    target_key = register_question_target(group_id, group_id, "lab", dummy_target)
+    questions.save({
+        "q-1": {
+            "request_id": "q-1",
+            "native_request_id": "native-1",
+            "questions": [{"question": "Continue?", "options": [{"label": "Yes"}]}],
+            "source": "ask_user_interrupt",
+            "target": target_key,
+            "member_name": "lab",
+            "execution_id": "exec-1",
+            "created_at": 100.0,
+            "status": "pending",
+        }
+    })
+
+    backend = SimpleNamespace(
+        team_name=group["team_name"],
+        leader_member_name="team_leader",
+        db=SimpleNamespace(
+            initialize=AsyncMock(),
+            member=SimpleNamespace(get_member=AsyncMock(return_value=SimpleNamespace(member_name="lab"))),
+        ),
+        shutdown_member=AsyncMock(return_value=SimpleNamespace(ok=True, reason="")),
+        message_manager=SimpleNamespace(send_message=AsyncMock()),
+    )
+    service.backend_resolver = AsyncMock(return_value=backend)
+    pushes = []
+
+    class FakePush:
+        async def send_push(self, payload):
+            pushes.append(payload)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.transport.WebSocketGatewayPushTransport",
+        lambda: FakePush(),
+    )
+
+    await service.remove_member(
+        group_id,
+        {"member_name": "lab", "client_request_id": "rm-online"},
+        user_id="owner",
+        channel_id="web",
+        request_id="req-online",
+    )
+
+    backend.shutdown_member.assert_awaited_once_with("lab", force=True)
+    backend.message_manager.send_message.assert_awaited_once()
+    assert store.read()["exec-1"]["status"] == "cancelled"
+    assert questions.read()["q-1"]["status"] == "cancelled"
+    service.manager_factory("web").stop_session_runtime.assert_awaited_once_with(
+        "private-session-1", reason="group.member.remove.private",
+    )
+    assert any(item["payload"].get("event_type") == "group.member.removed" for item in pushes)
+
+
+@pytest.mark.asyncio
+async def test_remove_colleague_invokes_canceller_and_marks_departed_history(service):
+    from openjiuwen.agent_teams.schema.conversation import ConversationMessage
+    from jiuwenswarm.server.jiuwenmate.swarmchat.port import converted
+
+    group = await create(service)
+    group_id = group["group_id"]
+    state = gs.read_group(group_id)
+    state["members"] = [
+        {"kind": "colleague", "id": "agent-xiaojiu", "member_name": "col-1", "display_name": "小九"},
+    ]
+    state["compiled"]["col-1"] = {
+        "member": {"member_name": "col-1", "display_name": "小九", "role_type": "host_managed"},
+        "avatar_url": "/avatar/xiaojiu.png",
+        "colleague_category": "assistant",
+        "is_default": True,
+    }
+    gs._save(state)
+
+    canceller = AsyncMock()
+    await service.remove_member(
+        group_id,
+        {"member_name": "col-1", "client_request_id": "rm-col"},
+        user_id="owner",
+        channel_id="web",
+        request_id="req-col",
+        colleague_canceller=canceller,
+    )
+    canceller.assert_awaited_once_with(group_id, "agent-xiaojiu", "col-1")
+    updated = gs.read_group(group_id)
+    msg = ConversationMessage(
+        message_id="m-1", team_name=updated["team_name"], session_id=group_id,
+        client_message_id="cm-1", sender="col-1", sender_name="小九",
+        content="请选方案 A 或 B", timestamp=1700000000000, mentions=[], attachments=[],
+    )
+    assert converted(updated, msg).sender_name == "小九 (已离群)"

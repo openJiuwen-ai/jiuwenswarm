@@ -465,6 +465,10 @@ const ATTACHMENT_ACCEPT = [
   '.svg',
   '.ico',
   '.pdf',
+  '.eml',
+  'message/rfc822',
+  '.msg',
+  'application/vnd.ms-outlook',
   '.doc',
   '.docx',
   '.xls',
@@ -1326,21 +1330,29 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // when swarmflow is toggled off.
   const swarmflowActive = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enableSwarmflow ?? false);
   const swarmflowBudget = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudget ?? null);
+  const swarmflowBudgetCap = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudgetCap ?? null);
+  // 企业门禁：企业禁止时禁用启用入口（后端也会强制关闭，这里只是把入口置灰）。
+  const swarmflowAllowed = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowAllowed ?? true);
   // 进入真实会话后开关只读：仅新建对话页可修改，真实会话可查看不可改
   const swarmflowSessionFrozen = activeSessionId !== NEW_CONVERSATION_ID && hasHistory;
-  const swarmflowToggleDisabled = isProcessing || swarmflowSessionFrozen;
+  const swarmflowToggleDisabled = isProcessing || swarmflowSessionFrozen || !swarmflowAllowed;
   // 会话级调度模式：实验开关「调度模式」打开才展示；团队按首条消息建好后不可再改，
   // 与 swarmflow 开关同一把锁（仅新建对话页可拨）。
   const teamScheduledDispatchEnabled = useTeamScheduledDispatchEnabled();
   const sessionTeamDispatchMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamDispatchMode);
   const teamDispatchScheduled = resolveTeamDispatchMode(sessionTeamDispatchMode) === 'scheduled';
-  const teamDispatchToggleDisabled = swarmflowToggleDisabled;
+  // 调度模式/启动即建队与 swarmflow 相互独立（后端解析也无耦合），只共享
+  // 「忙态 + 建队后冻结」这把锁；swarmflow 的企业门禁（!swarmflowAllowed）
+  // 不外溢到这两个开关，否则禁止 swarmflow 的企业连调度模式也拨不了。
+  const teamDispatchToggleDisabled = isProcessing || swarmflowSessionFrozen;
   // 置灰原因二分，冻结优先：建队冻结是永久的，会话进行中只是暂时的，两者同时
   // 成立时报忙态会骗用户白等（团队活着期间常驻忙态，几乎永远轮不到冻结文案）。
   // 与调度模式的 readonlyHint 同一做法，也与计划开关取 planModeGate 的 reason 对齐。
-  const swarmflowDisabledHint = swarmflowSessionFrozen
-    ? 'swarmflow.readonlyHint'
-    : 'swarmflow.closeTagDisabled';
+  const swarmflowDisabledHint = !swarmflowAllowed
+    ? 'swarmflow.forbiddenHint'
+    : swarmflowSessionFrozen
+      ? 'swarmflow.readonlyHint'
+      : 'swarmflow.closeTagDisabled';
   // 调度模式的子开关「启动即建队」（F_122）：只在调度模式打开时展示，同一把锁。
   const sessionTeamBootstrapMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamBootstrapMode);
   const teamBootstrapFramework = resolveTeamBootstrapMode(sessionTeamBootstrapMode) === 'framework';
@@ -5025,7 +5037,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!isTeamMode && (
+                        {(!isTeamMode || (workMode !== 'design' && !enterprise)) && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"
@@ -5056,6 +5068,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             </button>
                             {extensionPanelOpen && (
                               <ExtensionPickerPanel
+                                teamMemoryOnly={isTeamMode}
                                 panelRef={extensionPanelRef}
                                 direction={attachMenuDirection}
                                 onClose={() => setExtensionPanelOpen(false)}
@@ -5175,8 +5188,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           </div>
                         )}
-                        {!enterprise &&
-                          isTeamMode &&
+                        {isTeamMode &&
                           (() => {
                             const toggleSwarmflow = (next: boolean) => {
                               if (!activeSessionId || swarmflowToggleDisabled) return;
@@ -6216,6 +6228,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               }}
                             />
                           </div>
+                          {swarmflowBudgetCap != null && (
+                            <div className="chat-swarmflow-config-panel__actual-hint">
+                              {t('swarmflow.budgetCapHint', { cap: swarmflowBudgetCap.toLocaleString() })}
+                            </div>
+                          )}
                           <label className="chat-swarmflow-config-panel__unlimited-row">
                             <input
                               type="checkbox"

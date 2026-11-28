@@ -205,6 +205,17 @@ test('代码里静态引用的本功能文案都存在', () => {
   );
 });
 
+test('审批筛选与文件详情使用的通用文案在两种语言中都存在', () => {
+  // #7047: common.all / common.yes / common.no 曾被引用但没写进语言包，
+  // 审批筛选首项与工作区文件详情的「可删除」因此直接显示 key 原文。
+  const zh = JSON.parse(locales.zh);
+  const en = JSON.parse(locales.en);
+  for (const key of ['all', 'yes', 'no']) {
+    assert.ok(zh.common?.[key], `zh.json 缺少 common.${key}`);
+    assert.ok(en.common?.[key], `en.json 缺少 common.${key}`);
+  }
+});
+
 test('个人版入口显示为团队版', () => {
   const zh = JSON.parse(locales.zh);
   const en = JSON.parse(locales.en);

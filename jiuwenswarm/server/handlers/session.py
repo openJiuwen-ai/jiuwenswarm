@@ -14,6 +14,7 @@ import asyncio
 import datetime as _dt
 import logging
 import sys
+from collections.abc import Collection
 from typing import Any
 
 from agent_gateway.common.mode_matrix import is_plan_mode, is_team_mode
@@ -52,17 +53,6 @@ from jiuwenswarm.server.wire_truncate import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _active_plan_sessions():
-    """本进程里进过计划模式的会话。
-
-    计划模式就是先想清楚再改代码。这份名单仍放在服务器模块里，
-    换一轮服务器时会换成新的那一份，所以每次用都重新去拿。
-    """
-    import jiuwenswarm.server.agent_ws_server as ws_server
-
-    return ws_server.get_plan_active_sessions()
 
 
 def _session_switch_locks():
@@ -190,6 +180,7 @@ def _combine_session_in_plan(
     live_plan_mode: str | None,
     session_id: str,
     metadata_mode: Any,
+    active_plan_sessions: Collection[str],
 ) -> bool:
     """Combine live agent plan_mode, in-process marker, and metadata.mode.
 
@@ -199,12 +190,12 @@ def _combine_session_in_plan(
     ``normal`` plan_mode and would falsely report not-in-plan.
     """
     if is_team_mode(metadata_mode):
-        if session_id in _active_plan_sessions():
+        if session_id in active_plan_sessions:
             return True
         return is_plan_mode(metadata_mode)
     if isinstance(live_plan_mode, str) and live_plan_mode.strip():
         return live_plan_mode.strip() == "plan"
-    if session_id in _active_plan_sessions():
+    if session_id in active_plan_sessions:
         return True
     return is_plan_mode(metadata_mode)
 
@@ -302,6 +293,7 @@ async def handle_session_plan_status(ctx: RequestContext) -> None:
                 live_plan_mode=live_plan_mode,
                 session_id=sid,
                 metadata_mode=metadata_mode,
+                active_plan_sessions=services.execution_runtime().plan_controller.active_sessions,
             )
             resp = AgentResponse(
                 request_id=request.request_id,

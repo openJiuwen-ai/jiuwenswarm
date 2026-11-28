@@ -592,6 +592,77 @@ def test_purge_deletes_route_binding_by_team_id(tmp_path: Path) -> None:
         set_team_route_binding_store(None)
 
 
+def test_purge_session_only_keeps_surviving_members(tmp_path: Path) -> None:
+    """A partial team delete drops only the removed Session's own rows."""
+    from jiuwenswarm.enterprise.team.route_binding_store import (
+        InMemoryTeamRouteBindingStore,
+        set_team_route_binding_store,
+    )
+    from jiuwenswarm.enterprise.team.control_store import (
+        TEAM_STATUS_RUNNING,
+        SqliteTeamControlStore,
+        set_team_control_store,
+    )
+    from jiuwenswarm.enterprise.team.session_cleanup import (
+        purge_team_for_deleted_session,
+    )
+
+    control = SqliteTeamControlStore(tmp_path / "team_control.db")
+    svc = _svc(tmp_path)
+    routes = InMemoryTeamRouteBindingStore()
+    set_team_control_store(control)
+    set_team_quota_service(svc)
+    set_team_route_binding_store(routes)
+    try:
+        ident = _ident()
+        entity = control.create_entity(
+            team_name="shared",
+            owner=ident,
+            team_session_id="sess-leader",
+            status=TEAM_STATUS_RUNNING,
+        )
+        control.upsert_membership(
+            team_id=entity.team_id,
+            identity=ident,
+            member_name="owner",
+            status="active",
+        )
+        leader = svc.reserve_team_create(ident, "sess-leader")
+        svc.commit_lease(leader, team_id=entity.team_id)
+        spawn = svc.reserve_teammate_spawn(
+            team_id=entity.team_id,
+            member_name="qa",
+            owner=ident,
+        )
+        svc.commit_lease(spawn, team_id=entity.team_id, member_name="qa")
+        routes.upsert(
+            team_session_id="sess-member",
+            endpoint="http://agent.local",
+            team_id=entity.team_id,
+            owner=("g1", "b1", "u1"),
+        )
+
+        purge_team_for_deleted_session(session_id="sess-leader", session_only=True)
+
+        # The team and its survivors stay intact; only the deleted Session's
+        # create lease and route binding are gone.
+        assert control.get_entity(entity.team_id) is not None
+        assert len(control.list_memberships(entity.team_id)) == 1
+        keys = [
+            row[0]
+            for row in svc._sqlite()
+            .execute("SELECT idempotency_key FROM team_quota_lease ORDER BY idempotency_key")
+            .fetchall()
+        ]
+        assert keys == [teammate_spawn_key(entity.team_id, "qa")]
+        assert routes.get_by_session("sess-member") is not None
+        assert routes.get_by_team_id(entity.team_id) is not None
+    finally:
+        set_team_control_store(None)
+        set_team_quota_service(None)
+        set_team_route_binding_store(None)
+
+
 def _bind_reconcile_stores(tmp_path: Path):
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore
     from jiuwenswarm.enterprise.team.route_binding_store import (
@@ -618,6 +689,9 @@ def _unbind_reconcile_stores() -> None:
 def _use_personal_volume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     volume = tmp_path / "vol"
     volume.mkdir()
+    # session_cleanup 的 volume 读取绑定在 utils 命名空间，会话目录派生走
+    # paths（profile 布局）——两个命名空间都要重定向
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: False,
@@ -632,7 +706,7 @@ def test_reconcile_keeps_team_when_session_dir_exists(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "profile" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -658,7 +732,7 @@ def test_reconcile_purges_team_when_session_dir_missing(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "profile" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -715,6 +789,11 @@ def test_reconcile_skips_when_data_volume_missing(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     monkeypatch.setattr(
+        "jiuwenswarm.common.paths.get_user_workspace_dir",
+        lambda: tmp_path / "missing-volume",
+    )
+    # session_cleanup 的 volume 读取绑定在 utils 命名空间，一并重定向
+    monkeypatch.setattr(
         "jiuwenswarm.common.utils.get_user_workspace_dir",
         lambda: tmp_path / "missing-volume",
     )
@@ -747,8 +826,8 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
     volume.mkdir()
     ident = _ident()
     key = build_tenant_key(ident.group_id, ident.bot_id, ident.user_id)
-    (volume / f"workspace_{key}").mkdir(parents=True)
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: volume)
+    (volume / "profile" / f"profile_{key}").mkdir(parents=True)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: True,
     )
@@ -773,7 +852,7 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
         )) / "sessions" / "sess-wiped"
         assert not expected.is_dir()
         assert expected == (
-            volume / f"workspace_{key}" / "agent" / "sessions" / "sess-wiped"
+            volume / "profile" / f"profile_{key}" / "agent" / "sessions" / "sess-wiped"
         )
     finally:
         _unbind_reconcile_stores()
@@ -1142,7 +1221,7 @@ async def test_manager_usage_data_exposes_items(tmp_path: Path, monkeypatch: pyt
 
 def _use_enterprise_volume(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: root)
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_user_workspace_dir", lambda: root)
     monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: True,
@@ -1344,3 +1423,34 @@ def test_mysql_reserve_counts_extra_teams_before_the_actor_transaction(monkeypat
     assert calls["n"] == 1
     assert seen["thread"] is not None
     assert seen["thread"] is not thread
+
+
+def test_enterprise_no_policy_keeps_template_max_teammates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without policies, enterprise quota keeps the configured team limit."""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"modes": {"team": {"travel": {"max_teammates": 9}}}},
+    )
+    svc = _svc(tmp_path)
+    limits = svc.resolve_limits(_ident())
+    assert limits.max_teams_per_user == DEFAULT_MAX_TEAMS_PER_USER
+    assert limits.max_teammates_per_team == 9
+
+
+def test_personal_no_policy_keeps_template_max_teammates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"modes": {"team": {"travel": {"max_teammates": 9}}}},
+    )
+    svc = _svc(tmp_path)
+    assert svc.resolve_limits(_ident()).max_teammates_per_team == 9
+
+

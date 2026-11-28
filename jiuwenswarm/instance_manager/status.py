@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from jiuwenswarm.common.process_identity import process_identity_matches
 from jiuwenswarm.instance_manager.config import (
     InstanceConfig,
     InstanceStatus,
@@ -40,6 +41,14 @@ from jiuwenswarm.instance_manager.yaml import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _launcher_identity(pid_data: Dict[str, object]) -> object:
+    """Read new birth tokens while retaining numeric legacy PID records."""
+    launcher = pid_data.get("launcher")
+    if isinstance(launcher, dict):
+        return launcher.get("process_identity", pid_data.get("started_at"))
+    return pid_data.get("started_at")
 
 
 def get_instance_status(config: InstanceConfig) -> InstanceStatus:
@@ -73,7 +82,7 @@ def get_instance_status(config: InstanceConfig) -> InstanceStatus:
         # time.  Only schema v2 has a trustworthy birth-time identity.
         running = is_process_alive(pid) and (
             pid_data.get("schema_version") != 2
-            or _pid_matches_record(pid, started_at)
+            or _pid_matches_record(pid, _launcher_identity(pid_data))
         )
 
     return InstanceStatus(
@@ -412,15 +421,15 @@ def _pid_matches_record(pid: int, started_at: object) -> bool:
     """Check that a live PID is the process recorded in the PID file.
 
     PID values are reusable.  A successful ``kill(pid, 0)`` alone is not
-    ownership proof, so POSIX group signalling is allowed only when psutil's
-    process creation time agrees with our recorded launcher start time.
+    ownership proof, so group signalling requires a matching creation time
+    or an explicitly tagged per-process start counter.
     """
-    if not isinstance(started_at, (int, float)):
+    if not isinstance(started_at, (int, float, str)):
         return False
     try:
         import psutil
 
-        return abs(psutil.Process(pid).create_time() - float(started_at)) < 3.0
+        return process_identity_matches(pid, started_at, process=psutil.Process(pid), tolerance=3.0)
     except Exception:
         return False
 
@@ -435,7 +444,11 @@ def _has_dedicated_session(pid_data: Dict[str, object], pid: int) -> bool:
         and pid_data.get("sid") == pid
         and isinstance(launcher, dict)
         and launcher.get("pid") == pid
-        and launcher.get("create_time") == pid_data.get("started_at")
+        and (
+            isinstance(launcher.get("process_identity"), str)
+            and launcher["process_identity"].startswith("proc_start_ticks:")
+            or launcher.get("create_time") == pid_data.get("started_at")
+        )
     )
 
 
@@ -463,17 +476,17 @@ def _has_live_group_witness(pid_data: Dict[str, object], pid: int) -> bool:
             if not isinstance(witness, dict):
                 continue
             witness_pid = witness.get("pid")
-            create_time = witness.get("create_time")
+            create_time = witness.get("process_identity", witness.get("create_time"))
             module = witness.get("module")
             if (
                 not isinstance(witness_pid, int)
-                or not isinstance(create_time, (int, float))
+                or not isinstance(create_time, (int, float, str))
                 or not isinstance(module, str)
             ):
                 continue
             process = psutil.Process(witness_pid)
             cmdline = process.cmdline()
-            if abs(process.create_time() - create_time) >= 3.0:
+            if not process_identity_matches(witness_pid, create_time, process=process, tolerance=3.0):
                 continue
             if os.getpgid(witness_pid) != pid or os.getsid(witness_pid) != pid:
                 continue
@@ -651,11 +664,11 @@ def stop_instance_process(config: InstanceConfig, timeout: float = 10.0) -> bool
     logger.info("Stopping instance '%s' with PID %d", config.name, pid)
 
     current_format = pid_data.get("schema_version") == 2
-    started_at = pid_data.get("started_at")
+    process_identity = _launcher_identity(pid_data)
     if (
         current_format
         and is_process_alive(pid)
-        and not _pid_matches_record(pid, started_at)
+        and not _pid_matches_record(pid, process_identity)
     ):
         logger.warning("PID %d does not match instance '%s' record", pid, config.name)
         return False
@@ -666,7 +679,7 @@ def stop_instance_process(config: InstanceConfig, timeout: float = 10.0) -> bool
         # Worker subtrees can belong to this old Front or to an earlier one.
         # Preserve them until the independent final lifecycle check below.
         try:
-            terminate_service_tree(pid, timeout=timeout, expected_created=started_at if current_format else None)
+            terminate_service_tree(pid, timeout=timeout, expected_created=process_identity if current_format else None)
         except (OSError, RuntimeError) as exc:
             logger.warning("Service tree cleanup failed for PID %d: %s", pid, exc)
             return False

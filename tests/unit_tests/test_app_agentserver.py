@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -35,49 +36,59 @@ class _FakeFront:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("websocket_enabled", [False, True])
 async def test_run_does_not_delete_agent_teams_directory(
     monkeypatch: pytest.MonkeyPatch,
+    websocket_enabled: bool,
 ) -> None:
     removed_paths: list[Path] = []
     fake_front = _FakeFront("127.0.0.1", 18092)
-    captured: dict[str, asyncio.Event] = {}
-    real_event = asyncio.Event
-
-    def _event_factory() -> asyncio.Event:
-        event = real_event()
-        captured["ev"] = event
-        return event
+    events = []
+    caller = asyncio.current_task()
+    info = Mock(wraps=app_agentserver.logger.info)
+    monkeypatch.setattr(app_agentserver.logger, "info", info)
+    monkeypatch.setattr("jiuwenswarm.server.startup_switches.resolve_websocket_enabled",
+                        lambda **_kwargs: websocket_enabled)
 
     def _fake_rmtree(path, *args, **kwargs) -> None:
         _ = args, kwargs
         removed_paths.append(Path(path))
 
     class _NoopSupervisor:
-        async def stop(self) -> None:
-            return None
+        def __init__(self, *args, **kwargs):
+            pass
 
-    async def _fake_supervisor(front, host, port):
-        _ = host, port
-        front.attach_runtime_backend(_NoopSupervisor())
-        captured["ev"].set()
-        return _NoopSupervisor()
+        async def run_until_ipc_ready(self):
+            events.append("worker_started")
+            asyncio.get_running_loop().call_later(.05, caller.cancel)
 
-    monkeypatch.setattr(app_agentserver.asyncio, "Event", _event_factory)
+        async def stop(self):
+            events.append("detached")
+
+        async def abort_startup(self):
+            events.append("aborted")
+
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.runtime_supervisor.RuntimeSupervisor", _NoopSupervisor)
     monkeypatch.setattr("shutil.rmtree", _fake_rmtree)
     monkeypatch.setattr(
         "jiuwenswarm.server.front.server.AgentServerFront",
         lambda host, port, **kwargs: fake_front,
     )
-    monkeypatch.setattr(app_agentserver, "_start_supervisor", _fake_supervisor)
     # Logging config would import openjiuwen; this case only cares about Front/Supervisor ordering.
     monkeypatch.setattr(app_agentserver, "_configure_openjiuwen_logging", lambda: None)
 
     await app_agentserver._run("127.0.0.1", 18092)
 
-    assert fake_front.events[0] == "front_start"
+    assert events == ["worker_started", "detached"]
     assert "attach" in fake_front.events
     assert "front_stop" in fake_front.events
-    assert fake_front.events.index("front_start") < fake_front.events.index("attach")
+    assert ("front_start" in fake_front.events) is websocket_enabled
+    if websocket_enabled:
+        assert fake_front.events.index("attach") < fake_front.events.index("front_start")
+    messages = [call.args[0] % call.args[1:] if len(call.args) > 1 else call.args[0]
+                for call in info.call_args_list]
+    assert any("port listening:" in message for message in messages) is websocket_enabled
+    assert any("startup stage=agent_ws_listening" in message for message in messages) is websocket_enabled
     assert removed_paths == []
 
 
@@ -111,14 +122,14 @@ async def test_supervisor_attaches_before_waiting_for_worker_ipc(monkeypatch):
 def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default log path must resolve under the workspace infra/logs/core directory."""
+    """Default log path must resolve under the data-root logs/core directory."""
     captured: dict[str, Any] = {}
 
     def _fake_configure_log_config(config: dict[str, Any]) -> None:
         captured.update(config)
 
     home = tmp_path / "home"
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "config")
     monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
     monkeypatch.setenv("JIUWENSWARM_HOME", str(home))
     monkeypatch.setattr(
@@ -128,7 +139,7 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
 
     app_agentserver._configure_openjiuwen_logging()
 
-    assert captured["log_path"] == f"{tmp_path}/infra/logs/core/"
+    assert Path(captured["log_path"]) == tmp_path / "infra" / "logs" / "core"
     assert captured["log_file"] == "run/jiuwen.log"
     # Control-plane errors must stay visible: the fallback must not silence
     # OpenJiuwen loggers after configuring them.
@@ -138,7 +149,7 @@ def test_configure_openjiuwen_logging_uses_writable_workspace_logs(
 def test_configure_openjiuwen_logging_prefers_workspace_yaml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config_dir = tmp_path / "infra" / "config"
+    config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
     logging_yaml = config_dir / "logging.yaml"
     logging_yaml.write_text("logging: {}\n", encoding="utf-8")
@@ -147,7 +158,7 @@ def test_configure_openjiuwen_logging_prefers_workspace_yaml(
     def _fake_configure_log(path: str) -> None:
         called["path"] = path
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "config")
     monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log",
@@ -168,7 +179,7 @@ def test_configure_openjiuwen_logging_failure_is_non_fatal(
         _ = config
         raise RuntimeError("Read-only file system: '/logs'")
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "config")
     monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log_config",
@@ -182,7 +193,7 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When logging.yaml exists but configure_log raises, fall back to the workspace config."""
-    config_dir = tmp_path / "infra" / "config"
+    config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
     (config_dir / "logging.yaml").write_text("logging: {}\n", encoding="utf-8")
 
@@ -195,7 +206,7 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     def _capture_configure_log_config(config: dict[str, Any]) -> None:
         captured.update(config)
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "infra" / "config")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_config_dir", lambda: tmp_path / "config")
     monkeypatch.setattr("jiuwenswarm.common.utils.get_logs_dir", lambda: tmp_path / "infra" / "logs")
     monkeypatch.setattr(
         "openjiuwen.core.common.logging.log_config.configure_log",
@@ -209,4 +220,4 @@ def test_configure_openjiuwen_logging_falls_back_when_yaml_config_raises(
     app_agentserver._configure_openjiuwen_logging()
 
     assert captured.get("log_file") == "run/jiuwen.log"
-    assert captured.get("log_path", "") == f"{tmp_path}/infra/logs/core/"
+    assert Path(captured["log_path"]) == tmp_path / "infra" / "logs" / "core"

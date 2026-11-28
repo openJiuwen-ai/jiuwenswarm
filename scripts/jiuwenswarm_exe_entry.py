@@ -11,6 +11,62 @@ import traceback
 from pathlib import Path
 
 from jiuwenswarm.common._build_config import DISPLAY_NAME, ERROR_LOG_NAME
+from jiuwenswarm.common.windows_upgrade_config import RESTORE_CONFIG_FLAG, is_windows_installer_restore
+
+_DESKTOP_STOP_BUNDLED_EMAIL_MCP = "--desktop-stop-bundled-email-mcp"
+
+
+def _stop_bundled_email_mcp() -> int:
+    """Release the bundled Node executable before Windows uninstall deletes it."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return 0
+
+    import psutil
+
+    node_path = Path(sys.executable).resolve().parent / "runtime" / "node-runtime" / "node.exe"
+    entry_parts = ("node_modules", "@codefuturist", "email-mcp", "dist", "main.js")
+    stopped = []
+    failed = False
+    for process in psutil.process_iter(["name"]):
+        if (process.info["name"] or "").lower() != "node.exe":
+            continue
+        try:
+            if Path(process.exe()) != node_path:
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        try:
+            args = process.cmdline()
+            # On Windows, npx launches the entry through node_modules\.bin\..
+            if len(args) < 2 or Path(os.path.normcase(os.path.normpath(args[1]))).parts[-5:] != entry_parts:
+                continue
+            process.kill()
+            stopped.append(process)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            failed = True
+    _, alive = psutil.wait_procs(stopped, timeout=3)
+    return int(failed or bool(alive))
+
+
+# Installer cleanup needs only the bundled Node path and must skip workspace setup.
+_IS_EMAIL_MCP_CLEANUP = (
+    __name__ == "__main__"
+    and getattr(sys, "frozen", False)
+    and os.name == "nt"
+    and sys.argv[1:2] == [_DESKTOP_STOP_BUNDLED_EMAIL_MCP]
+)
+
+
+def _email_mcp_cleanup_exit_code() -> int:
+    if len(sys.argv) != 2:
+        return 2
+    try:
+        return _stop_bundled_email_mcp()
+    except Exception:  # noqa: BLE001 - installer logs the exit code
+        return 2
+
 
 _ENTRY_ARGV = tuple(sys.argv)
 
@@ -18,7 +74,7 @@ _ENTRY_ARGV = tuple(sys.argv)
 # 导致 openjiuwen 的默认日志路径 "./logs/" 解析为 "/logs/"（只读）。
 # 在任何业务 import 之前，将 cwd 切换到用户数据目录 ~/.jiuwenswarm，
 # 让 openjiuwen 的相对日志路径落到 <data>/logs/，与项目其它运行时数据同根。
-if getattr(sys, "frozen", False):
+if getattr(sys, "frozen", False) and not is_windows_installer_restore() and not _IS_EMAIL_MCP_CLEANUP:
     # Skills may need to run bundled Python scripts on machines without an
     # external Python installation.  The frozen executable already supports
     # `jiuwenswarm.exe script.py ...` via the runpy branch below.
@@ -140,7 +196,6 @@ _DESKTOP_PREPARE_RUNTIME_WORKSPACE = "--desktop-prepare-runtime-workspace"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
 _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
 _DESKTOP_REMOVE_OFFICE_ADDINS = "--desktop-remove-office-addins"
-_DESKTOP_STOP_BUNDLED_EMAIL_MCP = "--desktop-stop-bundled-email-mcp"
 
 # 子进程 flag 集合，这些模式下需要将错误写入日志文件，
 # 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
@@ -175,7 +230,6 @@ _CHILD_FLAGS = {
     _DESKTOP_INSTALL_EXTERNAL_CLI,
     _DESKTOP_RESET_EXTERNAL_CLI_CONFIG,
     _DESKTOP_REMOVE_OFFICE_ADDINS,
-    _DESKTOP_STOP_BUNDLED_EMAIL_MCP,
     _DESKTOP_INSTALL_UPDATE,
 }
 
@@ -205,7 +259,6 @@ def _should_hold_windows_app_mutex() -> bool:
         and _DESKTOP_INSTALL_EXTERNAL_CLI not in sys.argv
         and _DESKTOP_RESET_EXTERNAL_CLI_CONFIG not in sys.argv
         and _DESKTOP_REMOVE_OFFICE_ADDINS not in sys.argv
-        and _DESKTOP_STOP_BUNDLED_EMAIL_MCP not in sys.argv
     )
 
 
@@ -413,41 +466,10 @@ def _pop_flag(flag: str) -> bool:
     return True
 
 
-def _stop_bundled_email_mcp() -> int:
-    """Release the bundled Node executable before Windows uninstall deletes it."""
-    if os.name != "nt" or not getattr(sys, "frozen", False):
-        return 0
-
-    import psutil
-
-    node_path = Path(sys.executable).resolve().parent / "runtime" / "node-runtime" / "node.exe"
-    entry_parts = ("node_modules", "@codefuturist", "email-mcp", "dist", "main.js")
-    stopped = []
-    failed = False
-    for process in psutil.process_iter(["name"]):
-        if (process.info["name"] or "").lower() != "node.exe":
-            continue
-        try:
-            if Path(process.exe()) != node_path:
-                continue
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        try:
-            args = process.cmdline()
-            # On Windows, npx launches the entry through node_modules\.bin\..
-            if len(args) < 2 or Path(os.path.normcase(os.path.normpath(args[1]))).parts[-5:] != entry_parts:
-                continue
-            process.kill()
-            stopped.append(process)
-        except psutil.NoSuchProcess:
-            continue
-        except psutil.AccessDenied:
-            failed = True
-    _, alive = psutil.wait_procs(stopped, timeout=3)
-    return int(failed or bool(alive))
-
-
 def main() -> None:
+    if _IS_EMAIL_MCP_CLEANUP:
+        raise SystemExit(_email_mcp_cleanup_exit_code())
+
     _acquire_windows_app_mutexes()
     try:
         code = _dispatch()
@@ -615,10 +637,6 @@ def _dispatch() -> int | None:
 
         install_external_cli_runtime_from_artifacts(cli_agent, artifact_directory)
         return 0
-    if _pop_flag(_DESKTOP_STOP_BUNDLED_EMAIL_MCP):
-        if len(sys.argv) != 1:
-            raise ValueError("bundled email-mcp cleanup does not accept arguments")
-        return _stop_bundled_email_mcp()
     if _pop_flag(_DESKTOP_RESET_EXTERNAL_CLI_CONFIG):
         if len(sys.argv) != 1:
             raise ValueError("external CLI configuration reset does not accept arguments")
@@ -633,8 +651,8 @@ def _dispatch() -> int | None:
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
         return 0 if remove_all(get_user_workspace_dir()) else 1
-    if _pop_flag("--desktop-restore-upgrade-config"):
-        if len(sys.argv) != 1:
+    if RESTORE_CONFIG_FLAG in sys.argv[1:]:
+        if len(sys.argv) != 2:
             raise ValueError("upgrade configuration restore does not accept arguments")
         from jiuwenswarm.common.windows_upgrade_config import restore_legacy_upgrade_config
 

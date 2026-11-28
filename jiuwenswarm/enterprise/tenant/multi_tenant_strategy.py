@@ -68,6 +68,8 @@ class MultiTenantStrategy:
             tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
         )
         try:
+            # HTTP 入口不经过 Pool.tenant_scope，需在此补同一次落盘。
+            self._pool.persist_agent_identity(tenant_key, request)
             try:
                 yield
             finally:

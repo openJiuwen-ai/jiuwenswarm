@@ -19,15 +19,21 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_ALREADY_EXISTS,
+    ERROR_SKILL_FILE_TOO_LARGE,
+    ERROR_SKILL_INVALID_METADATA,
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
     ERROR_SKILL_RESERVED_PATH,
+    ERROR_SKILL_UNSAFE_PATH,
+    SKILL_ZIP_MAX_UPLOAD_BYTES,
     SkillManager,
     SkillRpcError,
 )
 from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+    SKILL_UPLOAD_MAX_REQUEST_BYTES,
     handle_skills_create_from_knowledge_http,
     handle_skills_import_http,
+    handle_skills_upload_temp_http,
     parse_multipart_form,
 )
 
@@ -96,6 +102,80 @@ async def test_import_upload_rejects_skill_ext(manager: SkillManager, tmp_path: 
     with pytest.raises(SkillRpcError) as exc:
         await manager.handle_skills_import_upload({"path": str(path)})
     assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert exc.value.detail_key == "skills.errors.uploadSkillZipRejected"
+
+
+@pytest.mark.asyncio
+async def test_import_upload_rejects_non_zip_with_detail_key(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    path = tmp_path / "x.tar"
+    path.write_bytes(b"not-a-zip")
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_upload({"path": str(path)})
+    assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert exc.value.detail_key == "skills.errors.uploadZipOnly"
+
+
+@pytest.mark.asyncio
+async def test_import_upload_missing_path_has_detail_key(manager: SkillManager) -> None:
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_upload({})
+    assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert exc.value.detail_key == "skills.errors.uploadMissingPath"
+
+
+@pytest.mark.asyncio
+async def test_import_upload_missing_file_has_detail_key(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    missing = tmp_path / "gone.zip"
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_upload({"path": str(missing)})
+    assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert exc.value.detail_key == "skills.errors.uploadFileMissing"
+    assert exc.value.detail_params.get("path") == str(missing)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detail_params", [{}, {"path": "missing.zip"}])
+async def test_skills_request_propagates_detail_key(detail_params: dict[str, str]) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    swarm = interface_module.JiuWenSwarm()
+    swarm._skill_manager = MagicMock()
+    swarm._skill_manager.handle_skills_import_upload = AsyncMock(
+        side_effect=SkillRpcError(
+            ERROR_SKILL_INVALID_PACKAGE,
+            "缺少上传文件路径",
+            detail_key="skills.errors.uploadMissingPath",
+            detail_params=detail_params,
+        )
+    )
+    request = AgentRequest(
+        request_id="req-import-i18n",
+        channel_id="web",
+        session_id="user-session",
+        req_method=ReqMethod.SKILLS_IMPORT_UPLOAD,
+        params={},
+    )
+    resp = await swarm._handle_skills_request(request)
+    assert resp is not None
+    assert resp.ok is False
+    assert resp.payload["code"] == ERROR_SKILL_INVALID_PACKAGE
+    assert resp.payload["detail_key"] == "skills.errors.uploadMissingPath"
+    if detail_params:
+        assert resp.payload["detail_params"] == detail_params
+    else:
+        assert "detail_params" not in resp.payload
+
+
+def test_skill_rpc_error_defaults_keep_compat() -> None:
+    exc = SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "boom")
+    assert exc.code == ERROR_SKILL_INVALID_PACKAGE
+    assert exc.message == "boom"
+    assert exc.detail_key == ""
+    assert exc.detail_params == {}
 
 
 @pytest.mark.asyncio
@@ -106,6 +186,8 @@ async def test_import_upload_already_exists(manager: SkillManager, tmp_path: Pat
     with pytest.raises(SkillRpcError) as exc:
         await manager.handle_skills_import_upload({"path": str(zip_path), "overwrite": False})
     assert exc.value.code == ERROR_SKILL_ALREADY_EXISTS
+    assert exc.value.detail_key == "skills.errors.importOverwriteRequired"
+    assert exc.value.detail_params.get("name") == "demo-skill"
 
 
 @pytest.mark.asyncio
@@ -115,6 +197,115 @@ async def test_import_upload_rejects_root_archive(manager: SkillManager, tmp_pat
     with pytest.raises(SkillRpcError) as exc:
         await manager.handle_skills_import_upload({"path": str(zip_path)})
     assert exc.value.code == ERROR_SKILL_RESERVED_PATH
+    assert exc.value.detail_key == "skills.errors.reservedArchivePath"
+
+
+@pytest.mark.asyncio
+async def test_import_upload_rejects_missing_metadata_name(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "no-name/SKILL.md",
+            "---\ndescription: missing name\n---\n# Body\n",
+        )
+    zip_path = tmp_path / "no-name.zip"
+    zip_path.write_bytes(buf.getvalue())
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_upload({"path": str(zip_path)})
+    assert exc.value.code == ERROR_SKILL_INVALID_METADATA
+    assert exc.value.detail_key == "skills.errors.invalidMetadataName"
+
+
+def test_upload_temp_missing_file_has_detail_key() -> None:
+    # 合法 multipart，但不含 file 字段（避免空 body 先落入解析失败分支）。
+    content_type, body = _multipart({"overwrite": "false"})
+    status, payload = handle_skills_upload_temp_http(content_type=content_type, body=body)
+    assert status == 400
+    assert payload["code"] == ERROR_SKILL_INVALID_PACKAGE
+    assert payload["detail_key"] == "skills.errors.uploadMissingFileField"
+
+
+def test_upload_temp_unsafe_filename_has_detail_key() -> None:
+    content_type, body = _multipart(
+        {"file": ("../evil.zip", b"not-a-zip", "application/zip")}
+    )
+    status, payload = handle_skills_upload_temp_http(content_type=content_type, body=body)
+    assert status == 400
+    assert payload["code"] == ERROR_SKILL_UNSAFE_PATH
+    assert payload["detail_key"] == "skills.errors.uploadUnsafePath"
+
+
+def test_upload_temp_too_large_has_detail_key() -> None:
+    oversized = b"x" * (SKILL_UPLOAD_MAX_REQUEST_BYTES + 1)
+    status, payload = handle_skills_upload_temp_http(
+        content_type="multipart/form-data; boundary=----x",
+        body=oversized,
+    )
+    assert status == 413
+    assert payload["code"] == ERROR_SKILL_FILE_TOO_LARGE
+    assert payload["detail_key"] == "skills.errors.skillPackageTooLarge"
+    assert "limitMB" in payload["detail_params"]
+    assert float(payload["detail_params"]["limitMB"]) == pytest.approx(
+        SKILL_ZIP_MAX_UPLOAD_BYTES / (1024 * 1024), rel=0, abs=0.05
+    )
+
+
+def test_safe_extract_zip_depth_exceeded_has_detail_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm
+
+    monkeypatch.setattr(sm, "_SKILL_ZIP_MAX_PATH_DEPTH", 2)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a/b/c.txt", b"x")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        with pytest.raises(SkillRpcError) as exc:
+            SkillManager._safe_extract_zip_members_into(zf, dest.resolve())
+    assert exc.value.code == ERROR_SKILL_FILE_TOO_LARGE
+    assert exc.value.detail_key == "skills.errors.uploadZipDepthExceeded"
+    assert exc.value.detail_params == {"limit": 2}
+
+
+def test_safe_extract_zip_file_count_exceeded_has_detail_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm
+
+    monkeypatch.setattr(sm, "_SKILL_ZIP_MAX_FILE_COUNT", 1)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", b"1")
+        zf.writestr("b.txt", b"2")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        with pytest.raises(SkillRpcError) as exc:
+            SkillManager._safe_extract_zip_members_into(zf, dest.resolve())
+    assert exc.value.code == ERROR_SKILL_FILE_TOO_LARGE
+    assert exc.value.detail_key == "skills.errors.uploadZipFileCountExceeded"
+    assert exc.value.detail_params == {"limit": 1}
+
+
+def test_assert_skill_package_safe_unparsable_skill_md(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill_dir = tmp_path / "demo-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: demo\n---\n# Body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(SkillManager, "_parse_skill_md", staticmethod(lambda _path: None))
+    with pytest.raises(SkillRpcError) as exc:
+        manager._assert_skill_package_safe(skill_dir)
+    assert exc.value.code == ERROR_SKILL_INVALID_METADATA
+    assert exc.value.detail_key == "skills.errors.invalidMetadataUnparsable"
+    assert exc.value.detail_params == {}
 
 
 @pytest.mark.asyncio

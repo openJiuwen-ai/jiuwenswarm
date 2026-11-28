@@ -44,12 +44,9 @@ import zipfile
 from pathlib import Path
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler, RotatingFileHandler
-import portalocker
-from ruamel.yaml import YAML
-from ruamel.yaml.error import YAMLError
 
 from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
@@ -59,7 +56,42 @@ from e2a.logging_config import (
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+from jiuwenswarm.common.windows_upgrade_config import is_windows_installer_restore
 from jiuwenswarm.enterprise import is_enterprise
+from jiuwenswarm.common.paths import (
+    logger,
+    migrate_profile_data_root_layout,
+    _find_config_template_path,
+    _find_package_root,
+    get_agent_home_dir,
+    get_agent_root_dir,
+    get_agent_sessions_dir,
+    get_agent_skills_dir,
+    get_agent_teams_dir,
+    get_agent_workspace_dir,
+    get_builtin_skills_dir,
+    get_checkpoint_dir,
+    get_config_dir,
+    get_config_file,
+    get_cron_jobs_path,
+    get_deepagent_todo_dir,
+    get_deepagent_user_md_path,
+    get_default_project_session_workspace_dir,
+    get_default_project_workspace_dir,
+    get_env_file,
+    get_gateway_config_file,
+    get_gateway_config_template,
+    get_heartbeat_jobs_path,
+    get_logs_dir,
+    get_package_avatar_cache_dir,
+    get_project_skills_dirs,
+    get_root_dir,
+    get_runtime_state_path,
+    get_user_home,
+    get_user_workspace_dir,
+    get_workspace_dir,
+    reset_path_caches,
+)
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
@@ -70,6 +102,8 @@ _JSONL_LOG_LOCK = threading.Lock()
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
 # Linux 部署脚本（deploy/yuanrong/gateway_handler.sh）注入 /var/log/agentos。
 _GATEWAY_LOG_DIR_ENV = "AGENTOS_GATEWAY_LOG_DIR"
+_GATEWAY_CONFIG_DIR_ENV = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+_STOCK_GATEWAY_EXTENSION_DIRS = "${EXTENSION_DIRS:-agent_gateway/extensions}"
 
 
 @dataclass
@@ -339,6 +373,8 @@ class _CompositeFilter(logging.Filter):
 
 def _load_logging_config_from_yaml() -> dict[str, Any]:
     """读取 ~/.jiuwenswarm/config/config.yaml 中的 logging 段（无则空）。"""
+    from ruamel.yaml import YAML
+
     try:
         cf = get_config_file()
         if not cf.exists():
@@ -401,27 +437,8 @@ def _resolve_logging_levels(
     return LoggingLevels(logger_level, console, gateway, channel, agent_server, full)
 
 
-_user_home: Path | None = None
-_workspace_base_dir: Path | None = None
 
 
-def get_user_home() -> Path:
-    """Get the current user home directory.
-
-    Priority:
-    1. Cached value (if already set via set_user_home or previous call)
-    2. JIUWENSWARM_HOME environment variable
-    3. System default Path.home()
-    """
-    global _user_home
-    if _user_home is not None:
-        return _user_home
-    env_home = os.getenv("JIUWENSWARM_HOME")
-    if env_home:
-        _user_home = Path(env_home)
-        return _user_home
-    _user_home = Path.home()
-    return _user_home
 
 
 def set_user_home(path: Path, initialized: bool = False) -> None:
@@ -433,42 +450,12 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
         path: The new user home directory path.
         initialized: If True, skip cache reset (use when paths are already initialized elsewhere).
     """
-    global _user_home, _initialized, _config_dir, _workspace_dir, _root_dir
-    global _workspace_base_dir
-    _user_home = Path(path)
-    if initialized:
-        return
-    _initialized = False
-    _config_dir = None
-    _workspace_dir = None
-    _root_dir = None
-    # _workspace_base_dir caches ``<home>/.jiuwenswarm`` and is filled on the first path
-    # lookup -- which happens at import time, from the *real* home, via setup_logger().
-    # Leaving it set made the promise above false: get_user_workspace_dir() returns the
-    # cached value before it ever consults get_user_home(), so a test that redirected the
-    # home still resolved to the developer's own workspace, and a force init deleted the
-    # real ~/.jiuwenswarm/config subdirectories.
-    _workspace_base_dir = None
+    # 路径解析真身在 paths（门面再导出）；此处委托，避免双份缓存各改各的。
+    from jiuwenswarm.common.paths import set_user_home as _paths_set_user_home
+
+    _paths_set_user_home(path, initialized=initialized)
 
 
-def get_user_workspace_dir() -> Path:
-    """Get the user workspace directory path (~/.jiuwenswarm or custom path).
-
-    Priority:
-    1. Cached value (if already set via set_user_workspace_dir or previous call)
-    2. JIUWENSWARM_DATA_DIR environment variable (for multi-instance isolation)
-    3. get_user_home() / ".jiuwenswarm" (default instance)
-    """
-    global _workspace_base_dir
-    if _workspace_base_dir is not None:
-        return _workspace_base_dir
-    env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
-    if env_workspace:
-        _workspace_base_dir = Path(env_workspace)
-        return _workspace_base_dir
-
-    _workspace_base_dir = get_user_home() / ".jiuwenswarm"
-    return _workspace_base_dir
 
 
 def get_infra_data_dir() -> Path:
@@ -483,11 +470,7 @@ def get_infra_data_dir() -> Path:
 
 
 # Cache for resolved paths
-_config_dir: Path | None = None
-_workspace_dir: Path | None = None
-_root_dir: Path | None = None
 _is_package: bool | None = None
-_initialized: bool = False
 
 
 def _detect_installation_mode() -> bool:
@@ -515,57 +498,18 @@ def _detect_installation_mode() -> bool:
     return False
 
 
-def _find_source_root() -> Path:
-    """Find the repository root in development mode (contains jiuwenswarm/ package)."""
-    current = Path(__file__).resolve().parent.parent
-    jw_pkg = current / "jiuwenswarm"
-    if (jw_pkg / "resources" / "agent").exists():
-        return current
-    parent = current.parent
-    jw_pkg2 = parent / "jiuwenswarm"
-    if (jw_pkg2 / "resources" / "agent").exists():
-        return parent
-    return current
 
 
-def _find_package_root() -> Path | None:
-    """Best-effort detection of the jiuwenswarm package root.
-
-    In package mode (whl), __file__ is at site-packages/jiuwenswarm/common/utils.py,
-    so parent.parent is site-packages/jiuwenswarm/.
-    In editable / source mode, __file__ is at <project>/jiuwenswarm/common/utils.py,
-    so parent.parent is <project>/jiuwenswarm/.
-    """
-    current = Path(__file__).resolve().parent.parent
-    jw_pkg = current / "jiuwenswarm"
-    if (jw_pkg / "resources").exists():
-        return current
-    return current
 
 
-def _find_config_template_path() -> Path:
-    """Locate the shipped ``config.yaml`` template inside the package."""
-    package_root = _find_package_root()
-    if not package_root:
-        raise RuntimeError("package root not found")
-
-    candidates = [
-        package_root / "resources" / "config.yaml",
-        package_root / "config" / "config.yaml",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    raise RuntimeError(
-        "config.yaml template not found; tried: "
-        + ", ".join(str(p) for p in candidates)
-    )
 
 
 def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
     """确定初始化使用的语言：显式参数优先，否则读已复制的 config，默认 zh。"""
+    from ruamel.yaml import YAML
+
     if explicit is not None:
         lang = str(explicit).strip().lower()
         return lang if lang in ("zh", "en") else "zh"
@@ -584,6 +528,9 @@ def _resolve_preferred_language(
 
 def _uses_jiuwen_memory(config_path: Path) -> bool:
     """Read the builtin memory provider during workspace bootstrap."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.error import YAMLError
+
     if not config_path.is_file():
         return False
     try:
@@ -702,6 +649,8 @@ def _install_default_builtin_skills(
     cumulative_diff: CopyDiffResult,
 ) -> None:
     """Install the single catalog and migrate unchanged legacy builtin copies."""
+    import portalocker
+
     from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
 
     source = builtin_dir / BUILTIN_CATALOG_NAME
@@ -768,6 +717,8 @@ def ensure_config_migrated_from_template(
     """
     if is_agentos_runtime():
         return False
+
+    import portalocker
 
     from jiuwenswarm.common.config import migrate_config_from_template
     from jiuwenswarm.common.version import get_runtime_version_label
@@ -880,14 +831,20 @@ def cleanup_stale_openjiuwen_descs() -> None:
         )
         return
 
-    try:
-        import openjiuwen
-    except ModuleNotFoundError as exc:
-        if exc.name == "openjiuwen":
-            return
-        raise
+    loaded = sys.modules.get("openjiuwen")
+    package_file = getattr(loaded, "__file__", None)
+    if package_file is None:
+        # Top-level package discovery does not execute the SDK's __init__.
+        # Cleanup must still finish before any SDK description index is built.
+        from importlib.util import find_spec
 
-    package_file = getattr(openjiuwen, "__file__", None)
+        try:
+            spec = find_spec("openjiuwen")
+        except ModuleNotFoundError as exc:
+            if exc.name == "openjiuwen":
+                return
+            raise
+        package_file = spec.origin if spec is not None else None
     if not package_file:
         return
 
@@ -964,6 +921,8 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
     配置归一化时抛 ValueError 导致保存失败。任一失败仅记录告警并保留模板
     默认值，不阻塞 init。
     """
+    from ruamel.yaml import YAML
+
     try:
         from jiuwenswarm.common.config import _allowed_external_cli_agents
 
@@ -1088,6 +1047,8 @@ def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, 
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    from ruamel.yaml import YAML
+
     if not path.is_file():
         return {}
     data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
@@ -1163,6 +1124,14 @@ def _merge_existing_gateway_config(gateway_dest: Path, template_path: Path) -> N
     migrate_config_from_template(template_path, gateway_dest, prune=False)
 
 
+def _include_swarm_gateway_extensions(config: Any) -> bool:
+    extensions = config.get("extensions") if isinstance(config, dict) else None
+    if not isinstance(extensions, dict) or extensions.get("extension_dirs") != _STOCK_GATEWAY_EXTENSION_DIRS:
+        return False
+    extensions["extension_dirs"] = f"{_STOCK_GATEWAY_EXTENSION_DIRS};jiuwenswarm/extensions"
+    return True
+
+
 def _install_gateway_config(
     workspace_dir: Path,
     legacy_config: Path | None,
@@ -1171,12 +1140,12 @@ def _install_gateway_config(
     cumulative_diff: CopyDiffResult,
 ) -> None:
     """Create the personal-edition Gateway config without touching AS config."""
+    from ruamel.yaml import YAML
+
     if is_agentos_runtime():
         return
 
-    gateway_dir = get_gateway_config_dir(workspace_dir)
-    gateway_dir.mkdir(parents=True, exist_ok=True)
-    gateway_dest = gateway_dir / "config.yaml"
+    gateway_dest = get_gateway_config_file(workspace_dir)
     template_path = get_gateway_config_template()
     if gateway_dest.exists() and not overwrite:
         _merge_existing_gateway_config(gateway_dest, template_path)
@@ -1187,7 +1156,12 @@ def _install_gateway_config(
     generated = _project_gateway_config(template, legacy)
     _merge_gateway_hooks(generated, legacy)
     _copy_gateway_owned_config(generated, legacy)
+    if not (os.getenv(_GATEWAY_CONFIG_DIR_ENV) or "").strip():
+        _include_swarm_gateway_extensions(generated)
 
+    # 共享 config/ 目录可能尚未落位（prepare_workspace 先行创建是常规路径，
+    # 但部署工具/迁移链路可能直呼本函数）
+    gateway_dest.parent.mkdir(parents=True, exist_ok=True)
     with TrackCopyDiff(
         dest=gateway_dest,
         is_file=True,
@@ -1205,7 +1179,7 @@ def ensure_gateway_config(workspace_dir: Path | None = None) -> bool:
         return False
 
     workspace = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
-    gateway_dest = get_gateway_config_dir(workspace) / "config.yaml"
+    gateway_dest = get_gateway_config_file(workspace_dir)
     try:
         template_path = get_gateway_config_template()
         if gateway_dest.exists():
@@ -1225,6 +1199,162 @@ def ensure_gateway_config(workspace_dir: Path | None = None) -> bool:
         return False
 
 
+def _merge_tree_keep_dir_metadata(
+    src_dir: Path,
+    dst_dir: Path,
+    ignore: Optional[Callable[[str, list[str]], set[str]]] = None,
+) -> None:
+    """Merge ``src_dir`` into ``dst_dir``, adding only missing files and dirs.
+
+    Drop-in replacement for ``shutil.copytree(..., dirs_exist_ok=True)`` on
+    the workspace template path. ``copytree`` ends every visited directory
+    with ``copystat``, which chmod/utime the destination directory even when
+    it already existed and no new file was added. On a shared volume (an NFS
+    PVC reused across deployments) those directories are often owned by
+    another uid, so ``copystat`` fails with EPERM and aborts the whole
+    workspace preparation although the content is already in place.
+
+    Semantics:
+    - pre-existing destination directories keep their own metadata;
+    - newly created directories get template metadata on a best-effort basis;
+    - missing files are copied with ``shutil.copyfile``; file metadata is
+      best-effort and never fails the merge;
+    - genuine copy failures — including unreadable source directories hit
+      during traversal — are aggregated into ``shutil.Error`` the same way
+      ``copytree`` does.
+
+    Args:
+        src_dir: Template directory to merge from.
+        dst_dir: Destination directory, may already exist.
+        ignore: ``shutil.ignore_patterns``-style callable receiving the
+            current source directory and its entry names, returning the
+            names to skip.
+    """
+    errors: list[tuple[str, str, str]] = []
+    src_root = str(src_dir)
+
+    def _record_walk_error(err: OSError) -> None:
+        # os.walk silently skips directories it cannot list (onerror=None).
+        # A template directory that fails to enumerate would otherwise yield
+        # an incomplete workspace reported as ready, so aggregate the failure
+        # into the same shutil.Error as genuine copy failures.
+        failed = err.filename or src_root
+        try:
+            counterpart = dst_dir / os.path.relpath(failed, src_root)
+        except ValueError:
+            counterpart = dst_dir
+        errors.append((failed, str(counterpart), str(err)))
+
+    # followlinks mirrors copytree(symlinks=False), which descends into
+    # symlinked directories and copies their content as real entries.
+    for current_dir, dir_names, file_names in os.walk(
+        src_root, followlinks=True, onerror=_record_walk_error,
+    ):
+        ignored = ignore(current_dir, dir_names + file_names) if ignore else set()
+        dir_names[:] = [name for name in dir_names if name not in ignored]
+        relative = os.path.relpath(current_dir, src_root)
+        dst_current = dst_dir if relative == os.curdir else dst_dir / relative
+        fresh_dir = not dst_current.exists()
+        try:
+            dst_current.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            errors.append((current_dir, str(dst_current), str(exc)))
+            dir_names[:] = []
+            continue
+        if fresh_dir:
+            # Only ever chmod/utime directories we just created ourselves.
+            try:
+                shutil.copystat(current_dir, dst_current)
+            except OSError as exc:
+                logger.warning(
+                    "workspace template dir metadata not applied: %s -> %s: %s",
+                    current_dir, dst_current, exc,
+                )
+        for name in file_names:
+            if name in ignored:
+                continue
+            src_file = os.path.join(current_dir, name)
+            dst_file = dst_current / name
+            if dst_file.exists():
+                continue
+            try:
+                shutil.copyfile(src_file, dst_file)
+            except OSError as exc:
+                errors.append((src_file, str(dst_file), str(exc)))
+                continue
+            try:
+                shutil.copystat(src_file, dst_file)
+            except OSError as exc:
+                # Content is complete; a volume refusing chmod/utime on the
+                # freshly written file must not fail workspace preparation.
+                logger.warning(
+                    "workspace template file metadata not applied: %s -> %s: %s",
+                    src_file, dst_file, exc,
+                )
+    if errors:
+        raise shutil.Error(errors)
+
+
+def _filter_restorable_external_cli_state(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """按 cli_path 存在性校验旁路恢复条目（AI 检视 !10636）。
+
+    - 字符串形式条目（配置层支持的合法形状）与 cli_path 为空（内置托管
+      模式）的条目保留。
+    - cli_path 指向的文件存在（含 expanduser 与 Windows 升级 preserved
+      路径翻译）→ 保留。
+    - 路径根不可达（盘符/共享离线）→ 视为暂时不可用，保留不剔除。
+    - 路径根可达且文件确实不存在 → 丢弃（init -f 重置后不会出现
+      "agent 已开启但路径不存在"）。全部条目被丢弃时返回 None（落回模板默认）。
+    剔除结果不回写旁路：旁路保留原始恢复备份。
+    """
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    agents = state.get("agents") if isinstance(state, dict) else None
+    if not isinstance(agents, list):
+        return None
+    kept = []
+    dropped = []
+    for item in agents:
+        if isinstance(item, str):
+            if item.strip():
+                kept.append(item)
+            else:
+                dropped.append(item)
+            continue
+        if not isinstance(item, dict):
+            dropped.append(item)
+            continue
+        cli_path = str(item.get("cli_path") or "").strip()
+        if not cli_path:
+            kept.append(item)
+            continue
+        expanded = Path(cli_path).expanduser()
+        translated = resolve_preserved_cli_path(str(expanded))
+        candidate = Path(translated) if translated else expanded
+        anchor = candidate.anchor
+        if anchor and not Path(anchor).exists():
+            # 盘符/共享暂不可达：视为暂时不可用，不剔除。
+            kept.append(item)
+            continue
+        if candidate.is_file():
+            kept.append(item)
+        else:
+            dropped.append(item)
+    if dropped:
+        # 剔除不静默：init 输出/日志明确列出被剔除的条目（AI 检视 !10636）。
+        logger.warning(
+            "init 恢复：剔除 cli_path 已失效的三方 agent 条目（旁路保留原始备份）: %s",
+            [
+                (str(d.get("cli_agent") or d), str(d.get("cli_path") or ""))
+                for d in dropped
+                if isinstance(d, dict)
+            ],
+        )
+    if not kept:
+        return None
+    return {**state, "agents": kept}
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1239,6 +1369,16 @@ def prepare_workspace(
         workspace_dir = get_user_workspace_dir()
     else:
         workspace_dir = Path(workspace_dir)
+
+    # agent 子树落点：初始化数据根（缺省或显式传入数据根）时走租户感知 agent 根
+    # （个人= profile/agent，企业未绑定= 默认租户根），与运行期读取同源，config/.env
+    # 等系统态仍落数据根；显式独立工作区（CLI init 指定目录）沿用该目录下的 agent 根。
+    if workspace_dir.resolve() == get_user_workspace_dir().resolve():
+        agent_root = get_agent_root_dir()
+        agent_group_root = get_agent_teams_dir() / "agent_groups"
+    else:
+        agent_root = workspace_dir / "agent"
+        agent_group_root = workspace_dir / ".agent_teams" / "agent_groups"
 
     # 初始化累积结果（用于追踪所有复制操作）
     cumulative_diff = CopyDiffResult([], [], [])
@@ -1260,20 +1400,16 @@ def prepare_workspace(
     if config_initialized:
         # init/重新部署用模板覆盖 config.yaml——三方 agent 的启用配置不取自被
         # 覆盖的旧文件，而是从数据目录之外的状态旁路恢复（旁路在每次保存/清理
-        # 时镜像，见 dump_yaml_round_trip 的挂接点）。强制重置（init -f /
-        # overwrite）例外：重置语义完整生效——跳过恢复并清除旁路文件，否则
-        # "重置"名存实亡，且被恢复的 cli_path 指向已删除的安装。
-        if overwrite:
-            # 强制重置：跳过恢复并清除旁路文件（删除失败仅告警，不阻塞 init）
-            try:
-                external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning(f"清除三方 agent 状态旁路失败: {exc}")
-        pre_restore_state = (
-            _read_external_cli_state_sidecar(workspace_dir)
-            if not overwrite and not config_yaml_dest.exists()
-            else None
-        )
+        # 时镜像，见 dump_yaml_round_trip 的挂接点）。无论强制重置（init -f /
+        # overwrite）还是全新初始化，都从旁路恢复三方 agent 状态且保留旁路文件
+        # （2026-11-19 语义调整：init 后保持已安装/已开启状态；旁路缺失或为空
+        # 时自然落到模板默认；要彻底重置三方 agent，在 UI 里关闭对应 agent 并
+        # 保存，旁路即同步为空态，后续 init 恢复为空）。
+        pre_restore_state = _read_external_cli_state_sidecar(workspace_dir)
+        if pre_restore_state is not None:
+            # 强制重置/全新初始化都校验恢复条目：cli_path 已删除的安装被丢弃，
+            # 避免 init -f 后"agent 已开启但路径不存在"（AI 检视 !10636）。
+            pre_restore_state = _filter_restorable_external_cli_state(pre_restore_state)
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1321,8 +1457,7 @@ def prepare_workspace(
         cumulative_diff=cumulative_diff,
     )
 
-    # ----- copy runtime dirs (new layout) -----
-    agent_root = workspace_dir / "agent"
+    # ----- copy runtime dirs -----
     agent_sessions = agent_root / "sessions"
     (agent_root / ".checkpoint").mkdir(parents=True, exist_ok=True)
     (agent_root / ".logs").mkdir(parents=True, exist_ok=True)
@@ -1335,20 +1470,6 @@ def prepare_workspace(
 
     template_agent_workspace = template_agent_dir / "workspace"
     template_agent_memory = template_agent_dir / "workspace" / "memory"
-
-    def copy_if_missing(src: str | Path, dst: str | Path) -> str | Path:
-        """增量复制：目标已存在则跳过。
-
-        Args:
-            src: 源文件路径
-            dst: 目标文件路径
-
-        Returns:
-            目标文件路径（已存在则直接返回，否则返回复制后的路径）
-        """
-        if os.path.exists(dst):
-            return dst
-        return shutil.copy2(src, dst)
 
     def _copy_dir(
         src_dir: Path,
@@ -1366,13 +1487,11 @@ def prepare_workspace(
         else:
             ignore = None
 
-        if not dst_dir.exists():
-            shutil.copytree(src_dir, dst_dir, ignore=ignore)
-        else:
-            shutil.copytree(
-                src_dir, dst_dir, dirs_exist_ok=True, ignore=ignore,
-                copy_function=copy_if_missing,
-            )
+        # Never copy directory metadata onto a pre-existing destination: a
+        # workspace on a shared volume (PVC) can be owned by another uid,
+        # where chmod/utime raise EPERM and would abort startup over content
+        # that is already in place.
+        _merge_tree_keep_dir_metadata(src_dir, dst_dir, ignore=ignore)
 
     # Copy DeepAgent workspace template (includes agent-data.json, memory, skills)
     # Ignore _ZH.md and _EN.md files - they are handled separately
@@ -1444,7 +1563,6 @@ def prepare_workspace(
         kind_root = deepagent_workspace / "plugins" / kind
         (kind_root / "built_in").mkdir(parents=True, exist_ok=True)
         (kind_root / "local").mkdir(parents=True, exist_ok=True)
-    agent_group_root = workspace_dir / ".agent_teams" / "agent_groups"
     (agent_group_root / "built_in").mkdir(parents=True, exist_ok=True)
     (agent_group_root / "local").mkdir(parents=True, exist_ok=True)
 
@@ -1516,7 +1634,7 @@ def _read_mcp_builtins_seed_version(zip_path: Path) -> str | None:
         return None
 
 
-def mcp_builtins_seed_update_needed(workspace_dir: Path | None = None) -> bool:
+def mcp_builtins_seed_update_needed(agent_workspace: Path | None = None) -> bool:
     """Return whether the bundled MCP seed must be installed or upgraded."""
     package_root = _find_package_root()
     if package_root is None:
@@ -1531,8 +1649,9 @@ def mcp_builtins_seed_update_needed(workspace_dir: Path | None = None) -> bool:
     if seed_version is None:
         return False
 
-    runtime_root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
-    installed_dir = runtime_root / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    if agent_workspace is None:
+        agent_workspace = get_agent_workspace_dir()
+    installed_dir = agent_workspace / "mcp" / "mcp_builtins"
     try:
         installed_version = (
             installed_dir / ".mcp_builtins_version"
@@ -1699,15 +1818,15 @@ def _ensure_mcp_builtins(
 
 def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
     """Add Swarm's built-ins to the old stock Gateway search path."""
+    from ruamel.yaml.error import YAMLError
+    import portalocker
+
     from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
 
-    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
     try:
         with config_write_lock(config_path=config_path):
             config = load_yaml_round_trip(config_path)
-            extensions = config.get("extensions") if isinstance(config, dict) else None
-            if isinstance(extensions, dict) and extensions.get("extension_dirs") == legacy_dirs:
-                extensions["extension_dirs"] = f"{legacy_dirs};jiuwenswarm/extensions"
+            if _include_swarm_gateway_extensions(config):
                 dump_yaml_round_trip(config_path, config)
     except (OSError, YAMLError, portalocker.exceptions.LockException) as exc:
         logger.warning("Could not migrate local Gateway extension directories in %s: %s", config_path, exc)
@@ -1715,15 +1834,20 @@ def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
 
 def prepare_local_gateway_config(env: dict[str, str]) -> None:
     """Prepare the effective Gateway config for a local Swarm launcher."""
-    key = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
-    if env.get(key, "").strip() or is_agentos_runtime():
+    key = _GATEWAY_CONFIG_DIR_ENV
+    gateway_config = get_gateway_config_file(env=env)
+    if env.get(key, "").strip():
+        env[key] = str(gateway_config.parent)
+        if not is_agentos_runtime():
+            if gateway_config.is_file():
+                _migrate_local_gateway_extension_dirs(gateway_config)
+        return
+    if is_agentos_runtime():
         return
 
-    from agent_gateway.common.paths import get_config_file as get_agent_gateway_config_file
-
-    gateway_config = get_agent_gateway_config_file()
     if gateway_config.is_file():
         _migrate_local_gateway_extension_dirs(gateway_config)
+        env[key] = str(gateway_config.parent)
         return
     env[key] = str(get_config_dir())
 
@@ -1754,16 +1878,19 @@ def prepare_runtime_workspace(
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
 
+    # 分区布局迁移先于任何路径读取（幂等）
+    migrate_profile_data_root_layout()
+
     workspace_dir = get_user_workspace_dir()
     config_file = workspace_dir / "config" / "config.yaml"
-    new_workspace = workspace_dir / "agent" / "workspace"
-    mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
+    agent_workspace = get_agent_workspace_dir()
+    mcp_builtins_dir = agent_workspace / "mcp" / "mcp_builtins"
 
     cleanup_team_files(workspace_dir)
 
     config_missing = not config_file.exists()
     mcp_builtins_missing = not mcp_builtins_dir.is_dir()
-    mcp_builtins_update_needed = mcp_builtins_seed_update_needed(workspace_dir)
+    mcp_builtins_update_needed = mcp_builtins_seed_update_needed(agent_workspace)
     workspace_preparation_needed = any(
         (
             config_missing,
@@ -1774,7 +1901,7 @@ def prepare_runtime_workspace(
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir, migrate_config=False)
         if config_missing and config_file.is_file():
-            reset_config_path_cache()
+            reset_path_caches()
 
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)
@@ -1865,6 +1992,10 @@ def init_user_workspace(
                 f"entire {workspace_dir} will be deleted for clean initialization."
             )
             print("[jiuwenswarm-init] WARNING: This will delete all historical configuration and memory information.")
+            print(
+                "[jiuwenswarm-init] NOTE: External CLI agent state is restored from the state sidecar; "
+                "entries whose CLI path no longer exists are dropped."
+            )
             print("[jiuwenswarm-init] This action cannot be undone.")
             if _is_interactive():
                 confirmation = input(
@@ -1913,271 +2044,6 @@ def init_user_workspace(
     return workspace_dir
 
 
-def reset_config_path_cache() -> None:
-    """Drop cached config paths so the next lookup sees a newly created workspace."""
-    global _initialized, _config_dir, _workspace_dir, _root_dir
-    _initialized = False
-    _config_dir = None
-    _workspace_dir = None
-    _root_dir = None
-
-
-def _resolve_paths() -> None:
-    """Resolve and cache all paths."""
-    global _initialized, _config_dir, _workspace_dir, _root_dir
-
-    if _initialized:
-        return
-
-    workspace_dir = get_user_workspace_dir()
-
-    # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
-    # 保证源码运行与安装包运行后的读写路径完全一致。
-    user_config_dir = workspace_dir / "config"
-    user_workspace_dir = workspace_dir / "agent" / "workspace"
-    if user_config_dir.exists():
-        _root_dir = workspace_dir
-        _config_dir = user_config_dir
-        _workspace_dir = user_workspace_dir
-    else:
-        # 尚未初始化 ~/.jiuwenswarm：从包内 resources 直读配置，工作区指向包内 agent/workspace
-        package_root = _find_package_root()
-        if package_root and (package_root / "resources" / "config.yaml").exists():
-            res = package_root / "resources"
-            _root_dir = package_root.parent
-            _config_dir = res
-            _workspace_dir = res / "agent" / "workspace"
-            _workspace_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            source_root = _find_source_root()
-            pkg = source_root / "jiuwenswarm"
-            res = pkg / "resources"
-            _root_dir = source_root
-            _config_dir = res if (res / "config.yaml").exists() else source_root / "config"
-            _workspace_dir = res / "agent" / "workspace"
-            _workspace_dir.mkdir(parents=True, exist_ok=True)
-
-    _initialized = True
-
-
-def get_config_dir() -> Path:
-    """Get the config directory path."""
-    _resolve_paths()
-    return _config_dir
-
-
-def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
-    """Get the Gateway-only config directory, honoring the env override."""
-    base = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
-    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
-    if override:
-        path = Path(override).expanduser()
-        if not path.is_absolute():
-            path = base / "infra" / "config" / path
-        return path
-    return base / "infra" / "config"
-
-
-def get_gateway_config_file() -> Path:
-    """Get the Gateway-only config.yaml path."""
-    return get_gateway_config_dir() / "config.yaml"
-
-
-def get_gateway_config_template() -> Path:
-    """Return the installed agent-gateway config template."""
-    try:
-        import agent_gateway
-    except ImportError as exc:
-        raise RuntimeError(
-            "agent-gateway is not installed; cannot initialize the Gateway config"
-        ) from exc
-    template = Path(agent_gateway.__file__).resolve().parent / "resources" / "config.yaml"
-    if not template.is_file():
-        raise RuntimeError(f"agent-gateway config template not found: {template}")
-    return template
-
-
-def get_runtime_state_path(session_id: str | None = None) -> Path:
-    """Per-session runtime_state.yaml path under config dir.
-
-    每个 session 独占一份文件，避免心跳/定时/并发 session 共用单文件互相覆盖
-    channel/mode/model/git 等字段。session_id 为空时回退到 ``default``。
-    """
-    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", (session_id or "").strip())[:128] or "default"
-    return get_config_dir() / "runtime_state" / f"{sid}.yaml"
-
-
-def get_workspace_dir() -> Path:
-    """Get the workspace directory path."""
-    _resolve_paths()
-    return _workspace_dir
-
-
-def get_root_dir() -> Path:
-    """Get the root directory path."""
-    _resolve_paths()
-    return _root_dir
-
-
-def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
-    """Get the agent workspace directory path.
-
-    This is the DeepAgent standard workspace directory under the agent root.
-    It contains standard nodes like skills, memory, todo, messages, etc.
-
-    - 个人版: ``~/.jiuwenswarm/agent/workspace``
-    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/workspace``
-
-    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
-    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / "workspace"``。
-    """
-    if tenant_key is None:
-        try:
-            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-
-            bound = TenantContext.current_agent_workspace_root()
-            if bound is not None:
-                return bound
-        except ImportError:
-            logger.debug(
-                "tenant_context unavailable for workspace bind", exc_info=True
-            )
-    return get_agent_root_dir(tenant_key) / "workspace"
-
-
-def get_default_project_workspace_dir() -> Path:
-    """Get the fallback task workspace used when no project is bound.
-
-    Agent-owned data such as memory, skills, todo, and sessions stays directly
-    under ``get_agent_workspace_dir()``. This directory is only the default cwd
-    / workspace boundary for user task artifacts when no project is selected.
-    """
-    return get_agent_workspace_dir() / "projects"
-
-
-def get_default_project_session_workspace_dir(session_id: str | None = None) -> Path:
-    """Get the no-project task workspace for a single conversation session.
-
-    Layout:
-        <agent-workspace>/projects/<session_id>
-
-    ``session_id`` is used when available so the same conversation keeps a stable
-    workspace. If it is missing during early adapter initialization, the shared
-    projects root is returned so no throwaway session directory is created.
-    """
-    base = get_default_project_workspace_dir()
-    raw_session = str(session_id or "").strip()
-    if not raw_session:
-        base.mkdir(parents=True, exist_ok=True)
-        return base
-    safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_session).strip("._-")
-    if not safe_session:
-        base.mkdir(parents=True, exist_ok=True)
-        return base
-    workspace = base / safe_session
-    workspace.mkdir(parents=True, exist_ok=True)
-    return workspace
-
-
-def get_domain_data_dir() -> Path:
-    """Get the root directory that hosts user-owned business data.
-
-    Sessions, agent workspaces, tenant data and runtime-state snapshots are
-    derived from this root, so it is the parent of :func:`get_agent_root_dir`.
-    Personal edition resolves to the user workspace, enterprise edition to the
-    tenant workspace currently bound in ``TenantContext``.
-    """
-    return get_agent_root_dir().parent
-
-
-def get_agent_root_dir(tenant_key: str | None = None) -> Path:
-    """Get the agent root directory path.
-
-    - 个人版: ``~/.jiuwenswarm/agent/``
-    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/``
-
-    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
-    ``TenantContext`` 绑定路径，再兜底 ``get_multi_tenant_user_workspace_dir()``
-    （个人版即 ``get_user_workspace_dir()``，企业版未绑定则为 default 三元组）。
-    """
-    if tenant_key is None:
-        try:
-            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-
-            bound = TenantContext.current_agent_root()
-            if bound is not None:
-                return bound
-        except ImportError:
-            logger.debug(
-                "tenant_context unavailable for agent root bind", exc_info=True
-            )
-    return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
-
-
-def get_package_avatar_cache_dir() -> Path:
-    """Return the tenant-scoped cache for HTTP-served package avatars."""
-    return get_agent_workspace_dir() / ".cache" / "package-avatars"
-
-
-def get_agent_home_dir() -> Path:
-    return get_agent_root_dir() / "home"
-
-
-def get_agent_memory_dir() -> Path:
-    """Get the agent memory directory path.
-
-    Uses DeepAgent standard workspace location for unified workspace.
-
-    Returns:
-        Path to memory directory: ~/.jiuwenswarm/agent/workspace/memory
-    """
-    return get_agent_workspace_dir() / "memory"
-
-
-def get_agent_skills_dir() -> Path:
-    """Get the agent skills directory path.
-
-    Uses DeepAgent standard workspace location for unified workspace.
-
-    Returns:
-        Path to skills directory: ~/.jiuwenswarm/agent/workspace/skills
-    """
-    return get_agent_workspace_dir() / "skills"
-
-
-# Project-level Skill roots, relative to the project directory, in precedence
-# order. ``.agents/skills`` is the tool-neutral location, ``.claude/skills`` the
-# Claude Code one; both are scanned so a project set up for either tool works.
-PROJECT_SKILL_DIR_NAMES: tuple[tuple[str, str], ...] = (
-    (".agents", "skills"),
-    (".claude", "skills"),
-)
-
-
-def get_project_skills_dirs(project_dir: str | os.PathLike[str] | None) -> list[str]:
-    """Return the project-level Skill roots under *project_dir*.
-
-    The roots are returned whether or not they exist yet: the Skill rail skips
-    a missing root on every scan, so a directory created mid-session is picked
-    up by the next refresh without rebuilding the rail.
-
-    Args:
-        project_dir: The project directory selected from the frontend, or None.
-
-    Returns:
-        ``<project>/.agents/skills`` and ``<project>/.claude/skills`` as
-        absolute path strings, or an empty list when no project is set.
-    """
-    raw = str(project_dir or "").strip()
-    if not raw:
-        return []
-    root = Path(raw).expanduser().resolve(strict=False)
-    return [str(root.joinpath(*parts)) for parts in PROJECT_SKILL_DIR_NAMES]
-
-
-# Last directory handed to openJiuWen's ``configure_global_skills_dir``. Kept so
-# the override is applied once instead of on every call, while a changed user
-# home (tests, named instances) still re-pins the library.
 _openjiuwen_skill_library: Path | None = None
 
 
@@ -2233,7 +2099,71 @@ def _is_directory_link(path: Path) -> bool:
     return bool(file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def _library_skill_names(library: Path) -> set[str]:
+def _is_link_stat(info: os.stat_result) -> bool:
+    """Recognize links without following them, including Windows junctions."""
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _safe_team_migration_path(path: Path, teams_home: Path, *, strict: bool) -> bool:
+    """Reject linked Team roots, workspaces and documents before traversing them."""
+    try:
+        root = teams_home.absolute()
+        relative = path.absolute().relative_to(root)
+        if ".." in relative.parts:
+            raise ValueError(f"Team migration path leaves its home: {path}")
+        current = root
+        for part in (None, *relative.parts):
+            if part is not None:
+                current /= part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                # A missing tail is safe to create; no descendant can exist yet.
+                return True
+            if _is_link_stat(info):
+                raise ValueError(f"linked Team migration path is not supported: {current}")
+        if not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError(f"Team migration path leaves its home: {path}")
+        return True
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise
+        logger.warning("[SkillViewMigration] kept unsafe path %s: %s", path, exc)
+        return False
+
+
+def _skill_tree_snapshot(root: Path) -> dict[str, tuple[str, str]] | None:
+    """Fingerprint a complete ordinary tree, refusing links and special files."""
+    info = root.lstat()
+    if _is_link_stat(info) or not stat.S_ISDIR(info.st_mode):
+        return None
+    result: dict[str, tuple[str, str]] = {}
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for child in directory.iterdir():
+            child_info = child.lstat()
+            if _is_link_stat(child_info):
+                return None
+            relative = child.relative_to(root).as_posix()
+            if stat.S_ISDIR(child_info.st_mode):
+                result[relative] = ("directory", "")
+                pending.append(child)
+            elif stat.S_ISREG(child_info.st_mode):
+                digest = hashlib.sha256()
+                with child.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                result[relative] = ("file", digest.hexdigest())
+            else:
+                return None
+    return result
+
+
+def _library_skill_names(library: Path, *, strict: bool = False) -> set[str]:
     """Return the names of every valid Skill directory in the shared library.
 
     Args:
@@ -2245,7 +2175,11 @@ def _library_skill_names(library: Path) -> set[str]:
     names: set[str] = set()
     try:
         entries = list(library.iterdir())
+    except FileNotFoundError:
+        return names
     except OSError:
+        if strict:
+            raise
         return names
     for entry in entries:
         if entry.is_dir() and (entry / "SKILL.md").is_file():
@@ -2253,7 +2187,7 @@ def _library_skill_names(library: Path) -> set[str]:
     return names
 
 
-def _is_library_replica(entry: Path, library: Path) -> bool:
+def _is_library_replica(entry: Path, library: Path, *, strict: bool = False) -> bool:
     """Return whether a real directory is an untouched copy of a library Skill.
 
     Sandboxed runtimes (e.g. the HarmonyOS app sandbox) forbid ``symlink(2)``
@@ -2267,21 +2201,24 @@ def _is_library_replica(entry: Path, library: Path) -> bool:
         library: The single Skill library directory.
 
     Returns:
-        True when the library holds a Skill of the same name and the same
-        ``SKILL.md`` bytes, meaning nothing would be lost by removing the copy.
+        True only when every file and directory matches the library copy.
+        Links and special files are retained without traversing their targets.
     """
     source = library / entry.name
-    entry_md = entry / "SKILL.md"
-    source_md = source / "SKILL.md"
-    if not entry_md.is_file() or not source_md.is_file():
-        return False
     try:
-        return entry_md.read_bytes() == source_md.read_bytes()
+        source_tree = _skill_tree_snapshot(source)
+        if source_tree is None or source_tree.get("SKILL.md", (None,))[0] != "file":
+            return False
+        return _skill_tree_snapshot(entry) == source_tree
+    except FileNotFoundError:
+        return False
     except OSError:
+        if strict:
+            raise
         return False
 
 
-def _read_skill_view_names(view_dir: Path) -> set[str]:
+def _read_skill_view_names(view_dir: Path, *, strict: bool = False) -> set[str]:
     """Return the Skill names a legacy view directory exposed.
 
     The scan reports every directory-shaped entry, including one a user dropped
@@ -2300,6 +2237,8 @@ def _read_skill_view_names(view_dir: Path) -> set[str]:
     try:
         entries = list(view_dir.iterdir())
     except OSError:
+        if strict:
+            raise
         return names
     for entry in entries:
         if entry.name.startswith(".") or entry.name.startswith("_"):
@@ -2309,7 +2248,7 @@ def _read_skill_view_names(view_dir: Path) -> set[str]:
     return names
 
 
-def _remove_skill_view_entry(entry: Path, library: Path) -> bool:
+def _remove_skill_view_entry(entry: Path, library: Path, *, strict: bool = False) -> bool:
     """Remove one legacy view entry, never a real directory the user owns.
 
     Only three shapes are removable: a POSIX symlink (``unlink``), a Windows
@@ -2327,22 +2266,26 @@ def _remove_skill_view_entry(entry: Path, library: Path) -> bool:
     """
     try:
         if entry.is_symlink():
-            entry.unlink()
-            return True
+            if entry.is_dir():
+                entry.unlink()
+                return True
+            return False
         if _is_directory_link(entry):
             # Junction: rmdir detaches the link and leaves the target intact.
             os.rmdir(entry)
             return True
-        if entry.is_file():
+        if entry.is_file() and entry.name == ".workspace" and entry.stat().st_size == 0:
             entry.unlink()
             return True
-        if entry.is_dir() and _is_library_replica(entry, library):
+        if entry.is_dir() and _is_library_replica(entry, library, strict=strict):
             shutil.rmtree(entry)
             return True
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to remove legacy view entry %s: %s", entry, exc)
         return False
-    logger.info("[SkillViewMigration] kept user-owned directory: %s", entry)
+    logger.info("[SkillViewMigration] kept user-owned entry: %s", entry)
     return False
 
 
@@ -2352,7 +2295,9 @@ def _seed_visibility_from_view(
     entity_id: str,
     view_names: set[str],
     library_names: set[str],
-) -> None:
+    *,
+    strict: bool = False,
+) -> bool:
     """Seed a workspace visibility document from its legacy view directory.
 
     The seed is written at ``AUTHORITY_MIGRATION``, which ranks above the
@@ -2382,6 +2327,9 @@ def _seed_visibility_from_view(
         entity_id: Member name or team name.
         view_names: Skill names the legacy view exposed.
         library_names: Skill names currently in the shared library.
+
+    Returns:
+        Whether the visibility seed completed safely; failed seeds retain views.
     """
     from openjiuwen.agent_teams.skill.visibility import AUTHORITY_MIGRATION, bootstrap_skill_visibility
 
@@ -2389,6 +2337,16 @@ def _seed_visibility_from_view(
     unrestricted = not granted or granted >= library_names
     allow: list[str] = [] if unrestricted else sorted(granted)
     try:
+        # SDK reads intentionally degrade unreadable/corrupt declarations to an
+        # unrestricted document. Migration must not turn that fallback into a
+        # successful authorization rewrite and delete its only legacy evidence.
+        try:
+            text = metadata_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            pass
+        else:
+            if not isinstance(json.loads(text), dict):
+                raise ValueError(f"visibility declaration is not a JSON object: {metadata_path}")
         bootstrap_skill_visibility(
             metadata_path,
             scope=scope,
@@ -2397,11 +2355,15 @@ def _seed_visibility_from_view(
             bootstrapped_from="migration:symlinks",
             authority=AUTHORITY_MIGRATION,
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to seed %s: %s", metadata_path, exc)
+        return False
+    return True
 
 
-def _remove_empty_skill_view(view_dir: Path, library: Path) -> None:
+def _remove_empty_skill_view(view_dir: Path, library: Path, *, strict: bool = False) -> None:
     """Drop a ``skills/`` directory that exposes no Skill.
 
     Older workspace schemas materialized an empty ``skills/`` directory in every
@@ -2418,14 +2380,18 @@ def _remove_empty_skill_view(view_dir: Path, library: Path) -> None:
     try:
         entries = list(view_dir.iterdir())
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to scan %s: %s", view_dir, exc)
         return
     for entry in entries:
-        if not _remove_skill_view_entry(entry, library):
+        if not _remove_skill_view_entry(entry, library, strict=strict):
             return
     try:
         view_dir.rmdir()
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to remove empty view dir %s: %s", view_dir, exc)
 
 
@@ -2437,6 +2403,8 @@ def _migrate_one_skill_view(
     entity_id: str,
     library: Path,
     library_names: set[str],
+    teams_home: Path,
+    strict: bool = False,
 ) -> int:
     """Migrate one legacy view directory into visibility metadata and drop it.
 
@@ -2461,29 +2429,40 @@ def _migrate_one_skill_view(
     Returns:
         1 when the workspace still carried a legacy view directory, 0 otherwise.
     """
+    if not _safe_team_migration_path(view_dir, teams_home, strict=strict):
+        return 0
+    if not _safe_team_migration_path(metadata_path, teams_home, strict=strict):
+        return 0
     if not view_dir.is_dir():
         return 0
 
-    view_names = _read_skill_view_names(view_dir)
+    view_names = _read_skill_view_names(view_dir, strict=strict)
     if not view_names:
-        _remove_empty_skill_view(view_dir, library)
+        _remove_empty_skill_view(view_dir, library, strict=strict)
         return 0
 
-    _seed_visibility_from_view(metadata_path, scope, entity_id, view_names, library_names)
+    if not _seed_visibility_from_view(
+        metadata_path, scope, entity_id, view_names, library_names, strict=strict,
+    ):
+        return 0
 
     kept = 0
     try:
         entries = list(view_dir.iterdir())
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to scan %s: %s", view_dir, exc)
         return 1
     for entry in entries:
-        if not _remove_skill_view_entry(entry, library):
+        if not _remove_skill_view_entry(entry, library, strict=strict):
             kept += 1
     if kept == 0:
         try:
             view_dir.rmdir()
         except OSError as exc:
+            if strict:
+                raise
             logger.warning("[SkillViewMigration] failed to remove empty view dir %s: %s", view_dir, exc)
     logger.info(
         "[SkillViewMigration] migrated %s view: names=%d kept=%d -> %s",
@@ -2495,7 +2474,7 @@ def _migrate_one_skill_view(
     return 1
 
 
-def migrate_team_skill_views(library_dir: Path | None = None) -> int:
+def migrate_team_skill_views(library_dir: Path | None = None, *, strict: bool = False) -> int:
     """Convert legacy per-workspace Skill view directories into visibility metadata.
 
     Teams used to materialize a ``skills/`` directory inside every team and
@@ -2519,6 +2498,8 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
     Args:
         library_dir: The single Skill library. Defaults to
             :func:`get_agent_skills_dir`.
+        strict: Propagate migration failures to a caller that caches success.
+            A failed visibility write never proceeds to delete its legacy view.
 
     Returns:
         Number of workspaces that still carried a legacy view directory.
@@ -2532,18 +2513,27 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
         )
         from openjiuwen.agent_teams.skill.visibility import SCOPE_MEMBER, SCOPE_TEAM
     except ImportError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] openjiuwen skill visibility unavailable: %s", exc)
         return 0
 
     teams_home = get_agent_teams_home()
+    if not _safe_team_migration_path(teams_home, teams_home, strict=strict):
+        return 0
     if not teams_home.is_dir():
         return 0
 
-    library_names = _library_skill_names(library)
+    library_names = _library_skill_names(library, strict=strict)
     migrated = 0
     try:
-        team_dirs = sorted(entry for entry in teams_home.iterdir() if entry.is_dir())
+        team_dirs = sorted(
+            entry for entry in teams_home.iterdir()
+            if _safe_team_migration_path(entry, teams_home, strict=strict) and entry.is_dir()
+        )
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to scan %s: %s", teams_home, exc)
         return 0
 
@@ -2556,13 +2546,22 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
             entity_id=team_name,
             library=library,
             library_names=library_names,
+            teams_home=teams_home,
+            strict=strict,
         )
         workspaces_root = team_dir / "workspaces"
+        if not _safe_team_migration_path(workspaces_root, teams_home, strict=strict):
+            continue
         if not workspaces_root.is_dir():
             continue
         try:
-            member_dirs = sorted(entry for entry in workspaces_root.iterdir() if entry.is_dir())
+            member_dirs = sorted(
+                entry for entry in workspaces_root.iterdir()
+                if _safe_team_migration_path(entry, teams_home, strict=strict) and entry.is_dir()
+            )
         except OSError as exc:
+            if strict:
+                raise
             logger.warning("[SkillViewMigration] failed to scan %s: %s", workspaces_root, exc)
             continue
         for member_ws in member_dirs:
@@ -2578,6 +2577,8 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
                 entity_id=member_name,
                 library=library,
                 library_names=library_names,
+                teams_home=teams_home,
+                strict=strict,
             )
     if migrated:
         logger.info("[SkillViewMigration] migrated %d legacy skill views", migrated)
@@ -2593,30 +2594,10 @@ def get_interactions_dir() -> Path:
     return get_agent_workspace_dir() / "interactions"
 
 
-def get_cron_jobs_path() -> Path:
-    """Canonical path for cron_jobs.json, pinned to ``agent/home``.
-
-    Gateway、Agent 工具与存储层统一经本函数取路径，禁止在业务代码中
-    硬编码该路径。历史版本遗留的 ``gateway/cron_jobs.json`` 不再读取。
-    """
-    return get_agent_home_dir() / "cron_jobs.json"
 
 
-def get_heartbeat_jobs_path() -> Path:
-    """Canonical path for heartbeat_jobs.json (new thread-automation heartbeat jobs).
-
-    与 ``get_cron_jobs_path`` 同目录(``agent/home``),禁止在业务代码中硬编码该路径。
-    """
-    return get_agent_home_dir() / "heartbeat_jobs.json"
 
 
-def get_deepagent_todo_dir() -> Path:
-    """Get the DeepAgent todo directory path.
-
-    Returns:
-        Path to todo directory: ~/.jiuwenswarm/agent/workspace/todo
-    """
-    return get_agent_workspace_dir() / "todo"
 
 
 def get_deepagent_messages_dir() -> Path:
@@ -2664,29 +2645,10 @@ def get_deepagent_identity_md_path() -> Path:
     return get_agent_workspace_dir() / "IDENTITY.md"
 
 
-def get_deepagent_user_md_path() -> Path:
-    """Get the DeepAgent USER.md file path.
-
-    Returns:
-        Path to USER.md: ~/.jiuwenswarm/agent/workspace/USER.md
-    """
-    return get_agent_workspace_dir() / "USER.md"
 
 
-def get_builtin_skills_dir() -> Path:
-    """Get the built-in skills directory from package resources."""
-    package_root = _find_package_root()
-    # 优先检查 workspace/skills 目录（标准布局）
-    primary_path = package_root / "resources" / "agent" / "workspace" / "skills"
-    if primary_path.exists() and primary_path.is_dir():
-        return primary_path
-    # 回退到 skills 目录
-    fallback_path = package_root / "resources" / "agent" / "skills"
-    return fallback_path
 
 
-def get_agent_sessions_dir() -> Path:
-    return get_agent_root_dir() / "sessions"
 
 
 # 当前 git 分支解析（带短 TTL 缓存），用于 /resume 按分支过滤会话。
@@ -2730,35 +2692,12 @@ def resolve_git_branch(project_dir: str | None) -> str:
     return branch
 
 
-_legacy_migration_done: bool = False
 
 
-def _migrate_legacy_checkpoint_and_logs() -> None:
-    """One-time migration: move ~/.jiuwenswarm/.checkpoint and .logs to ~/.jiuwenswarm/agent/."""
-    global _legacy_migration_done
-    if _legacy_migration_done:
-        return
-    _legacy_migration_done = True
-
-    workspace = get_user_workspace_dir()
-    agent_root = workspace / "agent"
-
-    for name in (".checkpoint", ".logs"):
-        legacy = workspace / name
-        new_path = agent_root / name
-        if legacy.exists() and not new_path.exists():
-            agent_root.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(legacy), str(new_path))
 
 
-def get_checkpoint_dir() -> Path:
-    _migrate_legacy_checkpoint_and_logs()
-    return get_agent_root_dir() / ".checkpoint"
 
 
-def get_logs_dir() -> Path:
-    _migrate_legacy_checkpoint_and_logs()
-    return get_agent_root_dir() / ".logs"
 
 
 def append_jsonl_log(
@@ -2774,6 +2713,8 @@ def append_jsonl_log(
     under the file lock so other processes cannot retain a rotated file handle.
     A single oversized record is kept intact and rotated on the next append.
     """
+    import portalocker
+
     line = json.dumps(record, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     with _JSONL_LOG_LOCK, portalocker.Lock(str(path) + ".lock", mode="a", timeout=1):
@@ -2880,8 +2821,6 @@ def get_xy_tmp_dir() -> Path:
     return xy_tmp_dir
 
 
-def get_env_file() -> Path:
-    return get_config_dir() / ".env"
 
 
 def env_url(name: str, default: str) -> str:
@@ -2913,9 +2852,6 @@ def apply_free_search_runtime_defaults() -> None:
     os.environ.setdefault("FREE_SEARCH_BING_ENABLED", "false")
 
 
-def get_config_file() -> Path:
-    """Get the config.yaml file path."""
-    return get_config_dir() / "config.yaml"
 
 
 def is_package_installation() -> bool:
@@ -3710,5 +3646,9 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
     seed_tenant_agent_workspace,
 )
 
-logger = logging.getLogger(__name__)
-setup_logger()
+# Setup reports restore failures itself. Application logs may live behind
+# a Windows junction that the installer process is not permitted to traverse.
+if not is_windows_installer_restore():
+    # Migrate the legacy layout before logging creates any new directories.
+    migrate_profile_data_root_layout()
+    setup_logger()

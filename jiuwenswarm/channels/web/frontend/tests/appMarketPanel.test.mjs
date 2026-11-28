@@ -25,9 +25,14 @@ const { createRoot } = await import('react-dom/client');
 window.requestAnimationFrame = globalThis.requestAnimationFrame;
 window.cancelAnimationFrame = globalThis.cancelAnimationFrame;
 const resources = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url)));
+const zhResources = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url)));
 await i18next
   .use(initReactI18next)
-  .init({ lng: 'en', showSupportNotice: false, resources: { en: { translation: resources } } });
+  .init({
+    lng: 'en',
+    showSupportNotice: false,
+    resources: { en: { translation: resources }, zh: { translation: zhResources } },
+  });
 const { AppMarketPanel } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/index.mjs');
 const { AppMarketPage } = await import('../node_modules/.cache/app-market-panel/components/AppMarketPanel/AppMarketPage.mjs');
 const { webClient } = await import('../node_modules/.cache/app-market-panel/services/webClient.mjs');
@@ -50,6 +55,7 @@ const app = {
   version: '1.2.3',
   description: 'Play five in a row',
   icon_url: '/gomoku.png',
+  entry_path: '/workspace/apps/gomoku/index.html',
 };
 const running = {
   instance_id: 'active',
@@ -60,7 +66,12 @@ const running = {
   created_at: '2026-10-23',
   url: 'http://127.0.0.1:8080/gomoku.html',
 };
-const secondApp = { ...app, app_id: 'second', name: 'Second' };
+const secondApp = {
+  ...app,
+  app_id: 'second',
+  name: 'Second',
+  entry_path: '/workspace/apps/second/index.html',
+};
 const secondInstance = { ...running, app_id: 'second', instance_id: 'second-active', port: 8081,
   url: 'http://127.0.0.1:8081/index.html', web_url: 'http://workswarm-app-second.localhost:8081/index.html' };
 const card = id => document.querySelector(`[data-testid="app-market-card"][data-variant="${id}"]`);
@@ -275,6 +286,186 @@ test('market cards open a detail page and return to the plaza', async () => {
   }
 });
 
+test('market detail refreshes after an install completes and the list reports a new version', async () => {
+  let hubVersion = '1.0.0';
+  const marketItem = () => ({
+    asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [],
+  });
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') return { total: 1, items: [marketItem()] };
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: hubVersion, display_name: 'Listed' };
+    }
+    if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+    if (method === 'app_market.install') return { job_id: 'install-job' };
+    if (method === 'app_market.install_status') return { state: 'done', phase: 'done' };
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.match(detailGrid(), /v1\.0\.0/);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 and the user installs it; the install flow refreshes
+    // the list, so the card label and the detail grid must both show v2.0.0.
+    hubVersion = '2.0.0';
+    await click(find('app-market-install'));
+    await click(find('app-market-install-dir').querySelector('button:last-child'));
+    await tick();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await tick();
+    assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('market detail refreshes when the list reports a new version after tab switches', async () => {
+  let hubVersion = '1.0.0';
+  const marketItem = () => ({
+    asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [],
+  });
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') return { total: 1, items: [marketItem()] };
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: hubVersion, display_name: 'Listed' };
+    }
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.match(detailGrid(), /v1\.0\.0/);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 without any install; a plaza refresh must update the
+    // detail grid too instead of replaying the cached v1 detail.
+    hubVersion = '2.0.0';
+    await click(document.querySelector('button[data-variant="all"]'));
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    assert.match(find('app-market-market-card').textContent, /v2\.0\.0/);
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
+    // An unchanged version must reuse the cache: one extra detail open, no new request.
+    const detailCalls = ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length;
+    await click(find('app-market-detail-back'));
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.market_detail').length, detailCalls);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('market detail refreshes when an install finishes while its detail page is open', async () => {
+  let hubVersion = '1.0.0';
+  const job = deferred();
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [] }] };
+    }
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, version: params.version || hubVersion, display_name: 'Listed' };
+    }
+    if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+    if (method === 'app_market.install') return { job_id: 'install-job' };
+    if (method === 'app_market.install_status') return job.promise;
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-install'));
+    await click(find('app-market-install-dir').querySelector('button:last-child'));
+    await tick();
+    // The user opens the detail page while the install job is still running.
+    await click(find('app-market-market-card'));
+    await tick();
+    const detailPage = () => find('app-market-detail-page');
+    const detailGrid = () => find('app-market-detail-grid').textContent;
+    assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
+    // Assert on the detail grid only: the EntityHeader tags come from the list
+    // item, so a whole-page match would pass even with a stale cached detail.
+    assert.match(detailGrid(), /v1\.0\.0/);
+    hubVersion = '2.0.0';
+    job.resolve({ state: 'done', phase: 'done' });
+    for (let i = 0; i < 5; i += 1) await tick();
+    // Dropping the stale cache must not leave the open page on the placeholder.
+    assert.doesNotMatch(detailPage().textContent, /Loading\.\.\./);
+    assert.match(detailGrid(), /v2\.0\.0/);
+    assert.doesNotMatch(detailGrid(), /v1\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('a late stale detail response cannot overwrite the refreshed version', async () => {
+  let hubVersion = '1.0.0';
+  const firstDetail = deferred();
+  let firstDetailPending = true;
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return { total: 1, items: [{ asset_id: 'listed', display_name: 'Listed', public_latest_version: hubVersion, tags: [] }] };
+    }
+    if (method === 'app_market.market_detail') {
+      // The first (v1) request hangs; every later request answers immediately
+      // with the version the caller asked for.
+      if (firstDetailPending) return firstDetail.promise;
+      return { asset_id: params.asset_id, version: params.version || hubVersion, display_name: 'Listed' };
+    }
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    // The first detail request is still hanging, so the page shows loading.
+    assert.match(find('app-market-detail-page').textContent, /Loading\.\.\./);
+    await click(find('app-market-detail-back'));
+    // The Hub publishes v2 and the plaza refreshes; the pinned v1 entry no
+    // longer matches the list version, so reopening re-requests v2.
+    hubVersion = '2.0.0';
+    firstDetailPending = false;
+    await click(document.querySelector('button[data-variant="all"]'));
+    await tick();
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(find('app-market-market-card'));
+    await tick();
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+    // The v1 response arrives after the v2 cache entry is already in place;
+    // it must not put v1 back on the screen.
+    firstDetail.resolve({ asset_id: 'listed', version: '1.0.0', display_name: 'Listed' });
+    for (let i = 0; i < 5; i += 1) await tick();
+    assert.doesNotMatch(find('app-market-detail-page').textContent, /v1\.0\.0/);
+    assert.match(find('app-market-detail-page').textContent, /v2\.0\.0/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('market detail returns to the plaza when a pending refresh removes its app', async () => {
   const refreshed = deferred();
   const item = { asset_id: 'listed', display_name: 'Listed', public_latest_version: '1.0.0', tags: [] };
@@ -295,7 +486,7 @@ test('market detail returns to the plaza when a pending refresh removes its app'
     assert.ok(find('app-market-detail-page'));
     await act(async () => refreshed.resolve({ total: 0, items: [] }));
     assert.equal(find('app-market-detail-page'), null);
-    assert.ok(find('categoryTabs'));
+    assert.ok(find('app-market-tabs'));
     assert.ok(find('app-market-list').textContent.includes(i18next.t('appMarket.noMarketApps')));
   } finally {
     await ctx.close();
@@ -348,11 +539,17 @@ test('installed app details load AI role cards and show the session policy', asy
     ]);
     const section = find('app-market-ai-roles');
     assert.match(section.textContent, /AI Roles.*Team session.*New team for each game\./s);
+    const group = section.querySelector('[data-testid="app-market-ai-role-group"]');
+    assert.equal(group.getAttribute('data-mode'), 'team');
+    assert.equal(
+      section.querySelector('.app-market-ai-role-grid').style.getPropertyValue('--app-market-ai-role-columns'),
+      '2',
+    );
     const cards = section.querySelectorAll('[data-testid="app-market-ai-role-card"]');
     assert.equal(cards.length, 2);
-    assert.match(cards[0].textContent, /Mayor.*Leader.*Leads the council/s);
+    assert.match(cards[0].textContent, /Mayor.*Leader.*Team.*Leads the council/s);
     assert.ok(cards[0].querySelector('img[src^="data:image/gif"]'));
-    assert.match(cards[1].textContent, /Doctor.*Advises the council/s);
+    assert.match(cards[1].textContent, /Doctor.*Team.*Advises the council/s);
     assert.equal(cards[1].querySelector('img'), null);
     await click(find('app-market-detail-back'));
     assert.equal(find('app-market-ai-roles'), null);
@@ -361,30 +558,122 @@ test('installed app details load AI role cards and show the session policy', asy
   }
 });
 
-test('uninstall leaves app details and reports incomplete local cleanup', async () => {
-  const directory = '/workspace/apps/gomoku';
+test('independent AI roles share a grid with notes in their cards while team roles stay grouped', async () => {
+  const teamRoles = ['mayor', 'doctor', 'fisherman', 'pilot', 'judge', 'nurse'].map((id, index) => ({
+    id, name: `Role ${id}`, description: `Duty ${index}`,
+  }));
   const ctx = await mount(method => {
+    if (method !== 'app_market.ai_roles') return response(method);
+    return { session_groups: [
+      { id: 'council', mode: 'team', leader: 'mayor', session_description: 'Shared team.', roles: teamRoles },
+      { id: 'assistant', mode: 'agent', session_description: 'Single role.', roles: [
+        { id: 'helper', name: 'Helper', description: 'Answers questions' },
+      ] },
+      { id: 'guide', mode: 'agent', session_description: 'New session each visit.', roles: [
+        { id: 'guide', name: 'Guide', description: 'Shows the way' },
+      ] },
+    ] };
+  });
+  try {
+    await click(card('gomoku'));
+    const groups = document.querySelectorAll('[data-testid="app-market-ai-role-group"]');
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].getAttribute('data-mode'), 'team');
+    const teamGrid = groups[0].querySelector('[data-testid="app-market-ai-team-grid"]');
+    assert.equal(teamGrid.style.getPropertyValue('--app-market-ai-role-columns'), '4');
+    const teamCards = groups[0].querySelectorAll('[data-testid="app-market-ai-role-card"]');
+    assert.equal(teamCards.length, 6);
+    for (const item of teamCards) assert.match(item.textContent, /Team/);
+    assert.match(teamCards[0].textContent, /Leader/);
+    const agentGrid = find('app-market-ai-agent-grid');
+    assert.equal(agentGrid.style.getPropertyValue('--app-market-ai-role-columns'), '2');
+    assert.doesNotMatch(agentGrid.textContent, /Team|Leader|Single-role session/);
+    const agentCards = agentGrid.querySelectorAll('[data-testid="app-market-ai-role-card"]');
+    assert.equal(agentCards.length, 2);
+    assert.match(agentCards[0].textContent, /Helper.*Answers questions.*Single role\./s);
+    assert.match(agentCards[1].textContent, /Guide.*Shows the way.*New session each visit\./s);
+  } finally {
+    await ctx.close();
+  }
+});
+
+for (const cleanupCode of ['filesystem_error', 'filesystem_busy']) {
+  test(`uninstall removes the card and reports ${cleanupCode}`, async () => {
+    const directory = '/workspace/apps/gomoku';
+    const error = 'Could not remove application directory';
+    const archive = cleanupCode === 'filesystem_busy' ? '/workspace/apps/.app-archive/gomoku-abc123' : '';
+    const ctx = await mount(method => {
+      if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
+      if (method === 'app_market.uninstall') {
+        return { cleanup_code: cleanupCode, cleanup_warning: error, work_dir: directory, preserved_dir: archive };
+      }
+      return response(method);
+    });
+    try {
+      await click(card('gomoku'));
+      await click(find('app-market-more'));
+      await click(find('app-market-delete'));
+      assert.equal(find('app-market-detail-page'), null);
+      assert.ok(find('app-market-tabs'));
+      assert.equal(card('gomoku'), null);
+      assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
+        app_id: 'gomoku', remove_files: true,
+      });
+      const expectedNotice = archive
+        ? i18next.t('appMarket.cleanupWithArchive', {
+            message: i18next.t('appMarket.cleanupFilesystemBusy', { directory }), directory: archive,
+          })
+        : i18next.t('appMarket.cleanupFailed', { directory, error });
+      assert.equal(actionNotice().textContent, expectedNotice);
+      assert.equal(actionNotice().dataset.variant, 'error');
+      assert.equal(actionNotice().parentElement, find('ui-toast-stack-right'));
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+test('cleaning local files names the directory and reports the archive', async () => {
+  const archived = '/workspace/apps/.app-archive/gomoku-abc123';
+  const ctx = await mount((method) => {
+    if (method === 'app_market.delete') return { deleted: true, preserved_dir: archived };
+    return response(method);
+  });
+  try {
+    await menuClick('app-market-delete');
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
+      app_id: 'gomoku', remove_files: true, confirm_work_dir: '/workspace/apps/gomoku',
+    });
+    assert.equal(
+      actionNotice().textContent,
+      i18next.t('appMarket.deleteCleanArchived', { directory: archived }),
+    );
+    assert.equal(actionNotice().dataset.variant, 'success');
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('known cleanup refusals use localized explanations', async () => {
+  const directory = '/workspace/apps/gomoku';
+  const ctx = await mount((method) => {
     if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
     if (method === 'app_market.uninstall') {
-      return { cleanup_warning: 'Application files are locked', work_dir: directory };
+      return {
+        cleanup_warning: 'The application directory is still used by another application',
+        cleanup_code: 'directory_in_use',
+        work_dir: directory,
+      };
     }
     return response(method);
   });
   try {
-    await click(card('gomoku'));
-    await click(find('app-market-more'));
-    await click(find('app-market-delete'));
-    assert.equal(find('app-market-detail-page'), null);
-    assert.ok(find('categoryTabs'));
-    assert.equal(card('gomoku'), null);
-    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
-      app_id: 'gomoku', remove_files: true,
-    });
+    await menuClick('app-market-delete');
     assert.equal(
       actionNotice().textContent,
-      i18next.t('appMarket.uninstallCleanupWarning', { directory }),
+      i18next.t('appMarket.cleanupKeptInUse', { directory }),
     );
-    assert.equal(actionNotice().dataset.variant, 'warning');
+    assert.equal(actionNotice().dataset.variant, 'error');
   } finally {
     await ctx.close();
   }
@@ -406,7 +695,7 @@ test('reinstall from installed app details returns to the plaza', async () => {
     await click(find('app-market-reinstall'));
     assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, { app_id: 'gomoku' });
     assert.equal(find('app-market-detail-page'), null);
-    assert.ok(find('categoryTabs'));
+    assert.ok(find('app-market-tabs'));
     assert.ok(find('app-market-market-card'));
     assert.equal(actionNotice().textContent, i18next.t('appMarket.reinstallHint'));
   } finally {
@@ -435,7 +724,7 @@ test('updating from installed app details shows progress and allows cancelling',
     await click(find('app-market-more'));
     await click(find('app-market-update'));
     assert.ok(find('app-market-detail-page'));
-    assert.equal(find('categoryTabs'), null);
+    assert.equal(find('app-market-tabs'), null);
     assert.match(find('app-market-install-progress').textContent, /Downloading/);
     await click(find('app-market-install-cancel'));
     assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.install_cancel')?.params, { job_id: 'update-job' });
@@ -449,9 +738,9 @@ test('updating from installed app details shows progress and allows cancelling',
   }
 });
 
-// 应用市场已是侧边栏一级入口（AppMarketPage）：页头 + 市场面板的独立页面，
-// 不再经由扩展页 tab 承载（MarketplacePage 的 'app' tab 已移除）。
-test('app market page renders a standalone page header above the market panel', async () => {
+// 应用市场已是侧边栏一级入口（AppMarketPage）：列表页保留「应用」页头与副标题，
+// 进入详情或运行中的应用页面时收起页头，避免与内容自带标题重复。
+test('app market page places refresh in the header and search next to the tabs', async () => {
   const previous = webClient.request;
   const previousInterval = globalThis.setInterval;
   globalThis.setInterval = () => 987654;
@@ -462,7 +751,13 @@ test('app market page renders a standalone page header above the market panel', 
     const title = find('app-market-page-title');
     assert.ok(title, 'page title is rendered');
     assert.equal(title.textContent, i18next.t('appMarket.title'));
-    assert.ok(find('app-market-panel'), 'market panel is embedded below the header');
+    assert.equal(find('app-market-page-subtitle').textContent, i18next.t('appMarket.subtitle'));
+    const header = find('common-page-header');
+    const toolbar = find('app-market-toolbar');
+    const actions = find('app-market-toolbar-actions');
+    assert.ok(header.contains(find('app-market-refresh')));
+    assert.deepEqual([...toolbar.children], [find('app-market-tabs'), actions]);
+    assert.ok(actions.contains(find('app-market-search-input')));
     await tick();
     assert.ok(card('gomoku'), 'app cards render inside the standalone page');
   } finally {
@@ -482,16 +777,47 @@ test('opening app details hides page chrome and keeps run and more actions', asy
     await act(async () => root.render(React.createElement(AppMarketPage)));
     await tick();
     assert.ok(find('app-market-page-title'));
+    assert.ok(find('app-market-tabs'));
     await click(card('gomoku'));
     await tick();
     assert.equal(find('app-market-page-title'), null);
-    assert.equal(find('categoryTabs'), null);
+    assert.equal(find('app-market-page-subtitle'), null);
+    assert.equal(find('app-market-tabs'), null);
     assert.equal(find('app-market-resource-actions'), null);
     assert.ok(find('app-market-detail-page'));
     assert.ok(find('app-market-toggle'));
     assert.ok(find('app-market-more'));
     await click(find('app-market-detail-back'));
     await tick();
+    assert.ok(find('app-market-page-title'));
+    assert.ok(find('app-market-tabs'));
+  } finally {
+    await act(async () => root.unmount());
+    webClient.request = previous;
+    globalThis.setInterval = previousInterval;
+  }
+});
+
+test('opening the running app page hides the page title until My Apps is selected', async () => {
+  delete window.jiuwenDesktop;
+  const previous = webClient.request;
+  const previousInterval = globalThis.setInterval;
+  globalThis.setInterval = () => 987654;
+  webClient.request = async (method) => response(method, [running]);
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(AppMarketPage)));
+    await tick();
+    await tick();
+    assert.ok(find('app-market-page-title'));
+    await click(card('gomoku'));
+    await tick();
+    assert.ok(find('app-market-browser-pane'));
+    assert.equal(find('app-market-page-title'), null);
+    assert.equal(find('app-market-page-subtitle'), null);
+    await click(find('app-market-tab-my-apps'));
+    await tick();
+    assert.equal(find('app-market-browser-pane'), null);
     assert.ok(find('app-market-page-title'));
   } finally {
     await act(async () => root.unmount());
@@ -636,7 +962,9 @@ for (const action of ['stop', 'delete']) {
       const requests = ctx.calls.filter(({ method }) => ['app_market.stop', 'app_market.delete'].includes(method));
       assert.deepEqual(requests, [{
         method: `app_market.${action}`,
-        params: action === 'stop' ? { instance_id: 'second-active' } : { app_id: 'second', remove_files: true },
+        params: action === 'stop' ? { instance_id: 'second-active' } : {
+          app_id: 'second', remove_files: true, confirm_work_dir: '/workspace/apps/second',
+        },
       }]);
       assert.equal(instances.some(item => item.instance_id === running.instance_id), true);
     } finally {
@@ -650,7 +978,7 @@ test('application cards reuse market layout and display metadata with an accessi
   const ctx = await mount((method) => response(method));
   try {
     assert.ok(document.querySelector('.card-grid-auto .page-card'));
-    assert.ok(document.querySelector('.categoryTabs'));
+    assert.ok(find('app-market-tabs'));
     assert.equal(document.querySelector('h2'), null);
     assert.match(document.body.textContent, /Gomoku/);
     assert.match(document.body.textContent, /v1.2.3/);
@@ -673,6 +1001,80 @@ test('App Plaza appears before My Apps, which opens by default', async () => {
     assert.deepEqual(tabs, [['app-market-tab-plaza', 'App Plaza'], ['app-market-tab-my-apps', 'My Apps']]);
     assert.ok(card('gomoku'));
     assert.equal(ctx.calls.some(({ method }) => method === 'app_market.market_list'), false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+const typeSearch = async (value) => {
+  const input = find('app-market-search-input');
+  assert.ok(input, 'search input is rendered');
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, value);
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+};
+const wait = async (ms) => {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+};
+
+test('My Apps shows both sources and searches both by name and description', async () => {
+  const hubApp = { ...app, source: 'hub', description: 'Play five in a row' };
+  const localApp = { ...secondApp, source: 'local', description: 'A local sandbox app' };
+  const ctx = await mount((method) => {
+    if (method === 'app_market.list') return { apps: [hubApp, localApp] };
+    return response(method);
+  });
+  try {
+    assert.ok(card('gomoku'));
+    assert.ok(card('second'));
+    assert.equal(find('app-market-source-filter'), null);
+    await typeSearch('five in a row');
+    assert.ok(card('gomoku'));
+    assert.equal(card('second'), null);
+    await typeSearch('sec');
+    assert.equal(card('gomoku'), null);
+    assert.ok(card('second'));
+    await typeSearch('nothing matches');
+    assert.match(find('app-market-list').textContent, new RegExp(i18next.t('common.noMatches')));
+    await click(find('app-market-search-clear'));
+    assert.ok(card('gomoku'));
+    assert.ok(card('second'));
+    assert.equal(ctx.calls.some(({ method }) => method === 'app_market.market_list'), false,
+      'local filtering never queries the plaza');
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('App Plaza search sends one debounced query and returns to the first page', async () => {
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      const id = `app-${params.query || 'all'}-${params.page}`;
+      return { total: 51, items: [{ asset_id: id, display_name: id, public_latest_version: '1', tags: [] }] };
+    }
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    await tick();
+    await click(document.querySelector(`button[aria-label="${i18next.t('common.pagination.next')}"]`));
+    await tick();
+    const before = ctx.calls.filter(({ method }) => method === 'app_market.market_list');
+    assert.equal(before.at(-1).params.page, 2);
+
+    await typeSearch('g');
+    await typeSearch('ga');
+    await typeSearch('game');
+    await wait(350);
+
+    const after = ctx.calls.filter(({ method }) => method === 'app_market.market_list');
+    assert.equal(after.length, before.length + 1, 'debounce collapses keystrokes into one request');
+    assert.deepEqual(
+      { query: after.at(-1).params.query, page: after.at(-1).params.page },
+      { query: 'game', page: 1 },
+    );
   } finally {
     await ctx.close();
   }
@@ -1188,10 +1590,10 @@ test('delete keeps app details on cancellation and returns to the list on succes
     await click(find('app-market-delete'));
     assert.equal(ctx.calls.filter(({ method }) => method === 'app_market.delete').length, 1);
     assert.equal(find('app-market-detail-page'), null);
-    assert.ok(find('categoryTabs'));
+    assert.ok(find('app-market-tabs'));
     assert.equal(find('app-market-card'), null);
     assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
-      app_id: 'gomoku', remove_files: true,
+      app_id: 'gomoku', remove_files: true, confirm_work_dir: '/workspace/apps/gomoku',
     });
     const notice = actionNotice();
     assert.equal(notice.textContent, i18next.t('appMarket.deleteCleanSuccess'));
@@ -1488,7 +1890,7 @@ const editEnd = appSource.indexOf('\n    },\n    [', editStart);
 const editCode = appSource.slice(editStart, editEnd) + '}';
 const compiledEdit = (await transform(`export default ${editCode}`, { loader: 'tsx', format: 'cjs' })).code;
 function editHandler(dependencies) {
-  dependencies = { appEditTokensRef: { current: new Map() }, generateUuidV4: randomUUID, ...dependencies };
+  dependencies = { appEditTokensRef: { current: new Map() }, generateUuidV4: randomUUID, isEnterprise: () => false, ...dependencies };
   return new Function(...Object.keys(dependencies), `const module = { exports: {} }; ${compiledEdit}; return module.exports.default;`)(...Object.values(dependencies));
 }
 
@@ -1564,14 +1966,16 @@ for (const desktop of [false, true]) {
       };
       try {
         await render();
-        assert.match(find('app-market-editor-actions').textContent, /CPU 12.0% · RAM 34.0%/);
-        assert.match(find('app-market-resources').textContent, /This computer \(total\)/);
+        // The editor header is a crowded chat header, so it must not mount the
+        // server resource monitor that the market page uses.
+        assert.equal(find('app-market-resources'), null);
+        assert.match(find('app-market-editor-actions').textContent, /Open app preview/);
         await click(find('app-market-editor-open-preview'));
         assert.deepEqual(previews[0], { appId: app.app_id, name: app.name, instanceId: running.instance_id });
         await act(async () => root.unmount());
         await render();
-        assert.match(find('app-market-editor-actions').textContent, /CPU 12.0% · RAM 34.0%/);
-        assert.match(find('app-market-resources').textContent, /This computer \(total\)/);
+        assert.equal(find('app-market-resources'), null);
+        assert.match(find('app-market-editor-actions').textContent, /Open app preview/);
         await click(find('app-market-editor-open-preview'));
         assert.equal(previews.length, 2);
         assert.equal(starts, stopped ? 1 : 0);
@@ -1614,15 +2018,34 @@ test('unbound conversation has no app header action and canceled restore cannot 
 });
 
 const { useChatStore } = await import('../node_modules/.cache/app-market-panel/stores/chatStore.mjs');
-function firstEditHarness(request) {
+function firstEditHarness(request, language = 'en') {
   const sidRef = { current: 'new' };
   const restores = [];
   const requests = { current: new Map() };
+  const reveals = [];
+  const modeChanges = [];
+  const projectLoads = [];
+  const workspace = {
+    workMode: 'code',
+    projects: [{ project_id: 'game-project' }],
+    expandedProjectIds: { 'game-project': false },
+    setWorkMode: async (mode) => {
+      modeChanges.push(mode);
+      workspace.workMode = mode;
+      workspace.expandedProjectIds = {};
+    },
+    toggleProjectExpanded: (id) => {
+      workspace.expandedProjectIds[id] = !workspace.expandedProjectIds[id];
+    },
+    loadProjectSessions: async (id) => projectLoads.push(id),
+  };
   const handler = editHandler({
     pendingAppEditsRef: requests, creatingSessionRef: { current: false }, sessionIdRef: sidRef,
     request, useChatStore, toast: { open: () => {} },
     useSessionStore: { getState: () => ({ getModelSelectionPayload: () => ({}), setAppMarketPreview: () => {} }) },
-    t: (key, params) => `${key}:${params?.entryPath ?? ''}`,
+    t: i18next.getFixedT(language),
+    useWorkspaceStore: { getState: () => workspace },
+    setAppEditSessionToReveal: (id) => reveals.push(id),
     closeSidebarPeek: () => {},
     handleRestoreSession: async (id, mode, session, seedUserMessage, options) => {
       if (!options.canActivate()) return;
@@ -1632,17 +2055,19 @@ function firstEditHarness(request) {
     setHeartbeatPanelOpen: () => {}, setToolPanelHidden: () => {},
     setSingleAgentPanelActiveTab: () => {}, setSingleAgentPanelExpanded: () => {},
   });
-  return { handler, restores, requests };
+  return { handler, restores, requests, reveals, workspace, modeChanges, projectLoads };
 }
 const editTarget = { appId: 'gomoku', name: 'Gomoku', entryPath: '/game/index.html', instanceId: 'active' };
-const editSession = { session_id: 'first-editor', mode: 'agent', message_count: 0 };
+const editSession = {
+  session_id: 'first-editor', mode: 'agent', message_count: 0, project_id: 'game-project', work_mode: 'code',
+};
 
 for (const desktop of [false, true]) {
   test(`${desktop ? 'Electron' : 'Web'} repeated first-edit clicks share one request and keep the source prompt`, async () => {
     useChatStore.getState().removeRuntime(editSession.session_id);
     const pending = deferred();
     let calls = 0;
-    const h = firstEditHarness(() => { calls++; return pending.promise; });
+    const h = firstEditHarness(() => { calls++; return pending.promise; }, desktop ? 'zh' : 'en');
     if (desktop) window.jiuwenDesktop = { isElectron: true, openMarketApp: async () => true, closeMarketApp: async () => true, setMarketAppViewport: async () => true };
     const ctx = await mount(method => method === 'app_market.list'
       ? { apps: [{ ...app, entry_path: editTarget.entryPath }] } : response(method, [running]), { onEdit: h.handler });
@@ -1653,7 +2078,12 @@ for (const desktop of [false, true]) {
       await act(async () => pending.resolve({ session: editSession, created: true }));
       await tick();
       assert.deepEqual(h.restores, [editSession.session_id]);
-      assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, 'appMarket.editPrompt:/game/index.html');
+      const draft = useChatStore.getState().getRuntime(editSession.session_id).inputValue;
+      assert.ok(draft.includes(editTarget.entryPath));
+      assert.match(draft, /workswarm-app-builder/);
+      assert.match(draft, desktop ? /应用开发技能/ : /WorkSwarm built-in capabilities catalog/);
+      assert.equal(h.workspace.expandedProjectIds[editSession.project_id], true);
+      assert.deepEqual(h.reveals, [editSession.session_id]);
       assert.equal(h.requests.current.size, 0);
     } finally { await ctx.close(); useChatStore.getState().removeRuntime(editSession.session_id); delete window.jiuwenDesktop; }
   });
@@ -1672,9 +2102,11 @@ test('canceling first edit preserves its prompt for later bound-session reentry 
   pending.resolve({ session: editSession, created: true });
   await first;
   assert.deepEqual(h.restores, []);
+  assert.equal(h.workspace.expandedProjectIds[editSession.project_id], false);
+  assert.deepEqual(h.reveals, []);
   await h.handler(editTarget, () => true);
   assert.deepEqual(h.restores, [editSession.session_id]);
-  assert.equal(useChatStore.getState().getRuntime(editSession.session_id).inputValue, 'appMarket.editPrompt:/game/index.html');
+  assert.match(useChatStore.getState().getRuntime(editSession.session_id).inputValue, /\/game\/index\.html/);
   assert.equal(useChatStore.getState().getRuntime('unrelated-draft').inputValue, 'keep my new task');
   useChatStore.getState().removeRuntime(editSession.session_id);
   useChatStore.getState().removeRuntime('unrelated-draft');
@@ -1705,6 +2137,7 @@ test('a failed coalesced edit releases its request so retry can succeed', async 
     tokens.push(params.edit_token);
     return tokens.length === 1 ? failure.promise : Promise.resolve({ session: editSession, created: true });
   });
+  h.workspace.workMode = 'work';
   const first = h.handler(editTarget, () => false);
   const second = h.handler(editTarget, () => true);
   failure.reject(new Error('offline'));
@@ -1716,8 +2149,12 @@ test('a failed coalesced edit releases its request so retry can succeed', async 
   assert.ok(tokens[0]);
   assert.equal(tokens[1], tokens[0]);
   assert.deepEqual(h.restores, [editSession.session_id]);
+  assert.deepEqual(h.modeChanges, ['code']);
+  assert.equal(h.workspace.expandedProjectIds[editSession.project_id], true);
   await h.handler(editTarget, () => true);
   assert.notEqual(tokens[2], tokens[0]);
+  assert.equal(h.workspace.expandedProjectIds[editSession.project_id], true);
+  assert.deepEqual(h.projectLoads, [editSession.project_id]);
   useChatStore.getState().removeRuntime(editSession.session_id);
 });
 
@@ -1898,7 +2335,8 @@ test('system CPU and memory colors update independently at boundaries without tr
   }
 });
 
-test('switching to the market tab collapses the running app pane without stopping it', async () => {
+test('My Apps and the market tab collapse the running app pane without stopping it', async () => {
+  delete window.jiuwenDesktop;
   const ctx = await mount(method => {
     if (method === 'app_market.market_list') return { page: 1, page_size: 50, total: 0, items: [] };
     return response(method, [running]);
@@ -1906,9 +2344,18 @@ test('switching to the market tab collapses the running app pane without stoppin
   try {
     await menuClick('app-market-open');
     assert.ok(find('app-market-browser-pane'));
-    await click(document.querySelector('[data-variant="all"]'));
+    const frame = find('app-market-web-view');
+    // Re-selecting the active tab goes home and hides the page; it is not stopped.
+    await click(find('app-market-tab-my-apps'));
+    await tick();
+    assert.equal(find('app-market-browser-pane'), null);
+    assert.equal(frame.isConnected, true);
+    assert.equal(frame.style.visibility, 'hidden');
+    assert.ok(card('gomoku'));
+
+    await menuClick('app-market-open');
     assert.ok(find('app-market-browser-pane'));
-    await click(document.querySelector('[data-variant="market"]'));
+    await click(find('app-market-tab-plaza'));
     assert.equal(find('app-market-browser-pane'), null);
     assert.equal(ctx.calls.some(call => call.method === 'app_market.stop'), false);
   } finally {

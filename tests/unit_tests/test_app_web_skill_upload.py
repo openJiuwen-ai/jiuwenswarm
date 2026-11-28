@@ -280,6 +280,7 @@ def test_upload_without_file_returns_actionable_error(upload_server):
     status, payload = _post_upload(port, None)
     assert status == 400
     assert payload["code"] == "SKILL_INVALID_PACKAGE"
+    assert payload["detail_key"] == "skills.errors.uploadMissingFileField"
     assert "path" not in payload
     assert list(upload_root.iterdir()) == []
 
@@ -290,6 +291,7 @@ def test_upload_rejects_filename_paths(upload_server, filename):
     status, payload = _post_upload(port, filename, b"uploaded content")
     assert status == 400
     assert payload["code"] == "SKILL_UNSAFE_PATH"
+    assert payload["detail_key"] == "skills.errors.uploadUnsafePath"
     assert "path" not in payload
     assert list(upload_root.iterdir()) == []
 

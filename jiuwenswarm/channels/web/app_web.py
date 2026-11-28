@@ -8,6 +8,7 @@ Supports ``--dotenv <path>`` for multi-instance isolation.
 from __future__ import annotations
 
 import argparse
+import base64
 import codecs
 import errno
 import hmac
@@ -102,8 +103,8 @@ def _get_user_workspace_dir() -> Path:
     return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
 
 
-#: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
-#: the page may load before the Gateway is up.
+#: Startup gate hint: splash candidates and appearance providers (Gateway S_09 section 4);
+#: answered locally because the page may load before the Gateway is up.
 SPLASH_HINT_PATH = "/extension-splash/hint"
 
 
@@ -122,8 +123,25 @@ def _splash_candidates() -> bool:
         return False
 
 
+def _appearance_providers() -> bool:
+    """Whether an installed Gateway package declares ``application.appearance`` (Gateway S_09 section 4).
+
+    The startup gate waits for these packages to apply their appearance; like the splash hint this
+    reads manifests only, and the browser still asks the Gateway once connected.
+    """
+    try:
+        from agent_gateway.extensions_v2.splash_hint import installed_appearance_providers
+
+        return bool(installed_appearance_providers())
+    except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
+        logging.getLogger(__name__).debug("appearance hint unavailable", exc_info=True)
+        return False
+
+
 def _get_agent_root_dir() -> Path:
-    return _get_user_workspace_dir() / "agent"
+    # profile 契约：agent 子树挂 profile/agent（个人版 Web 进程无租户上下文，
+    # 企业版用户面经 web-server 代理，不走本进程的这条链）。
+    return _get_user_workspace_dir() / "profile" / "agent"
 
 
 def _get_agent_sessions_dir() -> Path:
@@ -349,12 +367,13 @@ def _text_content_type(
 def _get_agent_teams_root(project_root: Path) -> Path:
     """Return the team state root without importing the agent runtime.
 
-    ``configure_agent_teams_home(project_root)`` in AgentServer resolves this
-    exact directory.  The static server only performs bounded file operations
+    profile 契约：.agent_teams 挂工作空间根（``<root>/profile/.agent_teams``），
+    与 AgentServer 侧 ``configure_agent_teams_home(get_workspace_root_dir())``
+    解析一致。The static server only performs bounded file operations
     under it, so importing OpenJiuwen solely to calculate the same path adds
     startup work without providing any Web-side behaviour.
     """
-    return (project_root / ".agent_teams").resolve()
+    return (project_root / "profile" / ".agent_teams").resolve()
 
 
 def _get_package_dir() -> Path:
@@ -400,7 +419,7 @@ def _normalize_lang_suffix(name: str) -> str:
 
 def _generate_agent_data(project_root: Path) -> None:
     """Generate agent/workspace/agent-data.json from agent tree."""
-    agent_root = (project_root / "agent").resolve()
+    agent_root = (project_root / "profile" / "agent").resolve()
     workspace_root = (agent_root / "workspace").resolve()
     output_path = (workspace_root / "agent-data.json").resolve()
     root_folder_key = "__root__"
@@ -508,6 +527,22 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     _TOP_LEVEL_DOCUMENT_CSP = "frame-ancestors 'none'"
     _EMBEDDABLE_DOCUMENT_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+    _RECOVERY_DOCUMENT_CSP = (
+        "sandbox allow-scripts allow-same-origin allow-modals; default-src 'none'; "
+        "script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
+        "frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+    )
+    _SYSTEM_PLUGIN_RECOVERY_PATH = "/system-plugin-recovery"
+    _SYSTEM_PLUGIN_RECOVERY_ROUTES = {
+        "",
+        "/",
+        "/endpoint",
+        "/proxy",
+        "/api/history",
+        "/api/preview",
+        "/api/restore",
+    }
+    _REMOTE_RECOVERY_PASSWORD_ENV = "JIUWENSWARM_REMOTE_RECOVERY_PASSWORD"
 
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
@@ -592,6 +627,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
+    # Idle timeout while draining a request body we are about to reject. A
+    # client that announces a large Content-Length and then stalls must not
+    # hold the per-connection thread in a blocking read forever.
+    _REJECTED_UPLOAD_DRAIN_IDLE_TIMEOUT = 30.0
     _HTTP_PROXY_CHUNK_BYTES = 64 * 1024
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
@@ -809,16 +848,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
     @staticmethod
-    def _has_unexpected_host_parts(parsed_host: ParseResult) -> bool:
-        """Return whether a parsed Host authority carries non-authority parts."""
-        if parsed_host.username is not None or parsed_host.password is not None:
+    def _has_unexpected_host_parts(parsed_url: ParseResult, *, allow_root_path: bool = False) -> bool:
+        """Check for credentials and components outside an authority."""
+        if parsed_url.username is not None or parsed_url.password is not None:
             return True
-        return bool(
-            parsed_host.path
-            or parsed_host.params
-            or parsed_host.query
-            or parsed_host.fragment
-        )
+        allowed_paths = ("", "/") if allow_root_path else ("",)
+        return parsed_url.path not in allowed_paths or any((parsed_url.params, parsed_url.query, parsed_url.fragment))
 
     def _clean_outer_host(self) -> str | None:
         """Return one canonical browser-facing Host value for proxying."""
@@ -871,7 +906,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _proxy_http(
         self, *, target: str | None = None, path: str | None = None,
         stream_sse: bool = False, login_surface: str | None = None,
-        stream_body: bool = False,
+        stream_body: bool = False, upstream_host: str | None = None,
+        omit_request_headers: frozenset[str] = frozenset(),
     ) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
@@ -909,12 +945,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 if normalized_key == "host":
                     continue
+                if normalized_key in omit_request_headers:
+                    continue
                 if login_surface and normalized_key == "x-jiuwen-web-surface":
                     continue
                 if normalized_key in self._UNTRUSTED_FORWARDED_HOST_HEADERS:
                     continue
                 forward_headers[key] = value
-            forward_headers["Host"] = outer_host
+            forward_headers["Host"] = upstream_host or outer_host
             if login_surface:
                 forward_headers["X-Jiuwen-Web-Surface"] = login_surface
 
@@ -1409,10 +1447,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return True
         gateway_api = path == "/gateway-api" or path.startswith("/gateway-api/")
         ws = self._is_ws_route()
+        recovery_route = self._system_plugin_recovery_route(path)
         if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
                 or self._is_share_api_route() or self._is_extension_asset_route()
                 or self._is_extension_transfer_route()
-                or path == "/system-plugin-recovery/endpoint"):
+                or recovery_route not in {None, "", "/"}):
             return False
         upstream = self._resolve_enterprise_upstream()
         if upstream is None:
@@ -1446,29 +1485,215 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return True
         return False
 
-    def _handle_system_plugin_recovery_endpoint(self) -> None:
-        """Return the private loopback page URL without using extension services."""
-        from jiuwenswarm.common.system_plugin_recovery import is_local_recovery_request
+    @classmethod
+    def _system_plugin_recovery_route(cls, path: str) -> str | None:
+        """Match the recovery mount, optionally under a deployment prefix."""
+        prefix, marker, route = path.rpartition(cls._SYSTEM_PLUGIN_RECOVERY_PATH)
+        if not marker or route not in cls._SYSTEM_PLUGIN_RECOVERY_ROUTES:
+            return None
+        if not re.fullmatch(r"(?:/[a-zA-Z0-9_.~-]+)*", prefix) or {".", ".."}.intersection(prefix.split("/")):
+            return None
+        return route
 
-        if not is_local_recovery_request(self.headers, self.server.server_address[1]):
-            self._write_json(403, {"error": "forbidden"})
-            return
-        if self._check_desktop_access():
-            return
-        if not self.desktop_token and not _is_loopback_address(self.client_address[0]):
-            self._write_json(403, {"error": "forbidden"})
-            return
+    def _is_same_origin_system_plugin_recovery_request(self, scheme: str) -> bool:
+        outer_host = self._clean_outer_host()
+        if outer_host is None:
+            return False
+        fetch_sites = self.headers.get_all("Sec-Fetch-Site", [])
+        if fetch_sites and (len(fetch_sites) != 1 or fetch_sites[0] not in {"same-origin", "none"}):
+            return False
+        origins = self.headers.get_all("Origin", [])
+        if not origins:
+            return self.command != "POST" or fetch_sites == ["same-origin"]
+        if len(origins) != 1:
+            return False
+        try:
+            parsed_origin = urlparse(str(origins[0]).strip())
+            origin_port = parsed_origin.port
+        except ValueError:
+            return False
+        origin_hostname = parsed_origin.hostname
+        if parsed_origin.scheme != scheme or origin_hostname is None:
+            return False
+        if self._has_unexpected_host_parts(parsed_origin, allow_root_path=True):
+            return False
+        parsed_host = urlparse(f"//{outer_host}")
+        default_port = self._DEFAULT_HTTPS_PORT if scheme == "https" else self._DEFAULT_HTTP_PORT
+        return (
+            origin_hostname.lower().rstrip(".") == parsed_host.hostname
+            and (origin_port if origin_port is not None else default_port)
+            == (parsed_host.port if parsed_host.port is not None else default_port)
+        )
+
+    def _has_remote_recovery_credentials(self, password: str) -> bool:
+        headers = self.headers.get_all("Authorization", [])
+        if len(headers) != 1:
+            return False
+        scheme, _, value = headers[0].partition(" ")
+        if scheme.lower() != "basic":
+            return False
+        try:
+            supplied = base64.b64decode(value, validate=True)
+        except ValueError:
+            return False
+        return hmac.compare_digest(supplied, f"recovery:{password}".encode("utf-8"))
+
+    def _allow_remote_recovery_request(self, route: str, trusted_https: bool) -> bool:
+        password = os.getenv(self._REMOTE_RECOVERY_PASSWORD_ENV, "")
+        if not password:
+            return True
+        if not trusted_https:
+            self._write_json(403, {"error": "remote_recovery_disabled"})
+            return False
+        if self._has_remote_recovery_credentials(password):
+            return True
+        self.send_response(401)
+        if route == "/":
+            # Challenge on navigation, rather than during the settings background fetch.
+            self.send_header("WWW-Authenticate", 'Basic realm="JiuwenSwarm Recovery", charset="UTF-8"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
+    def _system_plugin_recovery_upstream(self) -> tuple[str, str, str] | None:
+        """Read and validate the launcher-owned loopback endpoint."""
         try:
             from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
 
             endpoint = SystemPluginRecovery().endpoint()
-        except Exception:  # noqa: BLE001 - keep the static emergency route isolated
+            parsed = urlparse(endpoint or "")
+            port = parsed.port
+        except Exception:  # noqa: BLE001 - keep the emergency route isolated
             self.logger.warning("[SystemPluginRecovery] could not read sidecar endpoint", exc_info=True)
-            endpoint = None
-        if endpoint is None:
+            return None
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        tokens = query.get("token", [])
+        is_loopback_http = parsed.scheme == "http" and parsed.hostname == "127.0.0.1" and bool(port)
+        has_extra_parts = any((
+            parsed.username is not None,
+            parsed.password is not None,
+            parsed.params,
+            parsed.fragment,
+        ))
+        is_recovery_page = parsed.path == self._SYSTEM_PLUGIN_RECOVERY_PATH and not has_extra_parts
+        has_token = set(query) == {"token"} and len(tokens) == 1 and bool(tokens[0])
+        if not (is_loopback_http and is_recovery_page and has_token):
+            self.logger.warning("[SystemPluginRecovery] ignored an invalid sidecar endpoint")
+            return None
+        return f"http://127.0.0.1:{port}", f"127.0.0.1:{port}", tokens[0]
+
+    def _dispatch_system_plugin_recovery(self, parsed: ParseResult) -> bool:
+        """Serve recovery without entering the SPA or depending on Gateway."""
+        route = self._system_plugin_recovery_route(parsed.path)
+        if route is None:
+            return False
+
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            return False
+        from jiuwenswarm.common.system_plugin_recovery import is_local_recovery_request
+
+        if (self.command == "POST") != (route == "/api/restore"):
+            self._write_json(405, {"error": "method_not_allowed"})
+            return True
+        loopback_peer = _is_loopback_address(self.client_address[0])
+        forwarded_proto = self.headers.get_all("X-Forwarded-Proto", [])
+        trusted_https = loopback_peer and forwarded_proto == ["https"]
+        if not self._is_same_origin_system_plugin_recovery_request("https" if trusted_https else "http"):
+            self._write_json(403, {"error": "forbidden"})
+            return True
+        if self._check_desktop_access():
+            return True
+        if route == "":
+            # Basic credentials are scoped by the browser to this directory.
+            # A relative redirect preserves a prefix stripped by an outer proxy.
+            location = f".{self._SYSTEM_PLUGIN_RECOVERY_PATH}/"
+            locale = parse_qs(parsed.query).get("locale")
+            if locale:
+                location += f"?{urlencode({'locale': locale[0]})}"
+            self.send_response(308)
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
+        forwarding_headers = ("Forwarded", "X-Forwarded-Host", "X-Forwarded-For", "X-Forwarded-Proto")
+        local_request = (
+            loopback_peer
+            and not any(self.headers.get_all(header) for header in forwarding_headers)
+            and is_local_recovery_request(self.headers, self.server.server_address[1])
+        )
+        if not local_request and not self._allow_remote_recovery_request(route, trusted_https):
+            return True
+        if route == "/api/restore" and not self._validate_system_plugin_restore_body():
+            return True
+        upstream = self._system_plugin_recovery_upstream()
+        if upstream is None:
             self._write_json(503, {"error": "recovery_unavailable"})
-            return
-        self._write_json(200, {"url": endpoint})
+            return True
+        target, upstream_host, token = upstream
+        if route == "/endpoint":
+            url = "./proxy"
+            if local_request:
+                url = f"{target}{self._SYSTEM_PLUGIN_RECOVERY_PATH}?{urlencode({'token': token})}"
+            self._write_json(200, {"url": url})
+            return True
+        self._proxy_system_plugin_recovery(parsed, route, target, upstream_host, token)
+        return True
+
+    def _validate_system_plugin_restore_body(self) -> bool:
+        from jiuwenswarm.common.system_plugin_recovery import RECOVERY_MAX_BODY_BYTES
+
+        content_types = self.headers.get_all("Content-Type", [])
+        if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
+            self._write_json(415, {"error": "application/json is required"})
+            return False
+        lengths = self.headers.get_all("Content-Length", [])
+        length = lengths[0] if len(lengths) == 1 else ""
+        if (
+            self.headers.get_all("Transfer-Encoding")
+            or not re.fullmatch(r"[0-9]{1,10}", length)
+            or not 0 < int(length) <= RECOVERY_MAX_BODY_BYTES
+        ):
+            self._write_json(400, {"error": "invalid_request_body"})
+            return False
+        return True
+
+    def _proxy_system_plugin_recovery(
+        self, parsed: ParseResult, route: str, target: str, upstream_host: str, token: str,
+    ) -> None:
+        """Forward only named recovery inputs and attach the private token server-side."""
+        incoming = parse_qs(parsed.query, keep_blank_values=True)
+        query = {"token": [token]}
+        upstream_route = route
+        if route in {"/", "/proxy"}:
+            upstream_route = ""
+            query["proxied"] = ["1"]
+            if route == "/proxy":
+                query["embedded"] = ["1"]
+            locale = incoming.get("locale", self.headers.get("Accept-Language", "").split(",")[:1])
+            if locale:
+                query["locale"] = locale[:1]
+        if route == "/api/preview" and "record_id" in incoming:
+            query["record_id"] = incoming["record_id"]
+        upstream_path = f"{self._SYSTEM_PLUGIN_RECOVERY_PATH}{upstream_route}?{urlencode(query, doseq=True)}"
+        self._proxy_http(
+            target=target,
+            path=upstream_path,
+            upstream_host=upstream_host,
+            omit_request_headers=frozenset({
+                "authorization",
+                "cookie",
+                "origin",
+                "referer",
+                "sec-fetch-dest",
+                "sec-fetch-mode",
+                "sec-fetch-site",
+                "sec-fetch-user",
+            }),
+        )
 
     @staticmethod
     def _is_markdown(path_obj: Path) -> bool:
@@ -2880,17 +3105,20 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             handle_custom_agent_upload_http,
         )
 
+        length = self._parse_content_length()
         # Custom agents install into this machine's user workspace, which a
         # routed multi-user AgentServer does not share.
         if _uses_agentos_routing():
+            self._discard_request_body(length)
             self._write_json(503, {"error": "custom agents are not supported in AgentOS mode"})
             return
-        if self._parse_content_length() > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+        if length > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+            self._discard_request_body(length)
             self._write_json(413, {"error": "upload too large"})
             return
         status, payload = handle_custom_agent_upload_http(
             content_type=self.headers.get("Content-Type", ""),
-            body=self._read_request_body(),
+            body=self.rfile.read(length) if length > 0 else b"",
         )
         self._write_json(status, payload)
 
@@ -2902,12 +3130,26 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _discard_request_body(self, length: int) -> None:
         # Answering before the body is consumed resets the connection, which
         # the browser reports as "Failed to fetch" instead of the JSON error.
-        remaining = length
-        while remaining > 0:
-            chunk = self.rfile.read(min(remaining, 1024 * 1024))
-            if not chunk:
-                break
-            remaining -= len(chunk)
+        if length <= 0:
+            return
+        previous_timeout = self.connection.gettimeout()
+        try:
+            self.connection.settimeout(self._REJECTED_UPLOAD_DRAIN_IDLE_TIMEOUT)
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            # A stalled or broken peer cannot be drained; stop blocking this
+            # connection's thread and close it after the error response.
+            self.close_connection = True
+        finally:
+            try:
+                self.connection.settimeout(previous_timeout)
+            except OSError:
+                pass
 
     def _handle_designer_upload(self) -> None:
         from jiuwenswarm.channels.web.designer_upload_http import (
@@ -2979,10 +3221,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
-        if self._dispatch_office_addins(parsed):
+        if self._dispatch_system_plugin_recovery(parsed):
             return
-        if parsed.path == "/system-plugin-recovery/endpoint":
-            self._handle_system_plugin_recovery_endpoint()
+        if self._dispatch_office_addins(parsed):
             return
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
@@ -2998,7 +3239,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if parsed.path == SPLASH_HINT_PATH:
-            self._write_json(200, {"candidates": _splash_candidates()})
+            self._write_json(200, {"candidates": _splash_candidates(), "appearance": _appearance_providers()})
             return
         if parsed.path == "/oauth/hub/done":
             body = (
@@ -3031,6 +3272,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if self._dispatch_system_plugin_recovery(parsed):
+            return
         if self._dispatch_office_addins(parsed):
             return
         if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
@@ -3108,8 +3351,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
-        if parsed.path == "/system-plugin-recovery/endpoint":
-            self._handle_system_plugin_recovery_endpoint()
+        if self._dispatch_system_plugin_recovery(parsed):
             return
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
@@ -3185,6 +3427,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         if is_enterprise():
             return None
+        recovery_route = self._system_plugin_recovery_route(urlparse(self.path).path)
+        if recovery_route in {"/", "/proxy"}:
+            return self._RECOVERY_DOCUMENT_CSP
         # Bundled pages and the trusted login callback run top-level with their
         # original origin. All other documents on this origin stay sandboxed,
         # including proxied content and files opened outside an iframe.
@@ -3490,7 +3735,7 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
 
     project_root = _get_user_workspace_dir()
-    workspace_root = (project_root / "agent").resolve()
+    workspace_root = (project_root / "profile" / "agent").resolve()
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir().resolve()
     # Start with the process logger.  The file handler and diagnostic hook are
@@ -3585,7 +3830,9 @@ def main() -> None:
         )
         logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
 
-        _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()
+        from jiuwenswarm.common.paths import get_updates_dir
+
+        _web_info_path = get_updates_dir().resolve()
         _web_info_path.mkdir(parents=True, exist_ok=True)
         _web_info_file = _web_info_path / "web_process.json"
         try:

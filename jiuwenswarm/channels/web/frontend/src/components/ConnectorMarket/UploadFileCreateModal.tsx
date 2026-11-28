@@ -10,6 +10,9 @@ import {
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { mapLocalPackageImportError } from '../../features/agentManagement/upload';
+import { systemPluginApi } from '../../services/extensionsV2Api';
+import { ConfirmDialog } from './ConfirmDialog';
+import { hasOtherEnabledSystemPlugin } from './systemPluginConflict';
 
 interface UploadFileCreateModalProps {
   error?: string | null;
@@ -31,7 +34,10 @@ function isAcceptedFilename(name: string): boolean {
 function formatFileSize(bytes: number): string {
   if (bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  let i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  // 取整后再判断是否进位：1048575B 按 KB 取一位小数是 1024.0，应显示为 1.0 MB。
+  const rounded = Number((bytes / Math.pow(1024, i)).toFixed(1));
+  if (i < units.length - 1 && rounded >= 1024) i += 1;
   const size = bytes / Math.pow(1024, i);
   return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
@@ -53,13 +59,15 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
   const [invalid, setInvalid] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [browsing, setBrowsing] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [submitPhase, setSubmitPhase] = useState<'checking' | 'importing' | null>(null);
+  const [pendingConflictPath, setPendingConflictPath] = useState<string | null>(null);
+  const locked = submitPhase === 'checking' || pendingConflictPath !== null;
   const desktopReady = useDesktopLocalFilePickerReady();
   const dropAcceptUntilRef = useRef(0);
   const lastDropIdRef = useRef<string | null>(null);
 
   const acceptPick = useCallback((pick: LocalFilePick | undefined) => {
-    if (!pick) return;
+    if (!pick || locked) return;
     if (!isAcceptedFilename(pick.filename)) {
       setInvalid(true);
       setFilePick(null);
@@ -67,7 +75,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
     }
     setInvalid(false);
     setFilePick(pick);
-  }, []);
+  }, [locked]);
 
   async function handleBrowse() {
     if (browsing || filePick) return;
@@ -122,13 +130,22 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
     return () => window.removeEventListener(DESKTOP_FILE_DRAG_EVENT, onFileDrag as EventListener);
   }, []);
 
-  async function handleConfirm() {
-    if (!filePick || submitting) return;
-    setSubmitting(true);
+  async function submit(filePath: string, checkConflict: boolean) {
+    if (submitPhase) return;
     try {
-      await onConfirm(filePick.path);
+      if (checkConflict) {
+        setSubmitPhase('checking');
+        // Keep the existing import path and its errors for other ZIPs or an unavailable check.
+        const packageId = await systemPluginApi.inspectImportPath(filePath).catch(() => null);
+        if (packageId && (await hasOtherEnabledSystemPlugin(packageId).catch(() => false))) {
+          setPendingConflictPath(filePath);
+          return;
+        }
+      }
+      setSubmitPhase('importing');
+      await onConfirm(filePath);
     } finally {
-      setSubmitting(false);
+      setSubmitPhase(null);
     }
   }
 
@@ -137,6 +154,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
         readme: 'connectorMarket.upload.missingReadme',
         manifest: 'connectorMarket.upload.missingManifest',
         skillPathNotRelative: 'connectorMarket.upload.skillPathNotRelative',
+        alreadyInstalled: 'connectorMarket.upload.alreadyInstalled',
       })
     : null;
 
@@ -147,7 +165,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
       <div className="relative w-[520px] rounded-2xl bg-card p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-[16px] font-semibold leading-6 text-text">{t('connectorMarket.create.withUpload')}</h2>
-          <button type="button" onClick={onCancel} className="text-text-muted hover:text-text" data-testid="connector-market-upload-modal-close">
+          <button type="button" onClick={onCancel} disabled={locked} className="text-text-muted hover:text-text" data-testid="connector-market-upload-modal-close">
             <X size={18} />
           </button>
         </div>
@@ -201,6 +219,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
                   event.stopPropagation();
                   handleRemove();
                 }}
+                disabled={locked}
                 className="shrink-0 text-text-muted hover:text-text"
                 data-testid="connector-market-upload-remove-file"
               >
@@ -226,13 +245,13 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
         ) : null}
 
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover" data-testid="connector-market-upload-cancel">
+          <button type="button" onClick={onCancel} disabled={locked} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover" data-testid="connector-market-upload-cancel">
             {t('connectorMarket.common.cancel')}
           </button>
           <button
             type="button"
-            onClick={handleConfirm}
-            disabled={!filePick || submitting}
+            onClick={() => filePick && void submit(filePick.path, true)}
+            disabled={!filePick || locked || submitPhase === 'importing'}
             className="rounded-lg bg-text px-4 py-1.5 text-[13px] text-text-inverse disabled:opacity-60"
             data-testid="connector-market-upload-confirm"
           >
@@ -240,6 +259,18 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
           </button>
         </div>
       </div>
+      {pendingConflictPath && (
+        <ConfirmDialog
+          title={t('connectorMarket.systemPlugin.multiEnableTitle')}
+          message={t('connectorMarket.systemPlugin.multiEnableMessage')}
+          confirmLabel={t('connectorMarket.systemPlugin.multiEnableConfirm')}
+          onCancel={() => setPendingConflictPath(null)}
+          onConfirm={() => {
+            setPendingConflictPath(null);
+            void submit(pendingConflictPath, false);
+          }}
+        />
+      )}
     </div>,
     document.body,
   );

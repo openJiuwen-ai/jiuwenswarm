@@ -1,6 +1,8 @@
 """会话元数据管理模块"""
 from __future__ import annotations
 
+
+
 import copy
 import contextvars
 from concurrent.futures import Future
@@ -25,6 +27,7 @@ from agent_gateway.common.mode_matrix import (
     is_team_mode,
 )
 
+from jiuwenswarm.common.cron_session import cron_session_has_job_identity
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
 from jiuwenswarm.server.runtime.session.work_mode import (
@@ -88,7 +91,7 @@ _COLLECT_INFLIGHT: dict[tuple[str, str, bool], Future] = {}
 _METADATA_CACHE: dict[str | tuple[str, str], dict[str, Any]] = {}
 _METADATA_CACHE_GENERATIONS: dict[str | tuple[str, str], int] = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_DISK_STAMPS: dict[str | tuple[str, str], tuple[int, int] | None] = {}
+_CACHE_DISK_STAMPS: dict[str | tuple[str, str], tuple[int, ...] | None] = {}
 _PENDING_FIELDS: dict[str | tuple[str, str], dict[str, tuple[int, Any]]] = {}
 _WRITE_REVISION = 0
 
@@ -114,10 +117,21 @@ def _evict_metadata_cache_locked() -> None:
     _PENDING_FIELDS.pop(victim, None)
 
 
-def _disk_stamp(session_id: str) -> tuple[int, int] | None:
+def _read_model_selection_snapshot(session_id: str) -> str | None:
+    """Expose a strict byte snapshot under the metadata writer's process lock."""
+    from jiuwenswarm.server.runtime.session.lifecycle import resource_lock
+
+    with resource_lock("session", session_id):
+        try:
+            return (get_agent_sessions_dir() / session_id / "metadata.json").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+
+
+def _disk_stamp(session_id: str) -> tuple[int, ...] | None:
     try:
         stat = (get_agent_sessions_dir() / session_id / "metadata.json").stat()
-        return stat.st_mtime_ns, stat.st_size
+        return stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns, stat.st_ino
     except OSError:
         return None
 
@@ -128,7 +142,9 @@ def _changed_fields(before: dict[str, Any], after: dict[str, Any]) -> frozenset[
 
 
 def _refresh_written_cache(session_id: str, written: dict[str, Any], options: _MetadataWriteOptions) -> None:
-    stamp = _disk_stamp(session_id)
+    # Another process may have written after our atomic replacement. Force a
+    # disk comparison before trusting this write snapshot on the next read.
+    stamp = None
     cache_key = _metadata_cache_key(session_id)
     with _CACHE_LOCK:
         _evict_metadata_cache_locked()
@@ -224,6 +240,17 @@ _INJECTED_TAG_RE = re.compile(
 _INJECTED_TAG_START_RE = re.compile(
     r"<[a-z][\w-]*(?:\s[^>]*)?>?"
 )
+# 用户面注入的【上传文档】提示块（独占一行，或 _auto_title 收成单行后的形态）
+_UPLOAD_DOC_BLOCK_RE = re.compile(
+    r"(?:^|\n)【上传文档】(?:\n|$)[\s\S]*$"
+)
+_UPLOAD_DOC_NAMED_BLOCK_RE = re.compile(
+    r"(?:^|\n)【上传文档[:：][^\n]*(?:\n|$)[\s\S]*$"
+)
+_UPLOAD_DOC_COLLAPSED_RE = re.compile(
+    r"(?:^|\s)【上传文档】\s+@[\s\S]*$"
+)
+_AT_PATH_RE = re.compile(r'@(?:"([^"]+)"|(\S+))')
 
 
 def _has_valid_work_mode(value: Any) -> bool:
@@ -585,6 +612,28 @@ def _read_metadata(
         session_id: 会话 ID
         cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景，如 session.list）
     """
+    return _read_metadata_with_status(
+        session_id, cache_bust, lifecycle_state=lifecycle_state, archived=archived
+    )[0]
+
+
+def _read_metadata_with_status(
+    session_id: str, cache_bust: bool = False, *,
+    lifecycle_state: dict | None = None, archived: bool | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """``_read_metadata`` 的显式状态版：额外区分「读取失败」与「合法缺失/空」。
+
+    返回 ``(metadata, read_failed)``。``read_failed=True`` 仅表示文件存在但
+    不可读（半写窗口、磁盘满、JSON 解析失败、内容非 dict、空文件）；文件
+    不存在与合法空对象 ``{}`` 都不算失败。供列表等呈现路径区分「损坏会话」
+    与「旧会话无 metadata」，避免靠文件存在性反推把健康会话误标为损坏。
+    其余语义与 ``_read_metadata`` 完全一致，``_read_metadata`` 的 ``{}``
+    返回契约（read-modify-write 调用方依赖）保持不变。
+
+    Args:
+        session_id: 会话 ID
+        cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景，如 session.list）
+    """
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     if lifecycle_state is None:
         lifecycle_state = lc.state("session", session_id)
@@ -592,7 +641,8 @@ def _read_metadata(
     if lifecycle_state.get("write_blocked") or (
         lc.session_paths(session_id)[1].exists() if archived is None else archived
     ):
-        return lc.raw_metadata(session_id)
+        # lifecycle 保护路径有独立的 raw_metadata 语义，此处不判定损坏。
+        return lc.raw_metadata(session_id), False
     if not cache_bust:
         stamp = _disk_stamp(session_id)
         with _CACHE_LOCK:
@@ -605,22 +655,30 @@ def _read_metadata(
                 _METADATA_CACHE.pop(key, None)
                 cached = None
             if cached is not None and _CACHE_DISK_STAMPS.get(key, stamp) == stamp:
-                return cached.copy()
+                # 缓存只在成功读取后写入，命中即健康。
+                return cached.copy(), False
     # cache_bust=True 或缓存没有数据时，强制读磁盘
     fpath = get_agent_sessions_dir() / session_id / "metadata.json"
     if not fpath.exists():
-        return {}
+        return {}, False
     # Reading must be mutually exclusive with _write_metadata_sync: the writer
     # replaces the whole file, so an unlocked read can land inside the
     # replacement window and observe empty content.
     try:
-        with _FILE_LOCK:
-            raw = fpath.read_text(encoding="utf-8")
+        for _attempt in range(3):
+            with _FILE_LOCK:
+                before_stamp = _disk_stamp(session_id)
+                raw = fpath.read_text(encoding="utf-8")
+                read_stamp = _disk_stamp(session_id)
+            if before_stamp == read_stamp:
+                break
+        else:
+            raise OSError("metadata changed repeatedly during read")
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "failed to read metadata.json: %s (session_id=%s)", exc, session_id,
         )
-        return {}
+        return {}, True
     if not raw.strip():
         # An empty file is a FAILURE, not "empty metadata". It must never be
         # returned as a valid {}: callers do read-modify-write and would write
@@ -630,7 +688,7 @@ def _read_metadata(
             "metadata.json is empty, treating as read failure (session_id=%s)",
             session_id,
         )
-        return {}
+        return {}, True
     try:
         data = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
@@ -638,13 +696,13 @@ def _read_metadata(
             "failed to parse metadata.json: %s (session_id=%s, size=%d)",
             exc, session_id, len(raw),
         )
-        return {}
+        return {}, True
     if not isinstance(data, dict):
         logger.warning(
             "metadata.json content is not a dict: %s (session_id=%s)",
             type(data).__name__, session_id,
         )
-        return {}
+        return {}, True
     if not cache_bust:
         with _CACHE_LOCK:
             cache_key = _metadata_cache_key(session_id)
@@ -652,8 +710,10 @@ def _read_metadata(
             _evict_metadata_cache_locked()
             _METADATA_CACHE[cache_key] = data.copy()
             _METADATA_CACHE_GENERATIONS[cache_key] = generation
-            _CACHE_DISK_STAMPS[cache_key] = _disk_stamp(session_id)
-    return data
+            # Bind the decoded bytes to their read version. An external writer
+            # may replace the file after parsing and before cache publication.
+            _CACHE_DISK_STAMPS[cache_key] = read_stamp
+    return data, False
 
 
 def _read_metadata_file_in(session_dir: Path) -> dict[str, Any]:
@@ -1148,6 +1208,28 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
             _refresh_written_cache(session_id, written, options)
 
 
+def _strip_upload_document_blocks_for_title(content: str) -> str:
+    """从标题候选中去掉【上传文档】提示块（含收成单行后的形态）。"""
+    if "【上传文档" not in content:
+        return content
+    cleaned = _UPLOAD_DOC_BLOCK_RE.sub("", content)
+    cleaned = _UPLOAD_DOC_NAMED_BLOCK_RE.sub("", cleaned)
+    cleaned = _UPLOAD_DOC_COLLAPSED_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _title_from_upload_at_path(content: str) -> str:
+    """纯上传消息：取首个 @path / @\"path\" 的 basename 作标题。"""
+    match = _AT_PATH_RE.search(content)
+    if not match:
+        return ""
+    path = (match.group(1) or match.group(2) or "").strip()
+    if not path:
+        return ""
+    name = Path(path).name
+    return name if name and name not in (".", "..") else ""
+
+
 def _auto_title(content: str) -> str:
     """从首条用户消息自动生成会话标题"""
     # 先剥离所有小写 XML 注入标签，
@@ -1156,10 +1238,14 @@ def _auto_title(content: str) -> str:
     cleaned, _ = strip_debug_directive(cleaned)
     if not cleaned:
         return ""
-    title = cleaned.replace("\n", " ")
-    if len(title) > _TITLE_MAX_LEN:
-        title = title[:_TITLE_MAX_LEN] + "..."
-    return title
+    without_upload = _strip_upload_document_blocks_for_title(cleaned)
+    if without_upload:
+        title = without_upload.replace("\n", " ")
+        if len(title) > _TITLE_MAX_LEN:
+            title = title[:_TITLE_MAX_LEN] + "..."
+        return title
+    # 纯上传：不把协议标记当标题，改用文件名；无可用路径则空串交给侧栏 fallback
+    return _title_from_upload_at_path(cleaned)
 
 
 def init_session_metadata(
@@ -1187,6 +1273,7 @@ def init_session_metadata(
     npc_member: dict[str, Any] | None = None,
     npc_member_sessions: dict[str, str] | None = None,
     npc_session: bool = False,
+    session_equipment: dict[str, Any] | None = None,
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -1250,6 +1337,8 @@ def init_session_metadata(
             }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
+    if session_equipment is not None:
+        metadata["session_equipment"] = copy.deepcopy(session_equipment)
     # 配额门禁：metadata.json 落盘前检查（对齐 !7494；覆盖 designer/rename 等
     # 不经 session.create bootstrap 预检的调用方）。
     try:
@@ -1970,6 +2059,42 @@ def get_session_equipment(
     }
 
 
+class SessionPinRejection(RuntimeError):
+    """置顶被拒绝：该会话置顶后将落入侧边栏可见性盲区。
+
+    置顶区准入（``load_pinned_sessions``）只接纳 ``web`` 渠道会话与带 job
+    身份（``cron_id`` 非空或目录名嵌 job id）的 cron 执行会话；cron 分组
+    与项目普通列表均排除 pinned。不满足准入的会话置顶后三个列表无一可见，
+    用户在 UI 上无法再触达该会话取消置顶。置顶前直接拒绝，``code`` 供
+    handler 映射为 FORBIDDEN 错误码。
+    """
+
+    code = "FORBIDDEN"
+
+
+def pinned_session_admitted(session_id: str, meta: dict[str, Any]) -> bool:
+    """Whether the pinned area would list this session once pinned.
+
+    Single source of truth for the sidebar visibility contract, shared in both
+    directions: ``load_pinned_sessions`` admits by this predicate and
+    ``set_session_pinned`` rejects on its negation, so the two can never
+    disagree (a disagreement reopens the black hole where a pinned session
+    appears in no sidebar list).
+
+    The admission set mirrors what the sidebar can actually show: ``web``
+    channel sessions (the project list), plus any session carrying a cron job
+    identity (``cron_session_has_job_identity``) — the cron group lists those
+    by ``cron_id`` or job-shaped directory name regardless of ``channel_id``,
+    so a blank/missing channel value on a cron-named session must not flip its
+    visibility (``channel_id or ""`` write paths can legitimately leave it
+    empty on disk). Everything else (blank/TUI sessions without job identity)
+    is invisible in every list once pinned and must be rejected at pin time.
+    """
+    if str(meta.get("channel_id") or "").strip() == "web":
+        return True
+    return cron_session_has_job_identity(session_id, meta.get("cron_id"))
+
+
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。
 # Gateway 为会话级 pin 的唯一写入方(仅经 Web 本地 handler 处理,不转发 AgentServer)。
 _SESSION_PIN_LOCK = threading.Lock()
@@ -1998,6 +2123,12 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
     Returns:
         ``(操作后的 pinned, 操作后的 pin_order)``;会话不存在(metadata 缺失)时返回 ``None``。
         取消置顶时 ``pin_order`` 恒为 0。
+
+    Raises:
+        SessionPinRejection: 置顶(``pinned=True``)一个置顶区不会接纳的会话
+        (``pinned_session_admitted`` 为 False:非 ``web`` 渠道且不带 cron job
+        身份,含 ``channel_id`` 落空的执行会话)。这类会话置顶后三个侧边栏
+        列表均不可见(见类 docstring);取消置顶不受影响。
     """
     started = time.perf_counter()
     lock_ms = read_ms = scan_ms = write_ms = 0.0
@@ -2014,6 +2145,15 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
                 return None
 
             current_order = int(meta.get("pin_order", 0))
+            if pinned and not pinned_session_admitted(session_id, meta):
+                # Pin would drop this session into the sidebar visibility
+                # black hole (pinned area rejects it, cron group and project
+                # list exclude pinned). Refuse before any write.
+                outcome = "rejected_cron_without_identity"
+                raise SessionPinRejection(
+                    "cron execution session without cron_id cannot be pinned: "
+                    "it would disappear from every sidebar list"
+                )
             if bool(meta.get("pinned")) == pinned and (
                 current_order > 0 if pinned else current_order == 0
             ):
@@ -2456,7 +2596,9 @@ def get_all_sessions_metadata(
         archived = lc.session_paths(session_id)[1].exists()
         if archived:
             continue
-        metadata = _read_metadata(session_id, lifecycle_state=state, archived=False)
+        metadata, metadata_read_failed = _read_metadata_with_status(
+            session_id, lifecycle_state=state, archived=False
+        )
 
         if not metadata:
             # 没有 metadata.json 的旧会话: 只构造最小信息,不读取 history.json
@@ -2485,6 +2627,17 @@ def get_all_sessions_metadata(
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
             )
+            # 文件存在但读取失败/损坏（半写窗口、磁盘满等）不能静默伪装成合法
+            # 空会话：team_name/work_mode 等身份字段已丢失，打上标记让消费方
+            # 可以诚实呈现，而不是当作正常旧会话误导用户。判定依据读取侧的
+            # 显式失败状态而非文件存在性反推：合法空对象 `{}` 与一次性 OSError
+            # 语义不同，前者不标损坏（详见 _read_metadata_with_status）。
+            if metadata_read_failed:
+                metadata["metadata_corrupted"] = True
+                logger.warning(
+                    "metadata.json exists but unreadable, listing with corrupted marker (session_id=%s)",
+                    session_id,
+                )
         else:
             # 低优先级迁移去重入队；队列满时留待下次扫描，不同步写盘。
             metadata = _apply_metadata_defaults_with_inference(

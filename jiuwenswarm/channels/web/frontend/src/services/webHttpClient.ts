@@ -63,6 +63,30 @@ function turnOffLiveLamp(sessionId: string): void {
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
 
+/** 企业版刷新/关页会 abort 进行中的 SSE；此时勿发 interrupt，让 Agent 后台继续。 */
+let pageUnloading = false;
+if (typeof window !== 'undefined') {
+  const markPageUnloading = (event: Event) => {
+    // bfcache（pagehide persisted=true）页面会回来，不算卸载（同 authStore 语义）。
+    if (event.type === 'pagehide' && (event as PageTransitionEvent).persisted) {
+      return;
+    }
+    pageUnloading = true;
+  };
+  const clearPageUnloading = () => {
+    pageUnloading = false;
+  };
+  // capture：尽量早于 SSE finally / fetch abort 回调，减少竞态漏发 cancel。
+  window.addEventListener('pagehide', markPageUnloading, true);
+  window.addEventListener('beforeunload', markPageUnloading, true);
+  window.addEventListener('pageshow', clearPageUnloading, true);
+}
+
+/** 企业版自动 cancel 是否应跳过（仅刷新/关页卸载，不含普通后台标签）。 */
+function shouldSkipEnterpriseAutoInterrupt(): boolean {
+  return isEnterprise() && pageUnloading;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -142,6 +166,9 @@ const ROUTES: Record<string, RouteRow> = {
   'chat.send': { verb: 'POST', path: '/chat/completions', kind: 'sse' },
   'chat.interrupt': { verb: 'POST', path: '/chat/{session_id}/actions/interrupt', kind: 'unary' },
   'chat.user_answer': { verb: 'POST', path: '/chat/{session_id}/actions/answer', kind: 'unary' },
+  // SwarmFlow 人工轮回复：企业 HTTP 传输层的北向路由，缺行会在客户端直接抛
+  // METHOD_NOT_FOUND（兜底文案"请求失败"），请求根本到不了网关。
+  'chat.swarmflow_reply': { verb: 'POST', path: '/chat/{session_id}/actions/swarmflow-reply', kind: 'unary' },
   'config.get': { verb: 'GET', path: '/config', kind: 'unary' },
   'models.list': { verb: 'GET', path: '/models', kind: 'unary' },
   'a2a.outbound.list': { verb: 'GET', path: '/a2a/outbound/agents', kind: 'unary' },
@@ -182,6 +209,7 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.uninstall': { verb: 'POST', path: '/skills/actions/uninstall', kind: 'unary' },
   'skills.toggle': { verb: 'POST', path: '/skills/actions/toggle', kind: 'unary' },
   'skills.import_local': { verb: 'POST', path: '/skills/actions/import-local', kind: 'unary' },
+  'skills.import_upload': { verb: 'POST', path: '/skills/actions/import-upload', kind: 'unary' },
   'skills.source.providers': { verb: 'GET', path: '/skills/sources', kind: 'unary' },
   'skills.source.search': { verb: 'GET', path: '/skills/sources/search', kind: 'unary' },
   'skills.source.install': { verb: 'POST', path: '/skills/sources/actions/install', kind: 'unary' },
@@ -951,7 +979,11 @@ export class WebHttpClient {
         } as T;
       }
       if (options.signal?.aborted) {
-        if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
+        if (
+          assembled.kind === 'sse' &&
+          typeof params?.session_id === 'string' &&
+          !shouldSkipEnterpriseAutoInterrupt()
+        ) {
           void this.interruptChat(params.session_id);
         }
         throw this.createWebError(
@@ -962,7 +994,11 @@ export class WebHttpClient {
         );
       }
       if (error instanceof DOMException && error.name === 'AbortError') {
-        if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
+        if (
+          assembled.kind === 'sse' &&
+          typeof params?.session_id === 'string' &&
+          !shouldSkipEnterpriseAutoInterrupt()
+        ) {
           void this.interruptChat(params.session_id);
         }
         throw this.createWebError(
@@ -1115,6 +1151,9 @@ export class WebHttpClient {
         // 异常 EOF（gateway pod 被删、链路重置、错误流无终态）时本地收尾。
         // 主动 abort / 被新 chat.send 顶替 / STEER 短回执正常结束（sawTaskEnd）
         // 仍由对应路径处理，这里不 settle、不 interrupt。
+        // 刷新/关页时浏览器常直接把 SSE 收成 done（不抛 AbortError、也不 abort
+        // 我们的 AbortController），会误走本分支；卸载时只跳过 cancel，本地
+        // processing_status(false) 仍派发，避免页仍存活时会话卡在「执行中」。
         if (
           kind === 'sse' &&
           isEnterprise() &&
@@ -1125,7 +1164,13 @@ export class WebHttpClient {
           !this.sseSuperseded.has(requestId)
         ) {
           // Register the receipt before the idle event can start a queued turn.
-          void this.interruptChat(sessionId);
+          // 宏任务再发 cancel：刷新时 beforeunload 通常先于 timer；卸载后 timer
+          // 常被取消。interruptChat 入口仍会再判 pageUnloading。
+          if (!shouldSkipEnterpriseAutoInterrupt()) {
+            window.setTimeout(() => {
+              void this.interruptChat(sessionId);
+            }, 0);
+          }
           this.dispatchEvent({
             type: 'event',
             event: 'chat.processing_status',
@@ -1163,7 +1208,12 @@ export class WebHttpClient {
     }
   }
 
+  /** 仅用于 SSE 异常收口的自动 cancel；用户点暂停/停止走 request('chat.interrupt')。 */
   private async interruptChat(sessionId: string): Promise<void> {
+    // 企业版刷新/关页：所有自动 cancel 入口在此统一短路（含 pumpSse 异常 EOF）。
+    if (shouldSkipEnterpriseAutoInterrupt()) {
+      return;
+    }
     const requestId = this.generateRequestId();
     this.pendingInterrupts.set(sessionId, requestId);
     try {
@@ -1334,8 +1384,11 @@ export class WebHttpClient {
           for (const frame of consumed.frames) {
             const event = sseFrameToWsEvent(frame);
             if (!event) continue;
-            if (event.event === 'chat.processing_status') {
-              latestProcessing = event.payload?.is_processing === true;
+            if (
+              event.event === 'chat.processing_status' &&
+              typeof event.payload?.is_processing === 'boolean'
+            ) {
+              latestProcessing = event.payload.is_processing;
             }
             this.dispatchEvent(event);
           }
@@ -1345,7 +1398,9 @@ export class WebHttpClient {
       }
       if (controller.signal.aborted || generation !== this.sessionLiveGeneration) return;
       setTeamSessionLive(sessionId, false);
-      if (latestProcessing !== false) {
+      // 仅在 live 上已明确收到 idle 时灭灯。重连/刷新时 latest 常为 null，
+      // 若此处灭灯会盖掉 metadata 恢复的 isProcessing，暂停键变灰且成员过程挂不上。
+      if (latestProcessing === false) {
         turnOffLiveLamp(sessionId);
       }
       await new Promise((resolve) => window.setTimeout(resolve, 1000));

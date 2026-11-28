@@ -73,6 +73,24 @@ def test_dirty_source_add_delete_restore_and_lockfiles(checkout):
     assert cache.source_fingerprint(package) != original
 
 
+def test_gateway_runtime_changes_invalidate_identity_and_parent_observation(checkout):
+    package, versions = checkout
+    gateway = package.parent / "gateway"
+    gateway.mkdir()
+    runtime = gateway / "registry.py"
+    write_source(runtime, "value = 1\n", versions)
+    first = cache.source_fingerprint(package)
+    observation = cache.launch_source_observation()
+    assert cache.verify_launch_source(package, observation) == first
+    write_source(runtime, "value = 2\n", versions)
+    assert cache.verify_launch_source(package, observation) is None
+    assert cache.source_fingerprint(package) != first
+    write_source(runtime, "value = 1\n", versions)
+    assert cache.source_fingerprint(package) == first
+    runtime.unlink()
+    assert cache.source_fingerprint(package) != first
+
+
 def test_source_walk_prunes_only_frontend_node_dependencies_before_entering(checkout, monkeypatch):
     package, _versions = checkout
     excluded = package / "channels" / "web" / "frontend" / "node_modules"
@@ -536,7 +554,7 @@ def test_launch_parent_accepts_only_the_known_windows_launcher_hop(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", [b'\xef\xbb\xbf[core]\n autocrlf = true\n', b'broken syntax\n'])
 async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, monkeypatch, value):
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.ipc.client import connect_with_retry
     from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
 
@@ -544,7 +562,7 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
     config.write_bytes(value)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path / "data")
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
     root = Path(__file__).resolve().parents[3]
@@ -560,6 +578,9 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
         hello = await asyncio.wait_for(conn.recv(), 5)
         assert hello["kind"] == "hello"
         assert hello["code_identity"] == worker.launch_identity
+        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+        await conn.send(startup_acceptance(hello))
         assert (await asyncio.wait_for(conn.recv(), 5))["kind"] == "readiness"
         await conn.send({"kind": "shutdown"})
         assert (await asyncio.wait_for(conn.recv(), 5))["ok"] is True

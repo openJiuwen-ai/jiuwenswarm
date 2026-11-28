@@ -23,8 +23,11 @@ from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
     REST_ROUTES,
+    RestAssemblyError,
     assemble_rest_request,
 )
+
+_AGENT_ID = "EyMFedy4mZ0b8btF1gxJFjsq4FOl7Pj6m2EYP3Ecmu7"
 
 
 def _envelope(method: str, **kwargs) -> E2AEnvelope:
@@ -117,6 +120,75 @@ def test_identity_headers_carry_cron_meta_like_websocket_channel_context() -> No
     )
 
 
+def test_identity_headers_carry_agent_display_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    envelope = _envelope(
+        "chat.send",
+        user_id="u",
+        channel_context={
+            "routing": {"group_id": "g", "bot_id": "b"},
+            "agent_identity": {
+                "agent_name": "agent_" + _AGENT_ID,
+                "agent_id": _AGENT_ID,
+                "runtime_template_id": "rt-1",
+                "agent_template_id": "tpl-1",
+            },
+        },
+    )
+    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    assert headers["X-Agent-Identity-Id"] == _AGENT_ID
+    assert headers["X-Runtime-Template-Id"] == "rt-1"
+    assert headers["X-Agent-Template-Id"] == "tpl-1"
+    assert "X-Agent-Name" not in headers
+
+
+def test_identity_headers_absent_without_display_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    envelope = _envelope("chat.send", user_id="u", channel_context={
+        "routing": {"group_id": "g", "bot_id": "b"},
+    })
+    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    for name in (
+        "X-Agent-Name",
+        "X-Agent-Identity-Id",
+        "X-Runtime-Template-Id",
+        "X-Agent-Template-Id",
+    ):
+        assert name not in headers
+
+
+def test_identity_headers_personal_skips_display_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Personal edition drops display identity even when the envelope carries it."""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    envelope = _envelope(
+        "chat.send",
+        user_id="u",
+        channel_context={
+            "routing": {"group_id": "g", "bot_id": "b"},
+            "agent_identity": {
+                "agent_name": "agent_" + _AGENT_ID,
+                "agent_id": _AGENT_ID,
+                "runtime_template_id": "rt-1",
+                "agent_template_id": "tpl-1",
+            },
+        },
+    )
+    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    for name in (
+        "X-Agent-Name",
+        "X-Agent-Identity-Id",
+        "X-Runtime-Template-Id",
+        "X-Agent-Template-Id",
+    ):
+        assert name not in headers
+
+
 def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
     expected = {
         "mcp.list": "/api/v1/mcp/actions/list",
@@ -134,6 +206,7 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         "swarmflow.pause": "/api/v1/sessions/sess-1/swarmflow/actions/pause",
         "swarmflow.resume": "/api/v1/sessions/sess-1/swarmflow/actions/resume",
         "swarmflow.stop": "/api/v1/sessions/sess-1/swarmflow/actions/stop",
+        "chat.swarmflow_reply": "/api/v1/chat/sess-1/actions/swarmflow-reply",
         "proactive.feedback": "/api/v1/proactive/actions/feedback",
     }
     for method, suffix in expected.items():
@@ -144,6 +217,29 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         assert sent.verb == "POST"
         assert sent.url == "http://10.0.0.8:8766" + suffix
         assert sent.used_rpc_fallback is False
+
+
+def test_swarmflow_reply_route_and_http_chat_handler_are_wired() -> None:
+    """chat.swarmflow_reply 走聊天适配（同 user_answer）：路由行与处理门禁两端放行。
+
+    企业版人工轮回复经 Gateway 南向 POST /chat/{session_id}/actions/swarmflow-reply
+    到达 Pod；缺路由行或缺 http_chat 登记都会让回复停在网关（空壳应答 +
+    HttpMethodNotHandled），工作流节点的人工轮 future 等不到投递。
+    """
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.http_chat import is_http_chat_method
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+        method_has_http_handler,
+    )
+
+    assert is_http_chat_method(ReqMethod.CHAT_SWARMFLOW_REPLY) is True
+    assert method_has_http_handler("chat.swarmflow_reply") is True
+    sent = assemble_rest_request(
+        _envelope("chat.swarmflow_reply"),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "POST"
+    assert sent.url == "http://10.0.0.8:8766/api/v1/chat/sess-1/actions/swarmflow-reply"
 
 
 def test_personal_agent_templates_list_has_no_dedicated_url(
@@ -425,3 +521,115 @@ def test_session_delete_is_registered_for_rpc() -> None:
     dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
     text = dispatch.read_text(encoding="utf-8")
     assert "ReqMethod.SESSION_DELETE: handle_session_delete" in text
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"name": None, "origin": "sds-fixture:sds-contract-skill"},
+        {"name": "", "origin": "sds-fixture:sds-contract-skill"},
+    ],
+)
+def test_skills_uninstall_missing_name_raises_rest_assembly_error(
+    params: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """北向 body.name 缺失/null 时，南向 DELETE /skills/{name} 不得静默拼出坏 URL。"""
+    # 避开本测环境 ReqMethod/dispatch 漂移导致的 handler 探测失败。
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map.method_has_http_handler",
+        lambda _method: True,
+    )
+    with pytest.raises(RestAssemblyError, match=r"\['name'\].*/skills/\{name\}"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="skills.uninstall",
+                params=params,
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../sds-contract-skill",
+        "a/b",
+        r"a\b",
+        "..",
+        ".",
+    ],
+)
+def test_skills_uninstall_path_separator_name_raises_rest_assembly_error(
+    name: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """含路径分隔符/相对段的 name 不得编进 DELETE /skills/{name}（#168）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map.method_has_http_handler",
+        lambda _method: True,
+    )
+    with pytest.raises(RestAssemblyError, match=r"非法路径片段"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="skills.uninstall",
+                params={"name": name, "origin": "sds-fixture:sds-contract-skill"},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        [],
+        ["sds-contract-skill"],
+        {},
+        True,
+    ],
+)
+def test_skills_uninstall_non_string_name_raises_rest_assembly_error(
+    name, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """name=[] 等非标量不得编成 DELETE /skills/%5B%5D（#169）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map.method_has_http_handler",
+        lambda _method: True,
+    )
+    with pytest.raises(RestAssemblyError, match=r"类型非法"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="skills.uninstall",
+                params={"name": name, "origin": "sds-fixture:sds-contract-skill"},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+@pytest.mark.asyncio
+async def test_skills_uninstall_missing_name_returns_bad_request(monkeypatch) -> None:
+    """组装失败应落成 BAD_REQUEST，而不是冒泡成 Web HTTP 500。"""
+    from jiuwenswarm.extensions.runtime_management_extension import pod_http_client as mod
+
+    client = object.__new__(mod.HttpSseAgentServerClient)
+    monkeypatch.setattr(client, "_resolve_api_root", lambda _base=None: "http://agent/api/v1")
+
+    async def _boom(envelope, api_root):
+        raise RestAssemblyError("REST 路径缺占位符 ['name']: /skills/{name}")
+
+    monkeypatch.setattr(mod, "_assemble_with_expert_packages", _boom)
+    envelope = E2AEnvelope(
+        request_id="req-uninstall",
+        channel="web",
+        method="skills.uninstall",
+        params={},
+    )
+    response = await client.send_request(envelope, base_url="http://agent")
+    assert response.ok is False
+    assert response.payload["code"] == "BAD_REQUEST"
+    assert "name" in str(response.payload.get("error") or "")

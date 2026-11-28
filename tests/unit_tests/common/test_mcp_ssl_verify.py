@@ -27,6 +27,7 @@ from jiuwenswarm.common.mcp_dynamic_token_patch import (
     apply_mcp_dynamic_token_patch,
     fetch_dynamic_token,
     mark_dynamic_token_server,
+    read_instance_credentials,
 )
 
 
@@ -42,13 +43,7 @@ def _isolate_state():
 def _dispatch_credentials() -> None:
     apply_dispatched_credentials(
         SimpleNamespace(
-            agent_template={
-                "data": {
-                    "custom_config": [
-                        {"client_id": "demo", "client_secret": "secret"}
-                    ]
-                }
-            },
+            agent_client_credentials={"client_id": "demo", "client_secret": "secret"},
             resource_id="bot-a",
             ref_template_id="tpl-a",
         )
@@ -127,7 +122,7 @@ def test_token_client_skips_verification_only_when_configured(monkeypatch):
             {}, {}, "https://kc.example/token", "srv-1", ssl_verify=ssl_verify
         )
         try:
-            assert await provider._fetch_token() == "tok"
+            assert await provider._get_token(read_instance_credentials()) == "tok"
             transport = provider._client._transport_for_url(
                 httpx.URL("https://kc.example/token")
             )

@@ -81,7 +81,8 @@ from jiuwenswarm.server.jiuwenmate.recovery_service import (
     unverified_tool_calls,
 )
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import DEFAULT_SCHEDULE_INTERVAL, ScheduleService
-from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
+from jiuwenswarm.common.paths import get_jiuwenmate_dir
+from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits, SessionScheduler
 
 logger = logging.getLogger(__name__)
@@ -403,6 +404,20 @@ class AgentManager:
                 await self.control_request("local", state.record.request_id,
                                            reason="cancel", access=state.record.access)
 
+    async def cancel_swarmchat_member(
+        self, group_id: str, agent_id: str, member_name: str | None = None,
+    ) -> None:
+        """Cancel pending SwarmChat requests and detach inbound callbacks for a removed colleague."""
+        if self._swarmchat is not None and member_name:
+            await self._swarmchat.detach_member(group_id, member_name)
+        for state in self._sessions.pending_requests("local"):
+            route = state.record.route_snapshot
+            if route is None or state.record.agent_id != agent_id:
+                continue
+            if route.channel == "swarmchat" and route.target_id == group_id:
+                await self.control_request("local", state.record.request_id,
+                                           reason="cancel", access=state.record.access)
+
     async def reconcile_swarmchat_requests(self) -> None:
         from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
 
@@ -484,7 +499,7 @@ class AgentManager:
         approval_channels: frozenset[str] | None = None,
     ) -> AgentManager:
         """Runtime over the same SQLite file as ``PersistentAgentService.create_default``."""
-        db = (Path(data_dir) if data_dir is not None else default_data_dir()) / "agents.sqlite3"
+        db = (Path(data_dir) if data_dir is not None else get_jiuwenmate_dir()) / "agents.sqlite3"
         return cls(service, ExecutionRepository(db), WindowBackendStore(db), BudgetRepository(db), on_event=on_event,
                    approval_channels=approval_channels)
 

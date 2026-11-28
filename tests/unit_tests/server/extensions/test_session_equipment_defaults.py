@@ -84,65 +84,65 @@ class TestRestoreChatSendEquipmentDefaults:
             cfg_mod, "get_default_equipment_mcp_names", lambda: list(self.defaults)
         )
 
-    def _restore(self, params: dict[str, Any], session_id: str = "s1") -> dict[str, Any]:
+    async def _restore(self, params: dict[str, Any], session_id: str = "s1") -> dict[str, Any]:
         from jiuwenswarm.server.runtime.agent_adapter import interface
 
-        return interface.restore_chat_send_equipment_params(session_id, params)
+        return await interface.restore_chat_send_equipment_params(session_id, params)
 
-    def test_fresh_session_inherits_default_mcp(self) -> None:
+    async def test_fresh_session_inherits_default_mcp(self) -> None:
         self.saved = {}
         self.defaults = ["worklog-rag", "gitcode"]
-        params = self._restore({"query": "hi"})
+        params = await self._restore({"query": "hi"})
         assert params["mcp"] == ["worklog-rag", "gitcode"]
 
-    def test_explicit_empty_mcp_is_not_backfilled(self) -> None:
+    async def test_explicit_empty_mcp_is_not_backfilled(self) -> None:
         self.saved = {}
         self.defaults = ["worklog-rag"]
-        params = self._restore({"query": "hi", "mcp": []})
+        params = await self._restore({"query": "hi", "mcp": []})
         assert params["mcp"] == []
 
-    def test_explicit_mcp_wins_over_default(self) -> None:
+    async def test_explicit_mcp_wins_over_default(self) -> None:
         self.saved = {}
         self.defaults = ["worklog-rag"]
-        params = self._restore({"query": "hi", "mcp": ["custom"]})
+        params = await self._restore({"query": "hi", "mcp": ["custom"]})
         assert params["mcp"] == ["custom"]
 
-    def test_existing_snapshot_wins_over_default(self) -> None:
+    async def test_existing_snapshot_wins_over_default(self) -> None:
         self.saved = {"agent_template_name": "", "plugin_names": [], "mcp": ["a"]}
         self.defaults = ["worklog-rag"]
-        params = self._restore({"query": "hi"})
+        params = await self._restore({"query": "hi"})
         assert params["mcp"] == ["a"]
 
-    def test_empty_snapshot_is_escape_hatch(self) -> None:
+    async def test_empty_snapshot_is_escape_hatch(self) -> None:
         """A persisted empty snapshot means the user cleared explicitly."""
         self.saved = {"agent_template_name": "", "plugin_names": [], "mcp": []}
         self.defaults = ["worklog-rag"]
-        params = self._restore({"query": "hi"})
+        params = await self._restore({"query": "hi"})
         assert params["mcp"] == []
 
-    def test_no_default_leaves_params_untouched(self) -> None:
+    async def test_no_default_leaves_params_untouched(self) -> None:
         self.saved = {}
         self.defaults = []
-        params = self._restore({"query": "hi"})
+        params = await self._restore({"query": "hi"})
         assert "mcp" not in params
 
-    def test_default_does_not_seed_other_equipment_fields(self) -> None:
+    async def test_default_does_not_seed_other_equipment_fields(self) -> None:
         self.saved = {}
         self.defaults = ["worklog-rag"]
-        params = self._restore({"query": "hi"})
+        params = await self._restore({"query": "hi"})
         assert "plugin_names" not in params
         assert "agent_template_name" not in params
 
     @pytest.mark.parametrize("mode", ["team", "team.plan", "auto_harness"])
-    def test_skipped_modes_ignore_default(self, mode: str) -> None:
+    async def test_skipped_modes_ignore_default(self, mode: str) -> None:
         self.saved = {}
         self.defaults = ["worklog-rag"]
-        params = self._restore({"query": "hi", "mode": mode})
+        params = await self._restore({"query": "hi", "mode": mode})
         assert "mcp" not in params
 
-    def test_no_session_id_returns_untouched(self) -> None:
+    async def test_no_session_id_returns_untouched(self) -> None:
         self.defaults = ["worklog-rag"]
-        params = self._restore({"query": "hi"}, session_id="")
+        params = await self._restore({"query": "hi"}, session_id="")
         assert "mcp" not in params
 
 

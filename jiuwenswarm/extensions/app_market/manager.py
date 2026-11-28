@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import asyncio
 import hashlib
-import base64
 import os
 import shutil
 import time
@@ -19,6 +18,7 @@ from urllib.parse import quote
 from jiuwenswarm.enterprise.edition import is_enterprise
 
 from .app_ai_roles import load_ai_role_groups
+from .app_icon import read_local_app_icon
 from .app_market.market_service import MarketService
 from .app_market.models import AppManifest, normalize_app_version
 from .app_market.run_consent import RunConsentStore
@@ -55,6 +55,23 @@ def _owner_identity_required() -> bool:
     Enterprise keeps the strict rule and never shares an anonymous owner.
     """
     return is_enterprise()
+
+
+def _same_directory(left: str, right: str) -> bool:
+    """Compare two directories by canonical path, treating Windows case alike."""
+    try:
+        left_path = Path(left).expanduser().resolve()
+        right_path = Path(right).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return os.path.normcase(str(left_path)) == os.path.normcase(str(right_path))
+
+
+def _confirmed_work_dir(manifest: AppManifest, confirm_work_dir: str) -> bool:
+    """Require the caller to echo the exact directory before deleting its files."""
+    if not manifest.work_dir or not confirm_work_dir.strip():
+        return False
+    return _same_directory(manifest.work_dir, confirm_work_dir)
 
 
 @dataclass
@@ -108,7 +125,7 @@ class _DescriptionParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag.lower() == "title":
             self._in_title = True
-        values = dict(attrs)
+        values = {key: value or "" for key, value in attrs}
         if tag.lower() == "meta" and values.get("name", "").lower() == "description":
             self.description = values.get("content", "")[:500]
         if tag.lower() == "meta" and values.get("name", "").lower() == "application-name":
@@ -126,26 +143,10 @@ def _metadata(entry: Path) -> dict[str, str]:
             parser.feed(source.read(65536))
     except OSError:
         pass
-    icon_url = ""
-    if parser.icon_path:
-        icon = (entry.parent / parser.icon_path).resolve()
-        mime = {
-            ".svg": "image/svg+xml",
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-        }.get(icon.suffix.lower())
-        try:
-            icon.relative_to(entry.parent.resolve())
-            if mime and icon.is_file() and icon.stat().st_size <= 262144:
-                icon_url = "data:" + mime + ";base64," + base64.b64encode(icon.read_bytes()).decode("ascii")
-        except (OSError, ValueError):
-            pass
     return {
         "name": parser.application_name or parser.title.strip()[:128] or entry.stem,
         "description": parser.description or parser.title.strip()[:500],
-        "icon_url": icon_url,
+        "icon_url": read_local_app_icon(entry.parent, parser.icon_path),
         "version": parser.application_version,
     }
 
@@ -161,6 +162,23 @@ def get_app_description(app: AppManifest) -> str:
         return app.description
     entry = Path(app.work_dir) / (app.page_entry_path or "index.html")
     return _metadata(entry)["description"]
+
+
+def _get_app_icon(app: AppManifest) -> str:
+    """Resolve legacy Hub registrations from their installed files."""
+    icon_url = app.icon_url or ""
+    if icon_url.startswith("data:") or (app.source != "hub" and not app.app_id.startswith("hub-")):
+        return icon_url
+    if not app.work_dir:
+        return ""
+    root = Path(app.work_dir)
+    entry = root / (app.page_entry_path or "index.html")
+    try:
+        if entry.resolve().is_relative_to(root.resolve()):
+            return _metadata(entry)["icon_url"] or read_local_app_icon(root, "icon.png")
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return ""
 
 
 class AppMarketManager:
@@ -345,6 +363,7 @@ class AppMarketManager:
             record = self.storage.load_install_record(app_id)
             if record and (record.get("owner_id"), record.get("work_dir")) == (owner_id, manifest.work_dir):
                 manifest.local_release_id = str(record.get("release_id") or "")
+            manifest.icon_url = _get_app_icon(manifest)
             manifest.source = "local"
             manifest.hub_asset_id = ""
             manifest.hub_url = ""
@@ -426,7 +445,7 @@ class AppMarketManager:
                     "name": a.name,
                     "version": a.version,
                     "description": get_app_description(a),
-                    "icon_url": a.icon_url,
+                    "icon_url": _get_app_icon(a),
                     "run_type": a.run_type,
                     "default_port": a.default_port,
                     "status_mode": a.status_mode,
@@ -1096,7 +1115,12 @@ class AppMarketManager:
             self._reject_active_job(app_id)
             return await self._uninstall_app_locked(app_id, owner_id, remove_files)
 
-    async def _uninstall_app_locked(self, app_id: str, owner_id: str, remove_files: bool) -> dict[str, Any]:
+    async def _uninstall_app_locked(
+        self,
+        app_id: str,
+        owner_id: str,
+        remove_files: bool,
+    ) -> dict[str, Any]:
         from .hub_install import AppInstallError, uninstall_hub_app
 
         try:
@@ -1138,11 +1162,19 @@ class AppMarketManager:
                 raise AppMarketError("app_operation_conflict", "Could not stop the active application")
 
     async def delete_app(
-        self, app_id: str, owner_id: str = "", remove_files: bool = False
+        self,
+        app_id: str,
+        owner_id: str = "",
+        remove_files: bool = False,
+        confirm_work_dir: str = "",
     ) -> dict[str, Any]:
         """Remove an app from the market, optionally deleting its program files.
 
-        Both modes leave the app project and its editor sessions untouched.
+        A local app directory may also be its project directory, so ``data`` and
+        ``.git`` are archived but the remaining project files are deleted. A
+        ``remove_files`` request must therefore name that directory in
+        ``confirm_work_dir``. Filesystem failures are reported after deregistration.
+        Project and editor session records themselves are not modified.
         """
         from .hub_install import cleanup_local_app_files
 
@@ -1150,6 +1182,11 @@ class AppMarketManager:
             app = self._service.get_app(app_id)
             if not app or app.owner_id != owner_id:
                 return {"deleted": False}
+            if remove_files and app.source != "hub" and not _confirmed_work_dir(app, confirm_work_dir):
+                raise AppMarketError(
+                    "app_delete_confirm_required",
+                    "Confirm the application directory before deleting its files",
+                )
             self._reject_active_job(app_id)
             if app.source == "hub":
                 result = await self._uninstall_app_locked(app_id, owner_id, remove_files)
@@ -1157,24 +1194,29 @@ class AppMarketManager:
             if not await self._service.delete_app(app_id) or self._service.get_app(app_id) is not None:
                 return {"deleted": False}
 
-            removed_dir = preserved_dir = cleanup_warning = ""
+            removed_dir = preserved_dir = cleanup_warning = cleanup_code = ""
             if remove_files:
                 async with self._local_work_dirs_lock:
                     cleanup = asyncio.create_task(asyncio.to_thread(cleanup_local_app_files, app, self.storage))
                     try:
-                        removed_dir, preserved_dir, cleanup_warning = await asyncio.shield(cleanup)
+                        removed_dir, preserved_dir, cleanup_warning, cleanup_code = await asyncio.shield(cleanup)
                     except asyncio.CancelledError:
                         # Keep both locks until the filesystem work finishes.
                         await cleanup
                         raise
+        project_retained = not (
+            bool(removed_dir) and app.project_dir and _same_directory(app.work_dir, app.project_dir)
+        )
         return {
             "deleted": True,
             "removed_files": bool(removed_dir),
             "removed_dir": removed_dir,
             "preserved_dir": preserved_dir,
-            "project_retained": True,
+            "project_retained": project_retained,
+            "project_files_removed": bool(removed_dir) and not project_retained,
             "work_dir": app.work_dir,
             "cleanup_warning": cleanup_warning,
+            "cleanup_code": cleanup_code,
         }
 
     async def shutdown(self) -> None:

@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-06 渲染服务与下行帧 |
 | 所属模块 | `jiuwenswarm/extensions_v2/{assembly,management/registry}.py`、`webui/{models,schema,constants,registry,transport,runtime}.py`、`webui/core_handlers/render_core.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-27 |
 | 方案状态 | 已实现；重连重发未实现 |
 
 ## 1. 问题与目标
@@ -73,7 +73,7 @@ flowchart LR
 
 #### 3.2.1 槽位范围与目标字段
 
-支持会话槽位和全局槽位。`SLOT_SPECS` 为每个槽位指定 `scope` 和展示模式：
+支持会话槽位和全局槽位。`SLOT_SPECS` 为每个槽位指定 `scope`、展示模式和可选的 `max_instances`：
 `session` 属于一个聊天会话；`application` 是全局槽位，不依赖当前聊天会话。
 全局槽位按 Web 连接隔离，每个连接分别维护自己的实例和 revision。
 
@@ -169,6 +169,13 @@ stateDiagram-v2
 新实例到来且该组已达上限时，按 `updated_at` 选出最久未更新的实例；新帧发送成功后才向被淘汰实例发送
 `webui.render.clear`，避免新帧失败时误删旧内容。此上限不限制所有连接的实例总数。
 
+`SlotSpec.max_instances` 是可选的单槽位实例上限，不占用或替代上述 32 个实例预算；计数范围与容量组一致，
+会话槽位按会话、应用槽位按连接。当前 `conversation.header.title.after` 为 2、
+`conversation.header.actions` 为 3、`application.sidebar.footer` 为 3。新实例超过槽位上限时
+`render_core` 返回 `REJECTED`，不发送错误帧；已有实例仍可更新。`clear` 可在槽位满额时处理，
+目标不存在时只发送清除帧，不登记实例，也不淘汰同会话的其他实例。前端
+`catalog/slots.ts` 用相同的 `maxVisible` 截断显示，优先保留有效帧，仅错误实例在有空位时显示。
+
 ### 4.3 下行消息
 
 `RenderTransport` 生成 AgentServer 主动推送消息。目标与路由分别放在两层：
@@ -215,8 +222,10 @@ stateDiagram-v2
 
 `ops.state.set` 提交新版本后，Core `JsonState.changes` 回调查询受影响目标并把刷新调度回 WebUI 事件循环。
 每个目标最多保留一个刷新任务；连续更新会合并，但任务会在退出前再次读取待处理标记，保证最后一次状态可见。
-刷新复用上一次成功送达的不可变请求，以及宿主保存的会话和连接路由，再次触发完整 `ui.render` 事件链，
-不会伪造或重放 `ui.ready`。首次渲染期间发生并发写入时，送达后的 `changed_since` 检查会补调度一次刷新。
+刷新沿用当前目标、渲染模式、显示条件和宿主保存的会话与连接路由，再次进入 `ui.render` 读取最新 State。
+从空 `root` 构树的目标继续从空 `root` 开始。从调用方提供的组件树构建且读取 State 的目标，以上一次完成 State 读取的树为基线更新。
+同一次 State 变更交互中，自动帧和显式帧内容相同时只发送一份。该交互显式传入组件树且未读取 State 时，沿用目标现有的依赖。
+首次渲染期间发生并发写入时，送达后的 `changed_since` 检查会补调度一次刷新。
 
 `clear`、容量淘汰、连接/会话清理、包卸载都会删除目标依赖并取消其刷新任务。宿主关闭时先停止状态订阅和刷新任务，
 再卸载扩展处理器，避免刷新与包关闭并发。该机制是 AgentServer 进程内通知；跨进程状态变更仍需宿主轮询或外部通知，

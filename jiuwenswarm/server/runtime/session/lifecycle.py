@@ -400,9 +400,11 @@ def session_paths(
     root = get_agent_sessions_dir() if sessions_root is None else sessions_root
     active, archived = root / session_id, root.parent / "sessions_archived" / session_id
     for path in (active, archived):
+        from jiuwenswarm.runtime.kernel import canonical_path
+
         # Junctions and symlinks must never widen physical deletion scope.
         if path.is_symlink() or (
-            path.exists() and path.resolve().parent != path.parent.resolve()
+            path.exists() and Path(canonical_path(path)).parent != Path(canonical_path(path.parent))
         ):
             raise LifecycleError("BAD_REQUEST", "session path escapes managed storage")
     if active.exists() and archived.exists():
@@ -629,28 +631,10 @@ def write_guard(session_id: str, generation: int | None = None) -> None:
 
 
 def _proc_start_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
-    """Read Linux/OpenHarmony's PID-reuse-safe start-time counter.
+    """Keep runtime-owner records compatible with the shared process reader."""
+    from jiuwenswarm.common.process_identity import proc_start_ticks
 
-    ``psutil.Process.create_time()`` converts this counter to wall-clock time
-    by reading the global ``/proc/stat`` boot-time record. That record is not
-    readable from some HarmonyOS app sandboxes, while the per-process stat
-    file is still available.
-    """
-    try:
-        text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return None
-    closing_paren = text.rfind(")")
-    if closing_paren < 0:
-        return None
-    fields = text[closing_paren + 2:].split()
-    # The slice starts at field 3 (state); field 22 is starttime, index 19.
-    if len(fields) <= 19:
-        return None
-    try:
-        return int(fields[19])
-    except ValueError:
-        return None
+    return proc_start_ticks(pid, proc_root=proc_root)
 
 
 def _runtime_owner_record(pid: int) -> dict[str, Any]:
@@ -660,7 +644,7 @@ def _runtime_owner_record(pid: int) -> dict[str, Any]:
     owner: dict[str, Any] = {"pid": pid}
     try:
         owner["started_at"] = psutil.Process(pid).create_time()
-    except psutil.Error as exc:
+    except (psutil.Error, OSError) as exc:
         start_ticks = _proc_start_ticks(pid)
         if start_ticks is not None:
             owner["start_ticks"] = start_ticks
@@ -715,7 +699,9 @@ def runtime_owner_alive(owner: dict) -> bool:
             try:
                 if abs(process.create_time() - owner_started_at) >= 0.01:
                     return False
-            except psutil.AccessDenied:
+            except psutil.NoSuchProcess:
+                raise
+            except (psutil.Error, OSError):
                 if owner_start_ticks is None:
                     raise
         if owner_start_ticks is not None or owner_started_at is not None:
@@ -729,7 +715,7 @@ def runtime_owner_alive(owner: dict) -> bool:
         )
     except psutil.NoSuchProcess:
         return False
-    except psutil.AccessDenied as exc:
+    except (psutil.Error, OSError) as exc:
         raise LifecycleError("OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner") from exc
 
 
@@ -846,7 +832,9 @@ def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
 
 def event_snapshots() -> list[dict]:
     """Internal Gateway refresh feed. Resource revisions survive restarts."""
-    directory = get_agent_root_dir() / "lifecycle" / "resources"
+    from jiuwenswarm.common.paths import get_lifecycle_dir
+
+    directory = get_lifecycle_dir() / "resources"
     result = []
     # Sessions share few projects: cache each project state once per poll and
     # hand every entry its own already-loaded value instead of letting
@@ -914,7 +902,9 @@ def inventory_feed() -> dict:
         ]
     }
     known = {item["project_id"] for item in payload["projects"]}
-    directory = get_agent_root_dir() / "lifecycle" / "resources"
+    from jiuwenswarm.common.paths import get_lifecycle_dir
+
+    directory = get_lifecycle_dir() / "resources"
     for path in directory.glob("project_*.json") if directory.exists() else ():
         operation = read_json(path).get("operation") or {}
         project_id = operation.get("resource_id")

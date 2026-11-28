@@ -113,7 +113,7 @@ async def test_host_oauth_cancel_during_probe_returns_cancelled() -> None:
         def sync_mcp_credentials(self) -> None:
             syncs.append("sync")
 
-    class _Server:
+    class _Server(AgentWebSocketServer):
         _agent_manager = _Manager()
 
         @staticmethod
@@ -129,7 +129,7 @@ async def test_host_oauth_cancel_during_probe_returns_cancelled() -> None:
         patch("jiuwenswarm.common.mcp_config.discard_probed_mcp") as discard,
     ):
         result = await AgentWebSocketServer._await_host_oauth_auth(
-            _Server(), "canva", max_attempts=1, delay=0,
+            object.__new__(_Server), "canva", max_attempts=1, delay=0,
         )
     try:
         assert result == {"type": "cancelled", "name": "canva"}

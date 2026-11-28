@@ -266,7 +266,9 @@ async def test_fresh_and_warm_sessions_bypass_saturated_recovery(stored_history,
     session = SimpleNamespace(get_state=lambda _key: None, get_session_id=lambda: stored.sid)
     monkeypatch.setattr(service, "resolve_live_agent_session", lambda *_args: session)
     if rows == "warm":
-        stored.engine.get_context = lambda **_kwargs: object()
+        stored.engine.get_context = lambda **_kwargs: SimpleNamespace(
+            get_messages=lambda: ["existing conversation"],
+        )
     else:
         stored.write([] if rows == "empty" else [{
             "role": "user", "request_id": "now", "content": "x" * (256 * 1024 if rows == "long_current" else 1),

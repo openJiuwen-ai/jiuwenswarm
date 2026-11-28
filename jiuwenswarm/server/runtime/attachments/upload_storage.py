@@ -27,24 +27,33 @@ from agent_gateway.common.attachment_safety import (  # noqa: F401
 UPLOAD_READ_CHUNK_BYTES = 512 * 1024
 
 
-def read_session_upload_chunk(session_id: str, raw_path: str, offset: int, limit: int) -> dict:
-    """Read a bounded chunk from this tenant's direct session-upload children."""
+def read_session_upload_chunk(
+    session_id: str, raw_path: str, offset: int, limit: int, *, allow_personal: bool = False,
+) -> dict:
+    """Read a bounded chunk from the active workspace's direct session uploads."""
     from jiuwenswarm.common.obs_files import MAX_FILE_BYTES
-    from jiuwenswarm.common.utils import get_agent_sessions_dir
+    from jiuwenswarm.common.paths import get_agent_root_dir
+    from jiuwenswarm.enterprise import is_enterprise
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     if not session_id or safe_session_dirname(session_id) != session_id:
         raise ValueError("invalid session_id")
     if offset < 0 or not 0 < limit <= UPLOAD_READ_CHUNK_BYTES:
         raise ValueError("invalid offset or limit")
+    agent_root = get_agent_root_dir()
     root = TenantContext.current_tenant_root()
-    uploads = get_agent_sessions_dir() / session_id / "uploads"
+    if root is None and allow_personal and not is_enterprise():
+        root = agent_root.parent
+    uploads = agent_root / "sessions" / session_id / "uploads"
     path = Path(raw_path)
     path_in_uploads = path.is_absolute() and path.parent == uploads
     name_ok = path.name not in {"", ".", ".."}
-    under_tenant = root is not None and uploads.is_relative_to(root)
-    if not path_in_uploads or not name_ok or not under_tenant:
-        raise PermissionError("path outside tenant session uploads")
+    if not path_in_uploads or not name_ok or root is None:
+        raise PermissionError("path outside session uploads")
+    if not uploads.is_relative_to(root):
+        raise PermissionError("path outside session uploads")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("secure session upload reads are unavailable on this server")
     # Anchor every directory and the leaf by descriptor; never follow a symlink.
     # Pair each os.open with os.close in the same try/finally arm (G.PRM.03);
     # a deferred list-close is opaque to that static check.

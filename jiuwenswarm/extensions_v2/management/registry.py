@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -294,11 +295,18 @@ class ExtensionManager:
             was_active = self._registry.runtime.get_active(package_id) is not None
             if version:
                 report = await self._uninstall_version(package_id, version)
+            elif self._bundle_owns_id(package_id):
+                # Core's whole-package uninstall would also take the registered
+                # member root and unload it; only standalone copies are ours.
+                report = await self._uninstall_standalone_versions(package_id)
             else:
                 report = await self._registry.uninstall(package_id)
         if report.status == "SUCCESS":
             if not version:
-                self._accepted_roots.difference_update(accepted)
+                manager = self._registry.package_manager
+                self._accepted_roots.difference_update(
+                    root for root in accepted if not manager.is_managed_root(root)
+                )
             if was_active and self._registry.runtime.get_active(package_id) is None:
                 await self._notify_inactive(package_id)
             _record_recovery_change(
@@ -310,12 +318,15 @@ class ExtensionManager:
         return report
 
     async def _uninstall_version(self, package_id: str, version: str) -> ActivationReport:
-        """Delete one version copy while every other stored version keeps its files."""
+        """Delete one standalone copy while every other owner keeps its instance.
 
-        manager = self._registry.package_manager
-        root = manager.version_dir(package_id, version)
-        accepted_root = root.resolve()
-        if accepted_root not in self._accepted_roots or not root.is_dir() or not has_manifest(root):
+        The copy is addressed by the standard store path, never through
+        ``version_dir``: a same id and version bundle member may be registered
+        there, and this call must not unload or delete it.
+        """
+
+        root = (self.install_dir / package_id / version).resolve()
+        if root not in self._accepted_roots or not root.is_dir() or not has_manifest(root):
             return _not_installed(package_id, version, operation="uninstall")
         manifest = load_manifest(root, require_domain=False)
         context = context_for(self._bus)
@@ -327,11 +338,11 @@ class ExtensionManager:
             await service.validate_operation(token, manifest, "uninstall")
             active = context.runtime.get_active(package_id)
             with service.operation_scope(token):
-                if active is not None and active.version == version:
+                if active is not None and active.version == version and _resolves_to(active.root, root):
                     report = await _deactivate_keep_copy(context, self._bus, manifest)
                 if report is None or report.status == "SUCCESS":
                     await run_file_operation(
-                        lambda: manager.remove_installed(package_id, version, missing_ok=True)
+                        lambda: self._remove_standalone_copy(package_id, version, root)
                     )
             if report is None:
                 report = ActivationReport(
@@ -364,7 +375,7 @@ class ExtensionManager:
         if report is None:  # pragma: no cover - begin_operation always reports one outcome
             raise ExtensionFailure(StatusCode.EXTENSION_LOAD_FAILED, reason="uninstall produced no report")
         if report.status == "SUCCESS":
-            self._accepted_roots.discard(accepted_root)
+            self._accepted_roots.discard(root)
         return report
 
     async def reload(self, package_id: str) -> ActivationReport:
@@ -560,6 +571,74 @@ class ExtensionManager:
         installed = tuple(root for root in result.installed if root.resolve() in self._accepted_roots)
         return replace(result, installed=installed)
 
+    def _remove_standalone_copy(self, package_id: str, version: str, root: Path) -> None:
+        """Delete one standalone copy even when a same id and version member is registered."""
+
+        manager = self._registry.package_manager
+        if manager.version_dir(package_id, version).resolve() == root:
+            manager.remove_installed(package_id, version, missing_ok=True)
+            return
+        if not root.is_dir():
+            return
+        shutil.rmtree(root)
+        package_dir = root.parent
+        if package_dir.is_dir() and not any(package_dir.iterdir()):
+            package_dir.rmdir()
+
+    def _bundle_owns_id(self, package_id: str) -> bool:
+        """Return whether a registered bundle member root serves this package id."""
+
+        manager = self._registry.package_manager
+        return any(
+            manager.is_managed_root(root) and self._accepted_root_matches(root, package_id)
+            for root in self._accepted_roots
+        )
+
+    def _standalone_versions(self, package_id: str) -> list[Path]:
+        package_dir = self.install_dir / package_id
+        if not package_dir.is_dir():
+            return []
+        versions: list[Path] = []
+        for path in package_dir.iterdir():
+            if path.is_dir() and has_manifest(path):
+                versions.append(path.resolve())
+        versions.sort(key=lambda path: path.name)
+        return versions
+
+    async def _uninstall_standalone_versions(self, package_id: str) -> ActivationReport:
+        """Remove every standalone copy while the bundle member keeps running."""
+
+        versions = self._standalone_versions(package_id)
+        if not versions:
+            return _not_installed(package_id, operation="uninstall")
+        report = None
+        try:
+            for root in versions:
+                if root in self._accepted_roots:
+                    report = await self._uninstall_version(package_id, root.name)
+                    if report.status != "SUCCESS":
+                        return report
+                    continue
+                await asyncio.to_thread(_remove_tree, root)
+            package_dir = self.install_dir / package_id
+            if package_dir.is_dir() and not any(package_dir.iterdir()):
+                await asyncio.to_thread(package_dir.rmdir)
+        except OSError as exc:
+            return _failure(
+                package_id,
+                operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
+            )
+        if report is not None:
+            return report
+        return ActivationReport(
+            plan_id="",
+            package_id=package_id,
+            operation="uninstall",
+            status="SUCCESS",
+            previous_generation=None,
+            current_generation=None,
+        )
+
     def _accept_version(self, package_id: str, version: str) -> None:
         # Standalone copies always live at <store>/<id>/<version>; version_dir()
         # may resolve to a registered bundle member of the same id/version.
@@ -709,6 +788,22 @@ def _failure(package_id: str, error: OperationError) -> ActivationReport:
         current_generation=None,
         error=error,
     )
+
+
+def _remove_tree(path: Path) -> None:
+    """Delete one standalone directory tree that Core does not manage."""
+
+    if path.is_dir():
+        shutil.rmtree(path)
+
+
+def _resolves_to(candidate: object, expected: Path) -> bool:
+    """Return whether a recorded root is the copy at ``expected``."""
+
+    try:
+        return Path(str(candidate)).expanduser().resolve() == expected
+    except (OSError, ValueError):
+        return False
 
 
 def _not_installed(

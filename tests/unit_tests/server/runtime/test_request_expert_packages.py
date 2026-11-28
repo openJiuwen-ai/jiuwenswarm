@@ -27,11 +27,11 @@ def _bind_workspace(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
         return root
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         _agent_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir",
+        "jiuwenswarm.common.paths.get_workspace_root_dir",
         _user_workspace,
     )
     monkeypatch.setattr(
@@ -39,7 +39,7 @@ def _bind_workspace(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
         _agent_workspace,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.extension_package_manager.get_user_workspace_dir",
+        "jiuwenswarm.server.runtime.extension_package_manager.get_workspace_root_dir",
         _user_workspace,
     )
 

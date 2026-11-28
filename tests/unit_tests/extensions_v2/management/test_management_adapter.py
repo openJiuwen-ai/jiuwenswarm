@@ -34,6 +34,7 @@ from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
+from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
 from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 
 from .support import EMPTY_EXTENSION, METADATA_EXTENSION, archive_package, make_bus, write_package
@@ -362,6 +363,38 @@ async def test_import_installs_a_package_from_a_zip(
     assert store.get("test.pkg", "1.0.0") is not None
 
 
+async def test_import_inspection_identifies_zip_without_installing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+        lambda: SimpleNamespace(notify_packages_changed=notify),
+    )
+    source = archive_package(write_package(tmp_path / "source"))
+    adapter = PackageManagementAdapter()
+
+    inspected = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source), "inspect": True})
+    )
+
+    assert inspected.ok
+    assert inspected.payload == {"package_id": "test.pkg"}
+    assert (await manager.query()).active == ()
+    assert not (manager.install_dir / "test.pkg").exists()
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    assert store.get("test.pkg", "1.0.0") is None
+    notify.assert_not_awaited()
+
+    imported = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}))
+
+    assert imported.ok
+    assert imported.payload["reports"][0]["status"] == "SUCCESS"
+    notify.assert_awaited_once_with(["test.pkg"])
+
+
 async def test_import_installs_a_bundle_and_writes_container_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -457,6 +490,27 @@ async def test_install_notification_failure_preserves_successful_activation(
     source = archive_package(write_package(tmp_path / "source"))
 
     response = await PackageManagementAdapter().handle(_request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]}))
+
+    assert response.ok and response.payload["reports"][0]["status"] == "SUCCESS"
+    assert response.payload["ui_notified"] is False
+    assert (await manager.query("test.pkg")).active[0].package_id == "test.pkg"
+
+
+@pytest.mark.asyncio
+async def test_notification_side_failure_keeps_the_install_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+
+    async def unavailable(*args: Any, **kwargs: Any) -> bool:
+        raise OSError("state store unavailable")
+
+    monkeypatch.setattr(adapter_module, "_notify_installed_packages", unavailable)
+    source = archive_package(write_package(tmp_path / "source"))
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]})
+    )
 
     assert response.ok and response.payload["reports"][0]["status"] == "SUCCESS"
     assert response.payload["ui_notified"] is False
@@ -994,6 +1048,36 @@ async def test_install_forwards_requested_version_to_hub(
     assert (manager.install_dir / "webui.demo" / "0.9.0").is_dir()
 
 
+@pytest.mark.parametrize("query_fails", [False, True])
+async def test_install_missing_hub_package_preserves_recovery_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, query_fails: bool,
+) -> None:
+    query = AsyncMock(return_value=QueryResult(), side_effect=RuntimeError("query failed") if query_fails else None)
+    manager = SimpleNamespace(initialized=True, query=query)
+    lookup = AsyncMock(side_effect=HubNotFoundError("asset not found"))
+    monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: tmp_path / "examples")
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: tmp_path / "installed")
+    monkeypatch.setattr(adapter_module, "get_hub_system_plugin", lookup)
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["asset-1"], "version": "0.9.0"})
+    )
+
+    assert not response.ok
+    assert response.payload["code"] == "INTERNAL_ERROR"
+    assert response.payload["error"] == "V2 package management failed"
+    assert response.payload["outcome"] == "unknown"
+    if query_fails:
+        assert response.payload["query_error"] == "Current package state could not be confirmed"
+        assert "state" not in response.payload
+    else:
+        assert response.payload["state"]["package_ids"] == []
+        assert "query_error" not in response.payload
+    lookup.assert_awaited_once_with("asset-1", "0.9.0")
+    query.assert_awaited_once_with(None)
+
+
 async def test_switch_version_of_an_installed_hub_package_uses_its_asset_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1055,6 +1139,37 @@ async def test_uninstall_removes_every_stored_version(
 
     assert removed.ok
     assert not (manager.install_dir / "webui.demo").exists()
+
+
+async def test_uninstall_last_local_version_removes_package_from_mine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+    monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: tmp_path / "examples")
+    monkeypatch.setattr(
+        adapter_module, "get_hub_system_plugin", AsyncMock(side_effect=HubNotFoundError("asset not found")),
+    )
+    adapter = PackageManagementAdapter()
+    package_id = "webui.demo"
+    version = "1.0.0"
+    source = archive_package(write_package(tmp_path / "source", package_id=package_id, version=version))
+    installed = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]}))
+    assert installed.ok and installed.payload["reports"][0]["status"] == "SUCCESS"
+
+    removed = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_UNINSTALL, {"package_id": package_id, "version": version})
+    )
+
+    assert removed.ok and removed.payload["reports"][0]["status"] == "SUCCESS"
+    assert not (manager.install_dir / package_id).exists()
+    assert (await manager.query()).active == ()
+    assert ExtensionInstallState.for_install_dir(manager.install_dir).get(package_id) is None
+    mine = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "mine"}))
+    assert mine.ok and mine.payload["packages"] == []
+    detail = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": package_id}))
+    assert not detail.ok and detail.payload["code"] == "PACKAGE_NOT_FOUND"
+    assert "outcome" not in detail.payload
 
 
 async def test_uninstall_one_version_keeps_the_other_stored_versions(
@@ -1129,3 +1244,50 @@ async def test_uninstall_a_stored_version_keeps_the_active_one(
     assert removed.payload["reports"][0]["status"] == "SUCCESS"
     assert not (manager.install_dir / "webui.demo" / "0.9.0").exists()
     assert [record.version for record in (await manager.query()).active] == ["1.0.0"]
+
+
+@pytest.mark.asyncio
+async def test_failed_install_notifies_the_restored_active_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(tmp_path / "store")
+    store.upsert(ExtensionInstallRecord(
+        package_id="demo.gw", version="1.0.0", origin="user",
+        active=True, enabled=True, domain="gateway", status="active",
+        installed_at="2026-11-27T00:00:00+00:00",
+    ))
+    # The failed target is written last and must not hide the live version.
+    store.upsert(ExtensionInstallRecord(
+        package_id="demo.gw", version="2.0.0", origin="user",
+        active=False, enabled=False, domain="gateway", status="failed",
+        error="extension load failed", installed_at="2026-11-27T00:00:01+00:00",
+    ))
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+        lambda: SimpleNamespace(notify_packages_changed=notify),
+    )
+    failed = ActivationReport("", "demo.gw", "install", "FAILED", None, None)
+
+    delivered = await adapter_module._notify_installed_packages([failed], store)
+
+    assert delivered is True
+    notify.assert_awaited_once_with(["demo.gw"])
+
+
+@pytest.mark.asyncio
+async def test_failed_first_install_does_not_notify_without_an_active_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _manager(tmp_path, monkeypatch)
+    store = ExtensionInstallState.for_install_dir(tmp_path / "store")
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+        lambda: SimpleNamespace(notify_packages_changed=notify),
+    )
+    failed = ActivationReport("", "demo.gw", "install", "FAILED", None, None)
+
+    assert await adapter_module._notify_installed_packages([failed], store) is False
+    notify.assert_not_awaited()

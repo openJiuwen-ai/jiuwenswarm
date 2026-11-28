@@ -8,13 +8,18 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
+from agent_gateway.common.request_identity import read_agent_identity
+
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.utils import logger
 
 from . import db_queries
+from .agent_credentials import MANAGED_CLIENTS, select_agent_credentials
 from .schemas import (
     DEFAULT_AGENT_LOAD_SLOTS,
+    EXECUTION_GUARD_ENTITY_TABLE,
+    EXECUTION_GUARD_SLOT,
     MODEL_SLOT_KEYS,
     REACT_ENTITY_TABLE,
     REACT_SLOT,
@@ -58,6 +63,8 @@ def _apply_slot_entities(
         result.permissions = entities
     elif slot == REACT_SLOT:
         result.react = entities
+    elif slot == EXECUTION_GUARD_SLOT:
+        result.execution_guard = entities
     elif slot == TemplateRefSlot.A2A_ACCESS_POLICY:
         result.a2a_access_policy = entities
 
@@ -80,6 +87,8 @@ def _any_requested_slot_loaded(
         if slot == TemplateRefSlot.PERMISSIONS and result.permissions:
             return True
         if slot == REACT_SLOT and result.react is not None:
+            return True
+        if slot == EXECUTION_GUARD_SLOT and result.execution_guard is not None:
             return True
         if (
             slot == TemplateRefSlot.A2A_ACCESS_POLICY
@@ -234,6 +243,9 @@ class TemplateEntityCache:
         if slot == REACT_SLOT:
             # e2a 协议包尚未登记 REACT 槽位，仓内字符串接线。
             table = REACT_ENTITY_TABLE
+        elif slot == EXECUTION_GUARD_SLOT:
+            # e2a 协议包尚未登记 EXECUTION_GUARD 槽位，仓内字符串接线。
+            table = EXECUTION_GUARD_ENTITY_TABLE
         else:
             try:
                 slot_key = TemplateRefSlot(slot)
@@ -355,7 +367,7 @@ async def _fetch_instance_agent_resource(resource_id: str) -> dict[str, Any] | N
     return await _resource_row_cache.get_or_fetch(f"iar:{rid}", _load)
 
 
-async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
+async def _fetch_agent_template_row(template_id: str, *, refresh: bool = False) -> dict[str, Any] | None:
     tid = str(template_id or "").strip()
     if not tid:
         return None
@@ -367,7 +379,9 @@ async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
         )
         return rows[0] if rows else None
 
-    if not is_enterprise():
+    # Agent ID credentials may change while an off/routing process stays alive.
+    # A new request must not retain a removed secret for the template cache TTL.
+    if refresh or not is_enterprise():
         return await _load()
     return await _agent_template_cache.get_or_fetch(f"at:{tid}", _load)
 
@@ -437,7 +451,10 @@ async def load_effective_enterprise_config(
         )
         return None
 
-    agent_template_row = await _fetch_agent_template_row(ref_template_id)
+    identity = read_agent_identity(getattr(request, "metadata", None))
+    agent_template_row = await _fetch_agent_template_row(
+        ref_template_id, refresh=bool(identity.get("agent_id")),
+    )
     if agent_template_row is None:
         logger.warning(
             "[enterprise_config] agent_template not found or disabled: "
@@ -447,6 +464,12 @@ async def load_effective_enterprise_config(
         )
         return None
 
+    agent_client_credentials = select_agent_credentials(agent_template_row, identity)
+    data = agent_template_row.get("data")
+    if isinstance(data, dict) and MANAGED_CLIENTS in data:
+        public_data = data.copy()
+        del public_data[MANAGED_CLIENTS]
+        agent_template_row = {**agent_template_row, "data": public_data}
     merged_refs = normalize_template_ref(agent_template_row.get("template_ref"))
     filtered_refs = {
         slot: refs
@@ -478,6 +501,7 @@ async def load_effective_enterprise_config(
         instance_agent_resource=resource_row,
         ref_template_id=ref_template_id,
         agent_template=agent_template_row,
+        agent_client_credentials=agent_client_credentials,
         template_ref=slot_template_id_map,
         debug={
             "load_slots": sorted(load_slots),
@@ -488,10 +512,14 @@ async def load_effective_enterprise_config(
         try:
             entities = await _fetch_slot_entities(slot, template_ids)
         except Exception as exc:
-            # A2A 策略与 react 失败降级（warning 后跳过该槽位，不拖垮其余槽位）：
-            # react_template 表随 gateway 建表 PR 发版，当前 pin 的 agent-gateway
-            # 未建表时查询会抛错，不能让配置了 react 引用的实例整体加载失败。
-            if slot not in (TemplateRefSlot.A2A_ACCESS_POLICY, REACT_SLOT):
+            # A2A 策略、react 与执行护栏失败降级（warning 后跳过该槽位，不拖垮其余槽位）：
+            # 对应表随 gateway 建表发版，当前环境未建表时查询会抛错，不能让配置了这些
+            # 引用的实例整体加载失败。
+            if slot not in (
+                TemplateRefSlot.A2A_ACCESS_POLICY,
+                REACT_SLOT,
+                EXECUTION_GUARD_SLOT,
+            ):
                 raise
             logger.warning(
                 "[enterprise_config] %s slot load failed: resource_id=%r "
@@ -518,6 +546,30 @@ async def load_effective_enterprise_config(
             exc_info=True,
         )
         result.advanced_config = None
+
+    # Swarmflow 企业策略：来自 agent_template 的 expert_package 槽引用的
+    # expert_package_template.swarmflow JSON 列（企业最小接入设计方案 §4.2）。
+    expert_package_ids = [
+        str(tid or "").strip()
+        for tid in (merged_refs.get("expert_package") or [])
+        if str(tid or "").strip()
+    ]
+    try:
+        result.swarmflow = await db_queries.fetch_expert_package_swarmflow(
+            expert_package_ids
+        )
+    except Exception:
+        logger.warning(
+            "[enterprise_config] swarmflow load failed: resource_id=%r "
+            "expert_package_ids=%s",
+            rid,
+            expert_package_ids,
+            exc_info=True,
+        )
+        result.swarmflow = None
+        # 加载失败 ≠ 策略缺省：置位标记，解析侧按 fail-closed 关门，避免
+        # 瞬时故障把管理员可能已禁止的 Swarmflow 门禁静默放开。
+        result.swarmflow_load_failed = True
 
     if not _any_requested_slot_loaded(result, load_slots):
         logger.warning(

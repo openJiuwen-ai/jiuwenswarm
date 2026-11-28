@@ -1281,6 +1281,7 @@ function parseSessionHistoryTimelineEntry(
         role: 'system',
         content: errorMsg,
         timestamp: at,
+        ...(!extractAutomation(payload) && !extractAutomation(record) ? { turnError: errorMsg } : {}),
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
       },
     };

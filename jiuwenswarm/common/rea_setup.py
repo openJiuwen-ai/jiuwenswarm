@@ -4363,7 +4363,7 @@ def _persist_rea_env(
     workspace_path: Path,
     component_env: dict[str, str],
 ) -> None:
-    """Merge one installed component environment into the registered MCP record."""
+    """Merge component environment without changing MCP connection state."""
 
     if not component_env:
         return
@@ -4371,7 +4371,6 @@ def _persist_rea_env(
     if not record:
         return
     record["env"] = _record_env(record) | component_env
-    record["state"] = "registered"
     payload = _read_state(workspace_path)
     payload.setdefault("mcp", {})[REA_MCP_NAME] = record
     _write_state(payload, workspace_path)
@@ -4918,7 +4917,6 @@ def configure_component(
         target.write_text(content, encoding="utf-8")
         env[env_key] = str(target)
     record["env"] = env
-    record["state"] = "registered"
     payload = _read_state(workspace)
     payload.setdefault("mcp", {})[REA_MCP_NAME] = record
     _write_state(payload, workspace)

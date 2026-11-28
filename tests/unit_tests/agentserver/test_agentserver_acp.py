@@ -9,6 +9,23 @@ from openjiuwen.agent_teams.runtime import RunActionKind
 from e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
 
+from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.management import teams as teams_management_module
+from jiuwenswarm.server.runtime.session import session_metadata as session_metadata_module
+from jiuwenswarm.server.worker import execution_requests
+import shutil
+from jiuwenswarm.server.runtime.agent_manager import ACP_DEFAULT_CAPABILITIES
+from jiuwenswarm.server.worker.execution_services import ProductionHostServices
+from e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.agents.harness.common.tools import acp_output_tools
+from jiuwenswarm.agents.harness.common.tools.acp_output_tools import AcpOutputRequest, get_acp_output_manager
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
+from jiuwenswarm.server.runtime.agent_adapter import team_helpers as team_helpers_module
+from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    _build_context_assemble_rail,
+    _build_context_processor_rail,
+)
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     SymphonyRetrievalCompactProcessorConfig,
 )
@@ -160,9 +177,18 @@ class FakeJiuwenBoxRunner:
         return cls._instance
 
 
+class ACPTestHostServices(ProductionHostServices):
+    """Keep ACP policy tests' per-case response doubles at the injected port."""
+
+    response_encoder = staticmethod(encode_agent_response_for_wire)
+
+    def encode_response(self, response, *, response_id, sequence=0):
+        return type(self).response_encoder(response, response_id=response_id)
+
+
 class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
     def __init__(self):
-        super().__init__()
+        super().__init__(services=ACPTestHostServices())
         self._find_team_session_ids_override = None
 
     def set_agent_manager_for_test(self, agent_manager):
@@ -269,6 +295,11 @@ def fake_encode_agent_response_for_wire(resp, response_id):
 
 def patch_session_roots(monkeypatch, sessions_root):
     monkeypatch.setattr(
+        teams_management_module,
+        "get_agent_sessions_dir",
+        lambda: sessions_root,
+    )
+    monkeypatch.setattr(
         agent_ws_server_module,
         "get_agent_sessions_dir",
         lambda: sessions_root,
@@ -284,9 +315,8 @@ def patch_session_roots(monkeypatch, sessions_root):
 
 
 @pytest.fixture(autouse=True)
-def _reset_acp_output_manager(monkeypatch):
-    monkeypatch.setattr(agent_ws_server_module, "AgentManager", FakeAgentManager)
-    monkeypatch.setattr(agent_ws_server_module, "JiuwenBoxRunner", FakeJiuwenBoxRunner)
+def _reset_acp_output_manager(monkeypatch, tmp_path):
+    patch_session_roots(monkeypatch, tmp_path / "sessions")
     mgr = get_acp_output_manager()
     mgr.reset_state()
     mgr.set_send_push_callback(None)
@@ -995,8 +1025,8 @@ async def test_handle_initialize_uses_agent_manager_capabilities(monkeypatch):
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1040,8 +1070,8 @@ async def test_handle_initialize_falls_back_to_default_capabilities(monkeypatch)
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1076,8 +1106,8 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
     sessions_root = tmp_path / "sessions"
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1136,8 +1166,8 @@ async def test_handle_session_create_locks_persist_session(monkeypatch, tmp_path
     fake_ws = FakeWebSocket()
     sessions_root = tmp_path / "sessions"
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1174,8 +1204,8 @@ async def test_handle_session_create_requires_boolean_persist_session(
     server.set_agent_manager_for_test(fake_manager)
     fake_ws = FakeWebSocket()
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1206,8 +1236,8 @@ async def test_handle_session_create_rejects_explicit_session_id(monkeypatch, tm
     sessions_root = tmp_path / "sessions"
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1263,8 +1293,8 @@ async def test_handle_tui_session_create_accepts_explicit_id_without_prewarm(
     )
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1336,8 +1366,8 @@ async def test_handle_tui_non_explicit_create_resolves_project_in_agentserver(
     fake_ws = FakeWebSocket()
     sessions_root = tmp_path / "sessions"
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1399,8 +1429,8 @@ async def test_handle_tui_explicit_session_create_is_idempotent_and_bypasses_pre
     sessions_root = tmp_path / "sessions"
     patch_session_roots(monkeypatch, sessions_root)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1439,8 +1469,8 @@ async def test_handle_tui_existing_session_rejects_persist_session_change(
     sessions_root = tmp_path / "sessions"
     patch_session_roots(monkeypatch, sessions_root)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1479,8 +1509,8 @@ async def test_cancelled_tui_explicit_create_waiter_does_not_release_owner_lock(
     server.set_agent_manager_for_test(FakeAgentManager(session_id="must-not-be-used"))
     patch_session_roots(monkeypatch, tmp_path / "sessions")
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1544,8 +1574,8 @@ async def test_handle_tui_explicit_create_preserves_existing_project_binding(
     sessions_root = tmp_path / "sessions"
     patch_session_roots(monkeypatch, sessions_root)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1620,8 +1650,8 @@ async def test_handle_tui_explicit_create_rejects_id_owned_by_another_channel(
     sessions_root = tmp_path / "sessions"
     patch_session_roots(monkeypatch, sessions_root)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1668,8 +1698,8 @@ async def test_handle_explicit_session_create_rejects_unsupported_identity(
     fake_ws = FakeWebSocket()
     patch_session_roots(monkeypatch, tmp_path / "sessions")
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1700,8 +1730,8 @@ async def test_handle_session_create_injected_default_work_mode_does_not_mismatc
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1801,8 +1831,8 @@ async def legacy_handle_session_create_acks_before_async_kvc(monkeypatch, tmp_pa
         await kvc_release.wait()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1883,8 +1913,8 @@ async def test_handle_session_create_prepares_team_before_ack(monkeypatch, tmp_p
         await prepare_released.wait()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1948,8 +1978,8 @@ async def test_handle_session_create_missing_token_preserves_legacy_error_wire(
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -1990,8 +2020,8 @@ async def legacy_handle_session_create_existing_metadata_fast_path_skips_owner_a
     kvc_calls = []
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2061,8 +2091,8 @@ async def legacy_handle_session_create_owner_error_releases_claim_and_uses_legac
     kvc_calls = []
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2124,8 +2154,8 @@ async def test_handle_session_create_metadata_is_visible_before_owner_prepare(
     observed_metadata = []
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2207,8 +2237,8 @@ async def test_handle_session_create_prewarm_miss_preserves_success_contract(
 
     fake_manager.claim_prewarmed_session = _claim
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2315,8 +2345,8 @@ async def test_handle_session_create_preserves_project_binding_error_wire(
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2370,8 +2400,8 @@ async def test_handle_team_binding_create_persists_team_entity(monkeypatch, tmp_
 
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2440,8 +2470,8 @@ async def test_handle_team_binding_generate_uses_default_template_and_resolves_c
 
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2501,8 +2531,8 @@ async def test_handle_team_binding_generate_uses_tiny_agent_result_for_name(monk
 
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2688,8 +2718,8 @@ async def test_handle_team_bindings_list_selects_entity_when_template_deleted(mo
 
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"modes": {"team": {}}})
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2746,8 +2776,8 @@ async def test_handle_team_session_bind_allows_existing_session_dir_without_meta
     )
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2802,8 +2832,8 @@ async def test_handle_team_session_bind_rejects_missing_session(monkeypatch, tmp
     store.create(team_name="research_team", template_id="default")
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2896,8 +2926,8 @@ async def test_handle_session_switch_delegates_product_lifecycle(
     )
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -2998,8 +3028,8 @@ async def test_handle_session_switch_records_foreground_before_ack(monkeypatch):
     )
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3062,8 +3092,8 @@ async def test_handle_session_input_intent_uses_transport_neutral_runtime_api(
         return "scheduled"
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3168,8 +3198,8 @@ async def test_handle_session_switch_serializes_reentrant_requests(monkeypatch):
     )
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3284,8 +3314,8 @@ async def legacy_handle_team_delete_deletes_all_matching_team_sessions(monkeypat
             return session_dir
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3309,12 +3339,12 @@ async def legacy_handle_team_delete_deletes_all_matching_team_sessions(monkeypat
         lambda: FakeSessionsRoot(),
     )
     monkeypatch.setattr(
-        agent_ws_server_module.shutil,
+        shutil,
         "rmtree",
         lambda path: removed_dirs.append(path.session_id),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        session_metadata_module,
         "remove_session_metadata_cache",
         lambda session_id: cleared_metadata_cache.append(session_id),
     )
@@ -3401,8 +3431,8 @@ async def legacy_handle_team_delete_warns_when_local_team_directory_cleanup_fail
             return FakeSessionDir()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3423,7 +3453,7 @@ async def legacy_handle_team_delete_warns_when_local_team_directory_cleanup_fail
         lambda: FakeSessionsRoot(),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        session_metadata_module,
         "remove_session_metadata_cache",
         lambda _session_id: None,
     )
@@ -3495,8 +3525,8 @@ async def legacy_handle_team_delete_stops_when_runner_reports_failure(monkeypatc
             return True
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3580,8 +3610,8 @@ async def legacy_handle_team_delete_keeps_catalog_when_session_directory_delete_
             return FakeSessionDir()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3605,9 +3635,9 @@ async def legacy_handle_team_delete_keeps_catalog_when_session_directory_delete_
     def fail_rmtree(_path):
         raise OSError("permission denied")
 
-    monkeypatch.setattr(agent_ws_server_module.shutil, "rmtree", fail_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", fail_rmtree)
     monkeypatch.setattr(
-        agent_ws_server_module,
+        session_metadata_module,
         "remove_session_metadata_cache",
         lambda session_id: cleared_metadata_cache.append(session_id),
     )
@@ -3684,8 +3714,8 @@ async def legacy_handle_team_delete_without_sessions_skips_checkpointer_and_remo
         raise AssertionError("team.delete should not require a checkpointer without sessions")
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3749,8 +3779,8 @@ async def legacy_handle_team_delete_with_sessions_requires_persistent_checkpoint
         return ["team_sess_001"]
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3796,8 +3826,8 @@ async def test_handle_team_delete_rejects_non_team_mode(monkeypatch):
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3832,8 +3862,8 @@ async def test_handle_team_delete_requires_team_name(monkeypatch):
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -3899,8 +3929,8 @@ async def test_handle_session_delete_initializes_persistent_checkpointer(monkeyp
         release_calls.append(session_id)
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -4002,8 +4032,8 @@ async def legacy_handle_session_delete_drains_runtime_before_kvc_and_checkpoint_
     plan_controller.active_sessions.add("sess-agent-drain")
     plan_controller.exited_sessions.add("sess-agent-drain")
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -4098,8 +4128,8 @@ async def legacy_handle_session_delete_keeps_state_when_cleanup_fails(
     plan_controller.active_sessions.add("sess-agent-busy")
     plan_controller.exited_sessions.add("sess-agent-busy")
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -4176,8 +4206,8 @@ async def legacy_handle_session_delete_unbinds_team_session(monkeypatch, tmp_pat
         return None
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -4257,8 +4287,8 @@ async def test_handle_session_delete_defers_when_checkpointer_unavailable(monkey
         release_calls.append(session_id)
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -4334,7 +4364,7 @@ async def test_find_team_session_ids_uses_metadata_team_name(monkeypatch, tmp_pa
         lambda: sessions_root,
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        teams_management_module,
         "get_session_metadata",
         lambda session_id: metadata_map.get(session_id, {}),
     )
@@ -4359,8 +4389,8 @@ async def test_handle_acp_tool_response_completes_pending_future(monkeypatch):
     ))
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -4405,8 +4435,8 @@ async def test_handle_acp_tool_response_unknown_id_is_soft_ignored(monkeypatch):
     fake_ws = FakeWebSocket()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
@@ -4456,8 +4486,8 @@ async def test_handle_message_uses_ws_scoped_acp_client_capabilities(monkeypatch
     server.set_agent_manager_for_test(fake_manager)
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
+        ACPTestHostServices,
+        "response_encoder",
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(

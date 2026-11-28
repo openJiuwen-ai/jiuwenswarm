@@ -23,6 +23,7 @@ import { RuntimeResume } from './runtimeResume';
 import { useChatStore } from '../stores/chatStore';
 import { browserClientCapabilities } from '../features/webui/client/browserClient.ts';
 import { shouldReportWorkerInterruption } from '../features/interruptSettleGuard';
+import { connectionRetryDelay } from './connectionRetry';
 
 type RuntimeResumeQuery = ReturnType<RuntimeResume['queries']>[number];
 type RuntimeRecoveryMetadata = Pick<Session, 'status' | 'is_processing'> & { runtime?: Record<string, unknown> };
@@ -41,8 +42,8 @@ interface PendingRequest {
   awaitUserAnswerResult: boolean;
 }
 
-const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 15000;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const MIN_RECOVERY_RETRY_MS = 1000;
 
@@ -158,6 +159,7 @@ class WebClient {
       }
     });
   }
+  private startupStartedAt: number | null = null;
   private ws: WebSocket | null = null;
   private state: WebConnectionState = 'idle';
   private handlers = new Map<string, Set<EventHandler>>();
@@ -222,6 +224,7 @@ class WebClient {
     this.updateState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
     const url = this.buildWsUrl(options);
+    if (this.startupStartedAt === null) this.startupStartedAt = performance.now();
 
     this.connectPromise = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url);
@@ -502,7 +505,38 @@ class WebClient {
     if (this.ws?.readyState === WebSocket.OPEN && this.state === 'ready') {
       return;
     }
-    await this.connect(this.lastConnectOptions);
+    let timer: number | undefined;
+    const connecting = this.connect(this.lastConnectOptions);
+    const connectingWs = this.ws;
+    try {
+      await Promise.race([
+        connecting,
+        new Promise<void>((_, reject) => {
+          timer = window.setTimeout(() => {
+            if (this.ws === connectingWs) {
+              this.ws = null;
+              this.connectPromise = null;
+              if (connectingWs && connectingWs.readyState !== WebSocket.CLOSED) {
+                connectingWs.close(4000, 'connect timeout');
+              }
+              this.updateState('closed');
+            }
+            reject(
+              this.createWebError(
+                i18n.t('network.requestTimeout'),
+                'WS_CONNECT_TIMEOUT',
+                undefined,
+                true,
+              ),
+            );
+          }, DEFAULT_CONNECT_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    }
   }
 
   /**
@@ -881,14 +915,16 @@ class WebClient {
     this.reconnectAttempts += 1;
     this.updateState('reconnecting');
 
-    // 前 N 次使用指数退避，超过后改为固定间隔持续重试，后端恢复后能自动检测并恢复连接
-    const delay =
-      this.reconnectAttempts <= MAX_RECONNECT_ATTEMPTS
-        ? Math.min(1000 * 2 ** (this.reconnectAttempts - 1), 30000)
-        : 2000; // 每 2 秒持续尝试
+    const delay = connectionRetryDelay(
+      this.reconnectAttempts,
+      this.buildWsUrl(this.lastConnectOptions),
+      this.connectedOnce,
+      performance.now() - (this.startupStartedAt ?? performance.now()),
+    );
 
     this.reconnectTimer = window.setTimeout(() => {
-      void this.connect(this.lastConnectOptions);
+      // onclose schedules further attempts; automatic callers do not await them.
+      void this.connect(this.lastConnectOptions).catch(() => {});
     }, delay);
   }
 

@@ -11,7 +11,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server
 import time
-from jiuwenswarm.common import utils
+from jiuwenswarm.common import paths, utils
 from jiuwenswarm.server.runtime.session import session_history as history
 from jiuwenswarm.server.runtime.session import session_metadata as metadata
 from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
@@ -49,9 +49,10 @@ class _FakeWebSocket:
 
 def _redirect_agent_root(monkeypatch, tmp_path):
     # lifecycle（…/agent/lifecycle/resources）与 project_store（…/agent/projects.json）
-    # 的路径最终都解析到 utils.get_user_workspace_dir() 之下，一处补丁整体重定向
+    # 的路径最终都解析到 agent 根（profile 布局下 <root>/profile/agent/）之下，
+    # 一处补丁整体重定向
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path
+        "jiuwenswarm.common.paths.get_user_workspace_dir", lambda: tmp_path
     )
 
 def _write_projects(agent_root, records):
@@ -85,7 +86,7 @@ async def _lifecycle_payload(server, project_id):
 @pytest.mark.asyncio
 async def test_project_lifecycle_single_project_contract(tmp_path, monkeypatch):
     _redirect_agent_root(monkeypatch, tmp_path)
-    agent_root = tmp_path / "agent"
+    agent_root = tmp_path / "profile" / "agent"
     _write_projects(
         agent_root,
         [
@@ -212,7 +213,7 @@ def test_background_writers_and_caches_keep_same_session_id_isolated(
     assert history.flush_pending_writes()
     assert metadata.flush_pending_writes()
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
     sid = "shared-session-id"
     for user in ("u", "v"):
         with TenantContext.scoped(f"g::b::{user}"):
@@ -256,7 +257,7 @@ def test_background_writers_and_caches_keep_same_session_id_isolated(
 @pytest.mark.parametrize("edition", ["enterprise", "personal"])
 async def test_http_handler_scope_is_bound_and_restored(monkeypatch, tmp_path, invoke, edition):
     monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
     request = AgentRequest(
         request_id="r", channel_id="web", user_id="u", session_id="s",
         metadata={"routing": {"group_id": "g", "bot_id": "b", "user_id": "u"}},
@@ -281,7 +282,7 @@ async def test_http_handler_scope_is_bound_and_restored(monkeypatch, tmp_path, i
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
 async def test_http_scope_restores_after_error_or_cancellation(monkeypatch, tmp_path, invoke, error):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path)
     request = AgentRequest(
         request_id="r", channel_id="web", session_id="s", user_id="u",
         metadata={"routing": {"group_id": "g", "bot_id": "b"}},
@@ -409,6 +410,129 @@ async def test_team_delete_handler_only_maps_runtime_result(monkeypatch):
         "error": "partial",
         "code": "DELETE_FAILED",
     }
+
+def _team_delete_ctx(runtime):
+    request = AgentRequest(
+        request_id="delete",
+        channel_id="web",
+        req_method=ReqMethod.TEAM_DELETE,
+        params={"mode": "team", "team_name": "team-a"},
+    )
+    return SimpleNamespace(
+        request=request,
+        services=SimpleNamespace(execution_runtime=lambda: runtime),
+        sink=SimpleNamespace(send_response=AsyncMock()),
+    )
+
+
+def _record_team_purges(monkeypatch, *, fail_session_id=""):
+    purges = []
+
+    async def _run_team_store(fn, /, **kwargs):
+        purges.append(kwargs)
+        if fail_session_id and kwargs.get("session_id") == fail_session_id:
+            raise RuntimeError("team store unavailable")
+        return None
+
+    monkeypatch.setattr(
+        "jiuwenswarm.infrastructure.db.team_store_actor.run_team_store",
+        _run_team_store,
+    )
+    return purges
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_releases_quota_for_sessions_of_partial_delete(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(
+                ok=False,
+                team_name="team-a",
+                session_ids=("s1",),
+                failed_session_ids=("s2",),
+                recovery_required=True,
+                error_code="DELETE_FAILED",
+                error_message="partial",
+            )
+        )
+    )
+    purges = _record_team_purges(monkeypatch)
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    # A surviving Session may still own the name, so the partial delete purges
+    # only the Session that was actually removed.
+    assert purges == [
+        {"session_id": "s1", "team_name": "", "session_only": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_isolates_quota_release_per_session(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(
+                ok=False,
+                team_name="team-a",
+                session_ids=("s1", "s2"),
+                failed_session_ids=("s3",),
+                recovery_required=True,
+            )
+        )
+    )
+    purges = _record_team_purges(monkeypatch, fail_session_id="s1")
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    assert purges == [
+        {"session_id": "s1", "team_name": "", "session_only": True},
+        {"session_id": "s2", "team_name": "", "session_only": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_does_not_release_quota_when_nothing_was_deleted(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(
+                ok=False,
+                team_name="team-a",
+                failed_session_ids=("s1",),
+                error_code="DELETE_FAILED",
+                error_message="failed before any destructive step",
+            )
+        )
+    )
+    purges = _record_team_purges(monkeypatch)
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    assert purges == []
+
+
+@pytest.mark.asyncio
+async def test_team_delete_handler_releases_quota_by_name_for_full_delete(monkeypatch):
+    from jiuwenswarm.server.handlers.team import handle_team_delete
+
+    runtime = SimpleNamespace(
+        delete_team=AsyncMock(
+            return_value=TeamDeleteResult(ok=True, team_name="team-a", deleted=True)
+        )
+    )
+    purges = _record_team_purges(monkeypatch)
+
+    await handle_team_delete(_team_delete_ctx(runtime))
+
+    assert purges == [
+        {"session_id": "", "team_name": "team-a", "session_only": False},
+    ]
+
 
 @pytest.mark.asyncio
 async def test_plain_disconnect_does_not_run_delete_participant():

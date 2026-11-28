@@ -167,3 +167,26 @@ def test_clip_prompt_says_a_turnaround_reference_is_one_person() -> None:
 
 def test_clip_prompt_has_no_turnaround_line_for_group_cast_only() -> None:
     assert "front, side, and back" not in _clip_prompt(["char_2"])
+
+
+@pytest.mark.parametrize("attach_character", [True, False])
+def test_turnaround_instruction_uses_only_the_attached_character_slot(
+    tmp_path: Path,
+    attach_character: bool,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import ReferenceSlot
+
+    slots = [ReferenceSlot(1, "scene", "river pier", tmp_path / "scene.png")]
+    if attach_character:
+        slots.append(ReferenceSlot(2, "character", "Fisherman", tmp_path / "fisherman.png"))
+    text = compose_practice_prompt(
+        cfg={"on_screen": ["char_1"], "clip_action": "Fisherman arrives at the pier."},
+        graph=_CLIP_GRAPH,
+        slots=slots,
+    )
+
+    assert "Image 1: each" not in text
+    if attach_character:
+        assert "Image 2: each is one person" in text
+    else:
+        assert "front, side, and back" not in text

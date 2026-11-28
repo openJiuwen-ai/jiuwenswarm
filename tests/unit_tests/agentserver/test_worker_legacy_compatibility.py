@@ -13,7 +13,7 @@ import psutil
 import pytest
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
-from jiuwenswarm.common import utils
+from jiuwenswarm.common import paths, utils
 from jiuwenswarm.server.ipc.client import connect_with_retry
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import identity, worker_process
@@ -22,18 +22,35 @@ from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
 from jiuwenswarm.server.supervisor.worker_process import default_socket_path
 
 SOURCE = Path(__file__).resolve().parents[3]
+
+
+def test_legacy_workspace_export_uses_the_current_profile_root(tmp_path, monkeypatch):
+    from jiuwenswarm.server.agent_ws_server import get_domain_data_dir
+
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    assert get_domain_data_dir() == tmp_path / "profile"
 LEGACY_SHIM = """import sys
 if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):
     from jiuwenswarm.server.worker import stub
     original = stub._serve_one
     class LegacyConnection:
-        def __init__(self, connection): self.connection = connection
+        def __init__(self, connection):
+            self.connection, self.hello, self.accepted = connection, None, False
         def __getattr__(self, name): return getattr(self.connection, name)
+        async def recv(self):
+            if self.hello is not None and not self.accepted:
+                from jiuwenswarm.server.ipc.startup import startup_acceptance
+                self.accepted = True
+                return startup_acceptance(self.hello)
+            return await self.connection.recv()
         async def send(self, message):
             message = dict(message)
             if message.get('kind') == 'hello':
+                # The simulated v1 peer has no startup-permission handshake.
+                self.hello = dict(message)
                 message['protocol'] = 1
-                for key in ['data_scope', 'deployment_scope', 'process_created', 'code_identity', 'shutdown_ack']:
+                for key in ['data_scope', 'deployment_scope', 'process_created', 'process_started', 'code_identity', 'shutdown_ack']:
                     message.pop(key, None)
             if message.get('kind') != 'shutdown.done':
                 await self.connection.send(message)
@@ -51,7 +68,7 @@ def legacy_workspace(monkeypatch):
     with tempfile.TemporaryDirectory(prefix="jw-old-") as directory:
         with monkeypatch.context() as patch:
             workspace = Path(directory)
-            patch.setattr(utils, "_workspace_base_dir", workspace)
+            patch.setattr(paths, "_workspace_base_dir", workspace)
             patch.setenv("JIUWENSWARM_DATA_DIR", str(workspace))
             yield workspace
 
@@ -329,18 +346,18 @@ def test_legacy_posix_paths_include_historical_temp_fallback(monkeypatch, tmp_pa
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_INSTANCE", instance)
     workspace = tmp_path / ("deep-" * 25)
     temp = tmp_path / "os-temp"
-    monkeypatch.setattr(utils, "_workspace_base_dir", workspace)
+    monkeypatch.setattr(paths, "_workspace_base_dir", workspace)
     monkeypatch.setattr(identity, "data_scope", lambda: "a" * 64)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
     monkeypatch.setattr(worker_process, "os", SimpleNamespace(name="posix", environ=os.environ, getuid=lambda: 42))
-    paths = worker_process.legacy_socket_paths()
+    socket_paths = worker_process.legacy_socket_paths()
     prefix = "runtime-" + "a" * 16
-    assert str(temp / "jiuwenswarm-runtime-42" / (prefix + ".sock")) in paths
+    assert str(temp / "jiuwenswarm-runtime-42" / (prefix + ".sock")) in socket_paths
     token = worker_process._runtime_instance_token()
     if token:
-        assert str(temp / "jiuwenswarm-runtime-42" / (prefix + "-" + token + ".sock")) in paths
-    assert str(workspace / "run/runtime-worker.sock") in paths
-    assert len(paths) == len(set(paths))
+        assert str(temp / "jiuwenswarm-runtime-42" / (prefix + "-" + token + ".sock")) in socket_paths
+    assert str(workspace / "run/runtime-worker.sock") in socket_paths
+    assert len(socket_paths) == len(set(socket_paths))
     assert not temp.exists(), "Endpoint discovery must not create a directory"
 
 
@@ -366,7 +383,7 @@ async def test_instance_shutdown_loads_target_environment_without_touching_calle
     workers = []
     try:
         for workspace, label in [(legacy_workspace, "target"), (other, "other")]:
-            monkeypatch.setattr(utils, "_workspace_base_dir", workspace)
+            monkeypatch.setattr(paths, "_workspace_base_dir", workspace)
             monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(workspace))
             monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", label)
             monkeypatch.setenv("JIUWENSWARM_RUNTIME_INSTANCE", label)

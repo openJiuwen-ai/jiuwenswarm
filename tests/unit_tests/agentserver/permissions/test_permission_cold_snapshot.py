@@ -251,18 +251,19 @@ async def test_two_tool_batches_keep_consumption_through_real_runtime_and_restar
     old, runtime, card = await _two_batch_first_card(hosts, stored, monkeypatch, mode)
     native_ready, committed = _observe_native_interrupt(monkeypatch, stored, {"unanswered-read"}, "written-once")
     result_written = asyncio.Event()
-    persist = old.facade._persist_control_chunk_to_history
+    from jiuwenswarm.server.runtime.agent_adapter import interface as facade_module
+    persist = facade_module._run_history_io
 
-    async def ordered_history(chunk, **kwargs):
-        event_type = (chunk.payload or {}).get("event_type")
+    async def ordered_history(fn, *args, **kwargs):
+        event_type = kwargs.get("event_type") if kwargs.get("request_id") == "first-answer" else None
         if event_type == "chat.tool_call" and history_order == "after_snapshot":
             await asyncio.wait_for(native_ready.wait(), 10)
-        await persist(chunk, **kwargs)
+        await persist(fn, *args, **kwargs)
         if event_type == "chat.tool_result":
             assert await asyncio.to_thread(session_history.flush_pending_writes)
             result_written.set()
 
-    monkeypatch.setattr(old.facade, "_persist_control_chunk_to_history", ordered_history)
+    monkeypatch.setattr(facade_module, "_run_history_io", ordered_history)
     stream = old.script.stream
 
     async def ordered_model(*args, **kwargs):
@@ -359,14 +360,15 @@ async def test_partial_resume_first_native_commit_covers_its_actual_result(
         channel_id="web", req_method=ReqMethod.CHAT_SEND, is_stream=True,
         params={"mode": "agent", "project_dir": str(old.root), "query": "Run the two probes"}))
     ready, committed = _observe_native_interrupt(monkeypatch, stored, {"snapshot_call_1"}, "snapshot_call_0")
-    persist = old.facade._persist_control_chunk_to_history
+    from jiuwenswarm.server.runtime.agent_adapter import interface as facade_module
+    persist = facade_module._run_history_io
 
-    async def late_history(chunk, **kwargs):
-        if (chunk.payload or {}).get("event_type") in {"chat.tool_call", "chat.tool_result"}:
+    async def late_history(fn, *args, **kwargs):
+        if kwargs.get("request_id") == "partial-answer" and kwargs.get("event_type") in {"chat.tool_call", "chat.tool_result"}:
             await asyncio.wait_for(ready.wait(), 10)
-        await persist(chunk, **kwargs)
+        await persist(fn, *args, **kwargs)
 
-    monkeypatch.setattr(old.facade, "_persist_control_chunk_to_history", late_history)
+    monkeypatch.setattr(facade_module, "_run_history_io", late_history)
     pending = old.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
     entry = pending.interrupted_tools["snapshot_call_0"]
     question = next(iter(entry.interrupt_requests.values()))

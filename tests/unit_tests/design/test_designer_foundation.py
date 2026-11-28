@@ -48,9 +48,11 @@ def _assert_nodes_do_not_overlap(nodes: list) -> None:
 def designer_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_director_llm: None
 ) -> DesignerGraphStore:
+    # designer 根经 _designer_root() → paths.get_designer_dir() →
+    # get_agent_root_dir() 派生（函数内局部 import），patch 需落在 paths 层
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.designer.graph_store.get_agent_root_dir",
-        lambda: tmp_path,
+        "jiuwenswarm.common.paths.get_agent_root_dir",
+        lambda tenant_key=None: tmp_path,
     )
     return DesignerGraphStore()
 

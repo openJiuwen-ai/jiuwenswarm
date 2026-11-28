@@ -218,3 +218,72 @@ test('chat.error without an error string keeps the request-level key', () => {
     makeEventDedupKey('chat.error', { ...base, timestamp: 1 }),
   );
 });
+
+test('chat.file with the same request_id but different files stays distinct', () => {
+  // 回归：同一轮 send_file_to_user 共用同一个 request_id，只按 rid 去重会把
+  // 同一轮里先后到达的两个不同文件当成重复投递丢掉（文件卡片丢失）。给 chat.file
+  // 的去重键追加文件身份后，不同文件各自成键，两张卡片都能渲染。
+  const firstFile = makeEventDedupKey('chat.file', {
+    session_id: session,
+    event_type: 'chat.file',
+    request_id: requestId,
+    files: [{ name: 'qa-red.txt', size: 7, path: '/ws/qa-red.txt' }],
+  });
+  const secondFile = makeEventDedupKey('chat.file', {
+    session_id: session,
+    event_type: 'chat.file',
+    request_id: requestId,
+    files: [{ name: 'qa-blue.txt', size: 8, path: '/ws/qa-blue.txt' }],
+  });
+
+  assert.notEqual(firstFile, secondFile);
+});
+
+test('chat.file true duplicate redelivery with the same request_id still matches', () => {
+  const payload = {
+    session_id: session,
+    event_type: 'chat.file',
+    request_id: requestId,
+    files: [{ name: 'qa-red.txt', size: 7, path: '/ws/qa-red.txt' }],
+  };
+  assert.equal(
+    makeEventDedupKey('chat.file', payload),
+    makeEventDedupKey('chat.file', { ...payload, timestamp: '2026-11-27T00:00:00Z' }),
+  );
+});
+
+test('chat.file with the same request_id and overlapping files dedups by file identity', () => {
+  // 同一文件二次到达（team relay / fanout 延迟投递），文件身份相同 → 去重
+  const first = makeEventDedupKey('chat.file', {
+    session_id: session,
+    event_type: 'chat.file',
+    request_id: requestId,
+    files: [{ name: 'qa-red.txt', size: 7, path: '/ws/qa-red.txt' }],
+  });
+  const second = makeEventDedupKey('chat.file', {
+    session_id: session,
+    event_type: 'chat.file',
+    request_id: requestId,
+    files: [{ name: 'qa-red.txt', size: 7, path: '/ws/qa-red.txt' }],
+  });
+  assert.equal(first, second);
+});
+
+test('chat.file different file sets in one request stay distinct', () => {
+  const single = makeEventDedupKey('chat.file', {
+    session_id: session,
+    event_type: 'chat.file',
+    request_id: requestId,
+    files: [{ name: 'qa-red.txt', size: 7, path: '/ws/qa-red.txt' }],
+  });
+  const pair = makeEventDedupKey('chat.file', {
+    session_id: session,
+    event_type: 'chat.file',
+    request_id: requestId,
+    files: [
+      { name: 'qa-red.txt', size: 7, path: '/ws/qa-red.txt' },
+      { name: 'qa-blue.txt', size: 8, path: '/ws/qa-blue.txt' },
+    ],
+  });
+  assert.notEqual(single, pair);
+});

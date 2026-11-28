@@ -38,6 +38,7 @@ from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
     VIDEO_ANIMATE_IMAGE,
     VIDEO_MULTI_REF,
     compose_reference_clip_prompt,
+    copy_r2v_sound_inputs,
     stamp_creative_intent,
     video_generation_overrides,
 )
@@ -1088,6 +1089,128 @@ def test_compose_prompt_labels_every_plan_image() -> None:
     assert "Image 1 is the person" in prompt
     assert "Image 2 is Mom and Dad" in prompt
     assert "Image 3 is the place" in prompt
+    assert "no music" in prompt
+    assert "no score" in prompt
+    assert "no ambient music bed" in prompt
+
+
+def test_r2v_prompt_forbids_a_score_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+        append_r2v_diegetic_sound,
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "zh",
+    )
+    cfg = {
+        "clip_index": 1,
+        "clip_action": "雾气在山脊间流动",
+        "camera": "广角远景",
+        "timeline": "0-4s",
+        "duration_sec": 4,
+        "style_lock": {"look": "冷调户外广告"},
+        "reference_call_mode": "r2v",
+        "reference_prompt_contract": "product",
+    }
+    prompt = compose_reference_clip_prompt(cfg)
+    assert "声音：仅本镜头的现场音（动作声与环境底噪）；不要配乐、不要背景音乐、不要氛围音床。" in prompt
+    assert prompt.count("不要氛围音床") == 1
+    assert append_r2v_diegetic_sound(prompt, cfg).count("不要氛围音床") == 1
+
+
+def test_kept_r2v_prompt_still_forbids_a_score() -> None:
+    from jiuwenswarm.server.runtime.designer.pipeline.video_call_contract import (
+        prepare_video_prompt,
+    )
+
+    cfg = {
+        "clip_index": 1,
+        "clip_action": "mist drifts along the ridge",
+        "camera": "wide",
+        "style_lock": {"look": "alpine commercial"},
+        "reference_call_mode": "r2v",
+    }
+    composed = compose_reference_clip_prompt(cfg)
+    assert "mist drifts along the ridge" in composed
+    assert composed.count("no ambient music bed") == 1
+    sent = prepare_video_prompt(composed, cfg=cfg)
+    assert sent == composed
+    authored = (
+        "Visual style: alpine commercial. "
+        "Action: mist drifts along the ridge. Camera: wide. "
+        "Image 1 is the product."
+    )
+    assert prepare_video_prompt(authored, cfg=cfg) == authored
+
+
+def test_r2v_sound_line_follows_the_practice_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "zh",
+    )
+    base = {
+        "clip_index": 1,
+        "clip_action": "雾气在山脊间流动",
+        "camera": "广角远景",
+        "timeline": "0-4s",
+        "duration_sec": 4,
+        "style_lock": {"look": "冷调户外广告"},
+        "reference_call_mode": "r2v",
+    }
+    silent = compose_reference_clip_prompt({**base, "audio_policy": "silent"})
+    assert "声音：静音，无对白、无音效、无音乐。" in silent
+    assert "不要配乐" not in silent
+
+    cued = compose_reference_clip_prompt({**base, "sfx": ["岩面水声", "风声"]})
+    assert "声音：仅岩面水声、风声；不要配乐、不要背景音乐、不要氛围音床。" in cued
+    assert "仅本镜头的现场音" not in cued
+
+
+def test_r2v_authored_speech_is_not_called_silence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.config.preferred_language.resolve_preferred_language",
+        lambda: "zh",
+    )
+    base = {
+        "clip_index": 1,
+        "clip_action": "主持人面对镜头介绍产品",
+        "camera": "中景",
+        "timeline": "0-4s",
+        "duration_sec": 4,
+        "style_lock": {"look": "发布会"},
+        "reference_call_mode": "r2v",
+    }
+    spoken = dict(base)
+    copy_r2v_sound_inputs(
+        spoken,
+        {"speech_line": "欢迎来到我们的新产品发布会！", "audio_policy": "speech"},
+        {"characters": [{"id": "char_1", "name": "主持人"}]},
+    )
+    spoken_prompt = compose_reference_clip_prompt(spoken)
+    assert "人物没有台词" not in spoken_prompt
+    assert "不要配乐、不要背景音乐、不要氛围音床。" in spoken_prompt
+
+    named = dict(base)
+    copy_r2v_sound_inputs(named, {"speech_by_character": {"char_1": "看这边"}}, {})
+    assert "人物没有台词" not in compose_reference_clip_prompt(named)
+
+    quiet = dict(base)
+    copy_r2v_sound_inputs(quiet, {}, {})
+    assert "人物没有台词、对白或独白。" in compose_reference_clip_prompt(quiet)
+
+
+def test_i2v_prompt_does_not_take_the_r2v_sound_line() -> None:
+    prompt = compose_reference_clip_prompt(
+        {
+            "clip_index": 1,
+            "clip_action": "wave",
+            "camera": "medium",
+            "style_lock": {"look": "anime"},
+            "reference_call_mode": "i2v",
+        }
+    )
+    assert "no ambient music bed" not in prompt
 
 
 def test_overflow_mints_combined_cast_card() -> None:

@@ -35,6 +35,7 @@ from openjiuwen.harness.schema.state import DeepAgentState, PlanModeState
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion, topic_controls
@@ -239,7 +240,7 @@ def product(tmp_path, monkeypatch):
     monkeypatch.setattr(interface_module, "build_user_prompt", lambda query, **_kw: query)
 
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    gateway = MessageHandler(SimpleNamespace())
+    gateway = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     page = _Page()
     store = TopicStarterStore(tmp_path / "recommendation.db")
 
@@ -1147,17 +1148,23 @@ async def test_suggestion_reaches_the_pages_open_on_its_session_only(product) ->
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.on_message(lambda _msg: None)
     on_session, elsewhere = _Browser(), _Browser()
-    for browser, session_id in ((on_session, SESSION), (elsewhere, "web_other_session")):
-        await getattr(channel, "_handle_raw_message")(browser, json.dumps({
-            "type": "req", "id": f"open-{session_id}", "method": "chat.send",
-            "params": {"session_id": session_id, "content": "你好"},
-        }), {})
-    _completed("req-1")
+    try:
+        for browser, session_id in ((on_session, SESSION), (elsewhere, "web_other_session")):
+            # Match the physical connection setup before extensions and session routing.
+            await channel.register_ws(browser, None)
+            await getattr(channel, "_handle_raw_message")(browser, json.dumps({
+                "type": "req", "id": f"open-{session_id}", "method": "chat.send",
+                "params": {"session_id": session_id, "content": "你好"},
+            }), {})
+        _completed("req-1")
 
-    await prompt_suggestion.deliver(channel, product.store, SESSION, "req-1",
-                                         {"suggestion_id": "s-1", "text": "导出成双语对照"})
-    for _ in range(20):
-        await asyncio.sleep(0)
+        await prompt_suggestion.deliver(channel, product.store, SESSION, "req-1",
+                                             {"suggestion_id": "s-1", "text": "导出成双语对照"})
+    finally:
+        # Drain both outbound queues before checking delivery and session isolation.
+        for browser in (on_session, elsewhere):
+            await channel.unregister_ws(browser)
+        await channel.stop()
 
     shown = [frame["payload"] for frame in on_session.frames if frame.get("event") == "prompt_suggestion.ready"]
     assert [{key: payload[key] for key in ("session_id", "request_id", "suggestion_id", "text")} for payload in shown] == [

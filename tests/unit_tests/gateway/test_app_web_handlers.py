@@ -517,7 +517,7 @@ class _OfflineRemoteAgentClient:
     server_ready = False
 
 
-_OfflineRemoteAgentClient.__module__ = "jiuwenswarm.extensions.yuanrong.agent_client"
+_OfflineRemoteAgentClient.__module__ = "agent_gateway.extensions.yuanrong.agent_client"
 
 
 class _CapturingCronController:
@@ -1519,6 +1519,8 @@ async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(m
     [
         ({}, "true"),
         ({"rsi": {"enabled": False}}, "false"),
+        ({"rsi": {"enabled": "false"}}, "false"),
+        ({"rsi": {"enabled": "0"}}, "false"),
     ],
 )
 async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
@@ -1544,6 +1546,8 @@ async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
     [
         ({}, "true"),
         ({"rea": {"enabled": False}}, "false"),
+        ({"rea": {"enabled": "false"}}, "false"),
+        ({"rea": {"enabled": "0"}}, "false"),
     ],
 )
 async def test_config_get_returns_rea_switch(monkeypatch, raw_config, expected):

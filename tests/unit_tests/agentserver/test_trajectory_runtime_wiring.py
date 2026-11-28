@@ -16,7 +16,7 @@ from openjiuwen.extensions.observability import setup as shared_observability_se
 from openjiuwen.harness.observability import setup as agent_observability_setup
 from openjiuwen.harness.observability import span_context as agent_span_context
 
-from jiuwenswarm.agents.harness import agent_observability
+from jiuwenswarm.agents.harness import agent_observability, observability_runtime
 from jiuwenswarm.agents.harness.team import team_manager
 from jiuwenswarm.observability import runtime as trajectory_runtime
 
@@ -31,6 +31,9 @@ def reset_observability_demands():
         agent_observability._agent_observability_active = False
         agent_observability._force_ever_enabled = False
         team_manager._observability_active = False
+        with observability_runtime.observability_state_lock:
+            observability_runtime.forget_observability_demand("agent")
+            observability_runtime.forget_observability_demand("team")
 
     _reset()
     yield
@@ -44,18 +47,20 @@ def test_agent_evolution_enables_observability_without_manual_switch(monkeypatch
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": True}},
-            "observability": {"agent": {"enabled": False}},
+            "observability": {"enabled": False},
         },
     )
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
 
     agent_observability.sync_agent_observability()
 
     assert len(acquired) == 1
+    # Evolution is capture-only: it reads TrajectorySpanProcessor, not the exporter.
+    assert acquired[0][1] is False
     assert agent_observability._agent_observability_active is True
 
 
@@ -68,19 +73,21 @@ def test_agent_symphony_capture_enables_observability_without_manual_switch(
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
-            "observability": {"agent": {"enabled": False}},
+            "observability": {"enabled": False},
             "symphony": {"orchestration": {"enabled": True, "experience": {"enabled": True}}},
         },
     )
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
 
     agent_observability.sync_agent_observability()
 
     assert len(acquired) == 1
+    # Evolution is capture-only: it reads TrajectorySpanProcessor, not the exporter.
+    assert acquired[0][1] is False
     assert agent_observability._agent_observability_active is True
 
 
@@ -95,18 +102,20 @@ def test_agent_ttse_enables_observability_without_manual_switch(monkeypatch):
                 "evolution": {"skill_evolution": False},
                 "ttse": {"enabled": True},
             },
-            "observability": {"agent": {"enabled": False}},
+            "observability": {"enabled": False},
         },
     )
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
 
     agent_observability.sync_agent_observability()
 
     assert len(acquired) == 1
+    # Evolution is capture-only: it reads TrajectorySpanProcessor, not the exporter.
+    assert acquired[0][1] is False
     assert agent_observability._agent_observability_active is True
 
 
@@ -120,13 +129,13 @@ def test_agent_ttse_disabled_does_not_enable_observability_alone(monkeypatch):
                 "evolution": {"skill_evolution": False},
                 "ttse": {"enabled": False},
             },
-            "observability": {"agent": {"enabled": False}},
+            "observability": {"enabled": False},
         },
     )
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda config: (_ for _ in ()).throw(AssertionError("should not acquire")),
+        lambda config, **kwargs: (_ for _ in ()).throw(AssertionError("should not acquire")),
     )
 
     def _fake_shutdown() -> None:
@@ -151,19 +160,21 @@ def test_team_symphony_capture_enables_observability_without_manual_switch(
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
-            "observability": {"team": {"enabled": False}},
+            "observability": {"enabled": False},
             "symphony": {"orchestration": {"enabled": True, "experience": {"enabled": True}}},
         },
     )
     monkeypatch.setattr(
         team_manager.team_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
 
     team_manager.sync_team_observability()
 
     assert len(acquired) == 1
+    # Evolution is capture-only: it reads TrajectorySpanProcessor, not the exporter.
+    assert acquired[0][1] is False
     assert team_manager._observability_active is True
 
 
@@ -174,18 +185,20 @@ def test_team_evolution_enables_observability_without_manual_switch(monkeypatch)
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": True}},
-            "observability": {"team": {"enabled": False}},
+            "observability": {"enabled": False},
         },
     )
     monkeypatch.setattr(
         team_manager.team_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
 
     team_manager.sync_team_observability()
 
     assert len(acquired) == 1
+    # Evolution is capture-only: it reads TrajectorySpanProcessor, not the exporter.
+    assert acquired[0][1] is False
     assert team_manager._observability_active is True
 
 
@@ -202,13 +215,56 @@ def test_team_observability_can_be_disabled_without_evolution_demand(monkeypatch
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
-            "observability": {"team": {"enabled": False}},
+            "observability": {"enabled": False},
         },
     )
 
     team_manager.sync_team_observability()
 
     assert releases == ["team"]
+
+
+def test_agent_explicit_switch_still_exports_alongside_evolution(monkeypatch):
+    acquired = []
+    monkeypatch.setattr(
+        agent_observability,
+        "get_config",
+        lambda: {
+            "react": {"evolution": {"skill_evolution": True}},
+            "observability": {"enabled": True},
+        },
+    )
+    monkeypatch.setattr(
+        agent_observability,
+        "acquire_observability",
+        lambda config, export=True: acquired.append((config, export)) or False,
+    )
+
+    agent_observability.sync_agent_observability()
+
+    # Evolution does not close the gate an explicit switch opened.
+    assert [export for _config, export in acquired] == [True]
+
+
+def test_team_explicit_switch_still_exports_alongside_evolution(monkeypatch):
+    acquired = []
+    monkeypatch.setattr(
+        team_manager,
+        "get_config",
+        lambda: {
+            "react": {"evolution": {"skill_evolution": True}},
+            "observability": {"enabled": True},
+        },
+    )
+    monkeypatch.setattr(
+        team_manager.team_observability,
+        "acquire_observability",
+        lambda config, export=True: acquired.append((config, export)) or False,
+    )
+
+    team_manager.sync_team_observability()
+
+    assert [export for _config, export in acquired] == [True]
 
 
 def test_trajectory_ui_is_an_additive_agent_provider_demand(monkeypatch, tmp_path):
@@ -218,7 +274,7 @@ def test_trajectory_ui_is_an_additive_agent_provider_demand(monkeypatch, tmp_pat
         agent_observability,
         "get_config",
         lambda: {
-            "observability": {"agent": {"enabled": False}, "exporter": "file"},
+            "observability": {"enabled": False, "exporter": "file"},
             "trajectory_ui": {
                 "enabled": True,
                 "db_path": str(tmp_path / "trajectory.sqlite3"),
@@ -228,7 +284,7 @@ def test_trajectory_ui_is_an_additive_agent_provider_demand(monkeypatch, tmp_pat
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
     monkeypatch.setattr(
         agent_observability,
@@ -239,6 +295,9 @@ def test_trajectory_ui_is_an_additive_agent_provider_demand(monkeypatch, tmp_pat
     agent_observability.sync_agent_observability()
 
     assert len(acquired) == 1
+    # The trajectory store requests capture only: the provider must come up
+    # for the SQLite sink, but the export gate must stay closed.
+    assert acquired[0][1] is False
     assert len(runtime_settings) == 1
     assert runtime_settings[0][0].enabled is True
     assert runtime_settings[0][0].database_path == tmp_path / "trajectory.sqlite3"
@@ -254,14 +313,15 @@ def test_disabled_trajectory_runtime_is_stopped_while_exporters_remain_active(
         agent_observability,
         "get_config",
         lambda: {
-            "observability": {"agent": {"enabled": True}},
+            "observability": {"enabled": True},
             "trajectory_ui": {"enabled": False},
         },
     )
+    acquired_export = []
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda _config: False,
+        lambda _config, export=True: acquired_export.append(export) or False,
     )
     monkeypatch.setattr(
         agent_observability,
@@ -270,6 +330,8 @@ def test_disabled_trajectory_runtime_is_stopped_while_exporters_remain_active(
     )
 
     agent_observability.sync_agent_observability()
+
+    assert acquired_export == [True]  # the explicit switch still exports
 
     assert len(runtime_settings) == 1
     assert runtime_settings[0][0].enabled is False
@@ -322,13 +384,13 @@ def test_agent_observability_init_receives_process_processor(monkeypatch, tmp_pa
             state.__setitem__("initialized", True),
         ),
     )
-    monkeypatch.setattr(agent_observability, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(agent_observability, "get_trace_dir", lambda: tmp_path / ".trace")
     monkeypatch.setattr(
         agent_observability,
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
-            "observability": {"agent": {"enabled": True}},
+            "observability": {"enabled": True},
         },
     )
 
@@ -361,13 +423,13 @@ def test_team_observability_init_receives_process_processor(monkeypatch, tmp_pat
             state.__setitem__("initialized", True),
         ),
     )
-    monkeypatch.setattr(team_manager, "get_domain_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(team_manager, "get_trace_dir", lambda: tmp_path / ".trace")
     monkeypatch.setattr(
         team_manager,
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
-            "observability": {"team": {"enabled": True}},
+            "observability": {"enabled": True},
         },
     )
 
@@ -384,7 +446,7 @@ def test_team_trajectory_ui_starts_sink_and_acquires_provider(monkeypatch, tmp_p
         team_manager,
         "get_config",
         lambda: {
-            "observability": {"team": {"enabled": False}, "exporter": "file"},
+            "observability": {"enabled": False, "exporter": "file"},
             "trajectory_ui": {
                 "enabled": True,
                 "db_path": str(tmp_path / "trajectory.sqlite3"),
@@ -394,7 +456,7 @@ def test_team_trajectory_ui_starts_sink_and_acquires_provider(monkeypatch, tmp_p
     monkeypatch.setattr(
         team_manager.team_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
     monkeypatch.setattr(
         team_manager,
@@ -405,6 +467,9 @@ def test_team_trajectory_ui_starts_sink_and_acquires_provider(monkeypatch, tmp_p
     team_manager.sync_team_observability()
 
     assert len(acquired) == 1
+    # The trajectory store requests capture only: the provider must come up
+    # for the SQLite sink, but the export gate must stay closed.
+    assert acquired[0][1] is False
     assert len(runtime_settings) == 1
     assert runtime_settings[0][0].enabled is True
     assert runtime_settings[0][0].database_path == tmp_path / "trajectory.sqlite3"
@@ -421,7 +486,7 @@ def test_team_trajectory_disabled_stops_sink(monkeypatch, tmp_path):
         "get_config",
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
-            "observability": {"team": {"enabled": True}, "exporter": "file"},
+            "observability": {"enabled": True, "exporter": "file"},
             "trajectory_ui": {"enabled": False},
         },
     )
@@ -433,7 +498,7 @@ def test_team_trajectory_disabled_stops_sink(monkeypatch, tmp_path):
     monkeypatch.setattr(
         team_manager.team_observability,
         "acquire_observability",
-        lambda config: False,
+        lambda config, export=True: False,
     )
 
     team_manager.sync_team_observability()
@@ -455,21 +520,21 @@ def test_agent_sync_reads_legacy_section_when_config_not_migrated(monkeypatch):
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda config: acquired.append(config) or False,
+        lambda config, export=True: acquired.append((config, export)) or False,
     )
 
     agent_observability.sync_agent_observability()
 
     assert len(acquired) == 1
-    assert acquired[0].exporter == "otlp_grpc"
+    assert acquired[0][0].exporter == "otlp_grpc"
+    assert acquired[0][1] is True  # the legacy switch enables export
 
 
 def test_team_and_agent_share_one_exporter_block(monkeypatch, tmp_path):
     """Both runtimes build the same exporter config from ``observability``."""
     config = {
         "observability": {
-            "team": {"enabled": True},
-            "agent": {"enabled": True},
+            "enabled": True,
             "exporter": "otlp_grpc",
             "endpoint": "http://jaeger:4317",
         },
@@ -482,12 +547,12 @@ def test_team_and_agent_share_one_exporter_block(monkeypatch, tmp_path):
     monkeypatch.setattr(
         team_manager.team_observability,
         "acquire_observability",
-        lambda obs: team_acquired.append(obs) or False,
+        lambda obs, export=True: team_acquired.append((obs, export)) or False,
     )
     monkeypatch.setattr(
         agent_observability,
         "acquire_observability",
-        lambda obs: agent_acquired.append(obs) or True,
+        lambda obs, export=True: agent_acquired.append((obs, export)) or True,
     )
 
     team_manager.sync_team_observability()
@@ -495,7 +560,9 @@ def test_team_and_agent_share_one_exporter_block(monkeypatch, tmp_path):
 
     assert len(team_acquired) == 1
     assert len(agent_acquired) == 1
-    for obs in (team_acquired[0], agent_acquired[0]):
+    for acquired_item in (team_acquired[0], agent_acquired[0]):
+        assert acquired_item[1] is True  # the explicit switch enables export
+        obs = acquired_item[0]
         assert obs.exporter == "otlp_grpc"
         assert obs.endpoint == "http://jaeger:4317"
         assert obs.service_name == "jiuwenswarm"

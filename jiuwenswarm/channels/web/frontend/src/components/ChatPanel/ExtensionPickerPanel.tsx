@@ -22,6 +22,7 @@ import { Tabs, toast } from '../ui';
 import { isPluginBlockedInWorkMode, resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
 import { getEquipmentDefaults } from '../../services/equipmentDefaultsApi';
+import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import { PickerSearchInput } from './PickerSearchInput';
 
@@ -38,6 +39,7 @@ interface ExtensionPickerPanelProps {
   panelRef: RefObject<HTMLDivElement>;
   /** 一级"+"菜单展开方向：up 时面板与触发项底边齐平向上生长（见 PickerPanel direction） */
   direction?: 'up' | 'down';
+  teamMemoryOnly?: boolean;
 }
 
 /**
@@ -47,14 +49,21 @@ interface ExtensionPickerPanelProps {
  * 企业版隐藏插件页签，只保留连接器（与连接器广场对齐）。
  * 渲染在"+"菜单内部，与智能体/技能面板同款定位（见 ChatPanel.css .chat-agent-picker 规则）。
  */
-export function ExtensionPickerPanel({ onClose, panelRef, direction }: ExtensionPickerPanelProps) {
+export function ExtensionPickerPanel({ onClose, panelRef, direction, teamMemoryOnly = false }: ExtensionPickerPanelProps) {
   const { t, i18n } = useTranslation();
   const enterprise = isEnterprise();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const workMode = useWorkspaceStore((s) => s.workMode);
   const enabledPlugins = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledPlugins ?? []);
+  const draftMode = useSessionStore((s) => s.runtimes[NEW_CONVERSATION_ID]?.mode);
+  const draftDisabledPlugins = useSessionStore((s) => s.runtimes[NEW_CONVERSATION_ID]?.draftDisabledPlugins);
+  const extensionsHydrated = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.extensionsHydrated);
+  const showDefaultSelection = workMode !== 'design' && (teamMemoryOnly
+    ? activeSessionId === NEW_CONVERSATION_ID || !extensionsHydrated
+    : activeSessionId === NEW_CONVERSATION_ID && draftMode === 'agent');
   const enabledMcps = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enabledMcps ?? []);
-  const [tab, setTab] = useState<'plugin' | 'mcp'>(enterprise ? 'mcp' : 'plugin');
+  const [selectedTab, setTab] = useState<'plugin' | 'mcp'>(enterprise ? 'mcp' : 'plugin');
+  const tab = teamMemoryOnly ? 'plugin' : selectedTab;
   const [searchQuery, setSearchQuery] = useState('');
 
   const packages = usePluginPackageStore((s) => s.localPackages);
@@ -79,15 +88,12 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const connectMcp = useConnectorStore((s) => s.connect);
 
-  // 无快照新会话的默认装备预勾选。仅在会话未 hydrate 时触发一次——
+  // 无快照新会话的默认装备预勾选：仅在会话未 hydrate 时触发一次——
   // 已 hydrate 说明后端快照已恢复（App.tsx restoreSessionEquipment）或用户已手动改过，
   // 默认集不得覆盖；团队模式不适用（装备走 team spec 级，后端 restore 对 team 直接跳过，
   // 这里保持一致）。预填即 hydrate：首条消息带显式默认数组，所见即所发。默认集为空或
-  // 读取失败时不动——保持省略字段，后端第三级回填在发送时兜底（活读取，晚于面板打开
+  // 读取失败时不动——保持省略字段，后端回填在发送时兜底（活读取，晚于面板打开
   // 的新增默认仍能生效），行为与旧前端完全一致。
-  const extensionsHydrated = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.extensionsHydrated ?? false,
-  );
   const runtimeMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? '');
   useEffect(() => {
     const sid = activeSessionId;
@@ -162,7 +168,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
     if (!enterprise) {
       void loadPluginList('mine', { silent: packages.length > 0 });
     }
-    void loadConnectorList('local', { silent: myConnectors.length > 0 });
+    if (!teamMemoryOnly) void loadConnectorList('local', { silent: myConnectors.length > 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -194,9 +200,9 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
 
   const filteredPlugins = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return packages;
-    return packages.filter((p) => localizedText(p.displayName, i18n.language).toLowerCase().includes(q));
-  }, [packages, searchQuery, i18n.language]);
+    return packages.filter((p) => (!teamMemoryOnly || p.id === 'agent-memory-plugin')
+      && (!q || localizedText(p.displayName, i18n.language).toLowerCase().includes(q)));
+  }, [packages, searchQuery, i18n.language, teamMemoryOnly]);
 
   const filteredMcps = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -212,7 +218,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   // 用户反馈：最后一条 MCP 顶出弹出框外——根因是之前用 minHeight 只兜底"不小于"，条目一多没有
   // 封顶）。两个 tab 都没数据时 itemCount 是 0，PickerPanel 不写显式高度，退回空态自然撑满。
 
-  function handleTogglePlugin(id: string) {
+  function handleTogglePlugin(id: string, isEnabled: boolean) {
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
     const store = useSessionStore.getState();
@@ -233,7 +239,11 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
       });
       return;
     }
-    if (enabledPlugins.includes(id)) store.removeEnabledPlugin(sid, id);
+    if (sid === NEW_CONVERSATION_ID) store.setDraftPluginEnabled(id, !isEnabled);
+    else if (isEnabled && teamMemoryOnly && !extensionsHydrated) {
+      // An older Team session can inherit the default before it has an equipment snapshot.
+      store.restoreSessionEquipment(sid, { plugin_names: [], mcp: enabledMcps });
+    } else if (isEnabled) store.removeEnabledPlugin(sid, id);
     else store.addEnabledPlugin(sid, id);
   }
 
@@ -294,9 +304,9 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         direction={direction}
         testId="chat-panel-extension-picker-panel"
         rowHeight={LIST_ROW_HEIGHT}
-        itemCount={Math.max(filteredPlugins.length, filteredMcps.length)}
+        itemCount={teamMemoryOnly ? filteredPlugins.length : Math.max(filteredPlugins.length, filteredMcps.length)}
         tabs={
-          enterprise ? (
+          teamMemoryOnly ? undefined : enterprise ? (
             <Tabs
               role="tablist"
               wrapperTestId="chat-panel-extension-picker-tabs"
@@ -361,8 +371,10 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
             const avatar = getSkillAvatar(label);
             const installed = installedMap[marketplaceId];
             const linked = (pluginConnectionStateMap[marketplaceId] ?? 'disconnected') === 'connected';
+            const selectedByDefault = showDefaultSelection && pkg.defaultEnabled === true && pkg.installed
+              && pkg.connectionState === 'connected' && !draftDisabledPlugins?.includes(sessionPluginName);
             const isEnabled = !isPluginBlockedInWorkMode(sessionPluginName, workMode)
-              && enabledPlugins.includes(sessionPluginName);
+              && (enabledPlugins.includes(sessionPluginName) || selectedByDefault);
             const isConnectingThis =
               connectingPluginIdRef.current === marketplaceId &&
               (pluginInstallFlow.active || pluginReconnectFlow.active);
@@ -385,7 +397,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 {busy ? (
                   <Loader2 className="chat-extension-picker__spinner" size={16} />
                 ) : installed && linked ? (
-                  <Switch checked={isEnabled} onChange={() => handleTogglePlugin(sessionPluginName)} />
+                  <Switch checked={isEnabled} onChange={() => handleTogglePlugin(sessionPluginName, isEnabled)} />
                 ) : installed ? (
                   <ConnectButton
                     label={t('chat.extensionConnect')}

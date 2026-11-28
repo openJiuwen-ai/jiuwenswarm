@@ -18,13 +18,19 @@ from e2a.template_slots import (
     normalize_template_ref,
 )
 
-# react 槽位以字符串接线：e2a.template_slots（协议包，固定 commit）尚未登记
-# TemplateRefSlot.REACT，这里在仓内派生默认加载槽位集合，待协议包发版后收敛。
-# 元素为 TemplateRefSlot 枚举与字符串 "react" 的混合集合，loader 侧统一取
-# .value 收敛（TemplateRefSlot 是 StrEnum，字符串比较语义一致）。
+# react / execution_guard 槽位以字符串接线：e2a.template_slots（协议包，固定 commit）
+# 尚未登记这两个槽位，这里在仓内派生默认加载槽位集合，待协议包发版后收敛。
+# 元素为 TemplateRefSlot 枚举与字符串的混合集合，loader 侧统一取 .value 收敛
+# （TemplateRefSlot 是 StrEnum，字符串比较语义一致）。
 REACT_SLOT = "react"
 REACT_ENTITY_TABLE = "react_template"
-DEFAULT_AGENT_LOAD_SLOTS = frozenset({*DEFAULT_AGENT_LOAD_SLOTS, REACT_SLOT})
+EXECUTION_GUARD_SLOT = "execution_guard"
+EXECUTION_GUARD_ENTITY_TABLE = "execution_guard_template"
+DEFAULT_AGENT_LOAD_SLOTS = frozenset({
+    *DEFAULT_AGENT_LOAD_SLOTS,
+    REACT_SLOT,
+    EXECUTION_GUARD_SLOT,
+})
 
 
 @dataclass(frozen=True)
@@ -62,12 +68,21 @@ class EffectiveEnterpriseConfig:
     # react 运行策略（react_template.data 按键深度合并 config.react：
     # data 配置键覆盖，未配置键保留本地值）。
     react: list[dict[str, Any]] | None = None
+    # 执行护栏（execution_guard_template.body 整段替换 config.execution_guard）。
+    execution_guard: list[dict[str, Any]] | None = None
     a2a_access_policy: list[dict[str, Any]] | None = None
     # Gateway advanced_config 表行（按 agent_template_id）；含 a4p_enabled 等。
     advanced_config: dict[str, Any] | None = None
+    # expert_package_template.swarmflow（JSON 列）里的 Swarmflow 企业策略。
+    swarmflow: dict[str, Any] | None = None
+    # swarmflow 策略加载失败标记：与「策略缺省」区分开。置位时解析侧按
+    # fail-closed 处理（能力门禁视为禁止），不沿用本地缺省放行。
+    swarmflow_load_failed: bool = False
     service_id: str | None = None
     send_file_allowed: bool = True
     debug: dict[str, Any] = field(default_factory=dict)
+    # Private per-request credentials; excluded from repr and public as_dict().
+    agent_client_credentials: dict[str, str] | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -84,8 +99,11 @@ class EffectiveEnterpriseConfig:
             "mcp": self.mcp,
             "permissions": self.permissions,
             "react": self.react,
+            "execution_guard": self.execution_guard,
             "a2a_access_policy": self.a2a_access_policy,
             "advanced_config": self.advanced_config,
+            "swarmflow": self.swarmflow,
+            "swarmflow_load_failed": self.swarmflow_load_failed,
             "service_id": self.service_id,
             "send_file_allowed": self.send_file_allowed,
             "debug": dict(self.debug),

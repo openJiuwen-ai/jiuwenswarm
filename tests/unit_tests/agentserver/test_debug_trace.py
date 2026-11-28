@@ -634,6 +634,12 @@ class TestAgentObservabilityForce:
     once force is used the provider stays up (sticky) to avoid init/shutdown
     churn. The normal config-gated teardown still works when force was never used."""
 
+    @pytest.fixture(autouse=True)
+    def isolate_policy_owners(self, monkeypatch):
+        from jiuwenswarm.agents.harness import observability_runtime
+
+        monkeypatch.setattr(observability_runtime, "_export_overrides", {})
+
     def _reset(self):
         import jiuwenswarm.agents.harness.agent_observability as ao
         ao._agent_observability_active = False
@@ -644,11 +650,11 @@ class TestAgentObservabilityForce:
         self._reset()
         calls = {"init": 0, "shutdown": 0}
 
-        def fake_acquire(_cfg):
+        def fake_acquire(_cfg, export=True):
             calls["init"] += 1
             return False
 
-        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"agent": {"enabled": False}}})
+        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"enabled": False}})
         monkeypatch.setattr(ao, "acquire_observability", fake_acquire)
         monkeypatch.setattr(
             ao, "shutdown_agent_observability",
@@ -671,7 +677,7 @@ class TestAgentObservabilityForce:
         # simulate a config-gated active provider (force never used)
         ao._agent_observability_active = True
         ao._force_ever_enabled = False
-        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"agent": {"enabled": False}}})
+        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"enabled": False}})
         monkeypatch.setattr(
             ao, "shutdown_agent_observability",
             lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1),

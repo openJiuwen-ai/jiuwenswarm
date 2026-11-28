@@ -113,6 +113,9 @@ def load_history_session_usage(session_id: str) -> dict[str, Any] | None:
 
 def load_history_todo_snapshot(session_id: str) -> list[dict[str, Any]]:
     """Workspace todo.json snapshot for the first history restore batch."""
+    from jiuwenswarm.server.front.sdk_logging import ensure_configured
+
+    ensure_configured()
     from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 

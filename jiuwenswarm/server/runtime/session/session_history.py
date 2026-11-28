@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from agent_gateway.common.mode_matrix import is_team_mode
+from agent_gateway.common.mode_matrix import is_team_mode, is_team_plan_mode
 from agent_gateway.common.protocol_ids import is_valid_session_id
 from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
@@ -1412,6 +1412,7 @@ def _write_item(
     item: dict[str, Any],
     *,
     subagent_id: str | None = None,
+    require_write: bool = False,
 ) -> None:
     with FILE_LOCK:
         if subagent_id:
@@ -1421,6 +1422,8 @@ def _write_item(
                 create=True,
             )
             if error is not None or target_path is None:
+                if require_write:
+                    raise ValueError(error or "invalid subagent history target")
                 logger.warning(
                     "skip subagent history write: session_id=%s subagent_id=%s error=%s",
                     session_id,
@@ -1519,7 +1522,7 @@ def _ensure_worker_started() -> None:
                         from jiuwenswarm.server.runtime.session import lifecycle as lc
                         with lc.resource_lock("session", sid):
                             lc.write_guard(sid, generation)
-                            _write_item(sid, item, subagent_id=subagent_id)
+                            _write_item(sid, item, subagent_id=subagent_id, require_write=receipt is not None)
                     context.run(write)
                 except Exception as exc:  # noqa: BLE001
                     _settle_history_receipt(receipt, error=exc)
@@ -1726,10 +1729,10 @@ def _update_history_record_metadata(prepared: PreparedHistoryRecord) -> None:
             ),
             # 传入渠道元数据,首次写入时持久化
             channel_metadata=channel_metadata,
-            # A subagent record carries its own history mode, but it belongs
-            # to the parent product Session and must not replace that Session's
-            # routing mode with the internal ``subagent`` label.
-            mode=None if subagent_id else mode,
+            # A Team Plan stream can keep writing under its original mode
+            # after the leader has exited plan. Its output must not re-enter
+            # plan or replace the parent routing mode with a subagent label.
+            mode=None if subagent_id or (role_norm != "user" and is_team_plan_mode(mode)) else mode,
             # 用户消息时刷新 last_user_message_at(用消息时间戳,比请求到达时刻更精确;
             # 与 AgentServer 的 _sync_chat_request_metadata 互补,覆盖所有记录用户消息的路径)
             last_user_message_at=(
@@ -1818,6 +1821,7 @@ def append_history_record(
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
     subagent_id: str | None = None,
+    wait_for_write: bool = False,
 ) -> None:
     """Queue a canonical record using the existing asynchronous writer."""
     prepared = prepare_history_record(
@@ -1829,7 +1833,12 @@ def append_history_record(
         return
     # §2.3：会话历史落盘前查配额；满额拒绝本条追加（与 origin/dev-stable 对齐）。
     _precheck_workspace_quota_for_history_append(prepared.record)
-    _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
+    if wait_for_write:
+        receipt: Future[None] = Future()
+        _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id, receipt=receipt)
+        receipt.result()
+    else:
+        _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
     _update_history_record_metadata(prepared)
 
 

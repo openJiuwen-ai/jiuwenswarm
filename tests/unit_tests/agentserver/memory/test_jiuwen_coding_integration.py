@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Swarm Coding assembly uses dependency stubs at the Core/Memory boundary."""
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock, Mock, call
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -13,6 +14,7 @@ from jiuwenswarm.agents.harness.common.memory import team_memory_members
 from jiuwenswarm.agents.harness.common.rails.memory_forbidden_rail import _targets_memory
 from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
 from jiuwenswarm.common.memory_config import get_builtin_memory_provider
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter import interface_code, interface_deep
 
 
@@ -205,39 +207,21 @@ def test_jiuwen_selection_never_falls_back_to_legacy(monkeypatch, tmp_path, bloc
 
 
 @pytest.mark.asyncio
-async def test_reload_replaces_and_disables_code_memory_without_work_rail(
-    monkeypatch, tmp_path, memory_dependencies,
-):
+async def test_reload_removes_preexisting_legacy_code_memory(monkeypatch, tmp_path):
     cfg = config()
     obj = adapter(monkeypatch, tmp_path, cfg)
     obj._instance = SimpleNamespace(
         unregister_rail=AsyncMock(), register_rail=AsyncMock(),
-        deep_config=SimpleNamespace(subagents=[]))
+        deep_config=SimpleNamespace(subagents=[]),
+    )
     first = obj._build_coding_memory_rail()
     first.aclose = AsyncMock()
-    obj._agent_name = "new-runtime-name"
-    memory_dependencies.side_effect = [False, True, True]
-    for _ in range(3):
-        await obj._handle_memory_rail_by_config("agent.code.normal")
-    project = first._provider.options["project"]
-    assert memory_dependencies.await_args_list == [call(cfg, project)] * 2
-    assert obj._coding_memory_rail is first
-    first.aclose.assert_not_awaited()
-    cfg["memory"]["builtin"]["jiuwen"]["agent_id"] = "new-identity"
     await obj._handle_memory_rail_by_config("agent.code.normal")
-    obj._instance.unregister_rail.assert_awaited_with(first)
+    obj._instance.unregister_rail.assert_awaited_once_with(first)
     first.aclose.assert_awaited_once()
-    assert obj._memory_rail is None
-    current = obj._coding_memory_rail
-    assert current._identity["agent_id"] == "new-identity"
-    assert memory_dependencies.await_count == 3
-    current.aclose = AsyncMock()
-    cfg["modes"]["code"]["memory"]["enabled"] = False
-    await obj._handle_memory_rail_by_config("agent.code.normal")
+    obj._instance.register_rail.assert_not_awaited()
     assert obj._coding_memory_rail is None
-    current.aclose.assert_awaited_once()
-    await obj._handle_external_memory_rail_by_config()
-    assert obj._external_memory_rail is None
+    assert obj._memory_rail is None
 
 
 def test_new_write_edit_are_guarded_without_changing_work_tools():
@@ -330,34 +314,17 @@ def test_sdk_uses_shared_root_without_mutating_config(monkeypatch, markdown):
 
 
 @pytest.mark.asyncio
-async def test_work_rebinds_memory_when_configured_identity_or_project_changes(
-    monkeypatch, tmp_path, memory_dependencies,
-):
+async def test_jiuwen_team_work_does_not_mount_legacy_work_rail(monkeypatch):
     cfg = config()
     monkeypatch.setattr(interface_deep, "get_config", lambda: cfg)
+    monkeypatch.setattr(interface_deep, "is_memory_enabled", lambda mode, cfg: True)
     obj = interface_deep.JiuWenSwarmDeepAdapter()
     obj._instance = SimpleNamespace(unregister_rail=AsyncMock(), register_rail=AsyncMock())
-    await obj._handle_memory_rail_by_config("agent.work.normal")
+    await obj._handle_memory_rail_by_config("team.work.normal")
     first = obj._memory_rail
-    assert first._agent_id == "shared"
-    await obj._handle_memory_rail_by_config("agent.work.normal")
-    assert obj._memory_rail is first
-    obj._agent_name = "review_agent"
-    await obj._handle_memory_rail_by_config("agent.work.normal")
-    assert obj._memory_rail is first
+    assert first is None
+    obj._instance.register_rail.assert_not_awaited()
     obj._instance.unregister_rail.assert_not_awaited()
-    cfg["memory"]["builtin"]["jiuwen"]["agent_id"] = "other-memory"
-    await obj._handle_memory_rail_by_config("agent.work.normal")
-    obj._instance.unregister_rail.assert_awaited_once_with(first)
-    assert obj._memory_rail._agent_id == "other-memory"
-
-    project_dir = str(tmp_path / "repo")
-    obj._bind_jiuwen_memory_project_dir(project_dir)
-    await obj._handle_memory_rail_by_config("agent.work.normal")
-    project = resolve_coding_memory_project_name(project_dir)
-    assert obj._memory_rail._provider.options["collective_coordinates"] == {"project": project}
-    memory_dependencies.assert_awaited_with(cfg, project, sdk_media_globals={})
-
 
 @pytest.mark.parametrize("mode", ["http", "sdk"])
 @pytest.mark.parametrize("changed", ["root", "models", "embed", "workspace"])
@@ -384,40 +351,7 @@ def test_memory_rebuild_ignores_local_settings_only_in_http(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["root", "base_url", "agent_id", "provider", "enabled"])
-async def test_http_v08_reload_uses_effective_memory_config(monkeypatch, tmp_path, change):
-    cfg = config()
-    obj = adapter(monkeypatch, tmp_path, cfg)
-    obj._instance = SimpleNamespace(unregister_rail=AsyncMock(), register_rail=AsyncMock(),
-                                    deep_config=SimpleNamespace(subagents=[]))
-    first = obj._build_coding_memory_rail()
-    first.aclose = AsyncMock()
-    jiuwen = cfg["memory"]["builtin"]["jiuwen"]
-    if change == "root":
-        jiuwen["sdk"] = {"markdown_store": {"default": {"params": {"root": "unused"}}}}
-    elif change == "base_url":
-        jiuwen["base_url"] = "http://127.0.0.1:9813"
-    elif change == "agent_id":
-        jiuwen["agent_id"] = "another-agent"
-    elif change == "provider":
-        cfg["memory"]["builtin"]["provider"] = ""
-    else:
-        cfg["modes"]["code"]["memory"]["enabled"] = False
-    await obj._handle_memory_rail_by_config("agent.code.normal")
-    if change == "root":
-        assert obj._coding_memory_rail is first
-        first.aclose.assert_not_awaited()
-        obj._instance.register_rail.assert_not_awaited()
-    else:
-        first.aclose.assert_awaited_once()
-        assert obj._coding_memory_rail is not first
-    if change == "provider":
-        assert type(obj._coding_memory_rail).__name__ == "CodingMemoryRail"
-    assert obj._memory_rail is None and obj._external_memory_rail is None
-
-
-@pytest.mark.asyncio
-async def test_v01_v05_mode_update_preserves_exact_memory_rail_set(monkeypatch, tmp_path):
+async def test_code_mode_keeps_project_instructions_without_legacy_memory(monkeypatch, tmp_path):
     cfg = config()
     obj = adapter(monkeypatch, tmp_path, cfg)
     registered = []
@@ -432,10 +366,10 @@ async def test_v01_v05_mode_update_preserves_exact_memory_rail_set(monkeypatch, 
     obj._subagent_rail = object()
     monkeypatch.setattr(obj, "_sync_personal_context_rail", AsyncMock())
     for provider, enabled, expected in [
-        ("", True, {"CodingMemoryRail", "ProjectMemoryRail"}),
-        ("jiuwen", True, {"JiuwenMemoryCodingRail", "ProjectMemoryRail"}),
-        ("", True, {"CodingMemoryRail", "ProjectMemoryRail"}),
-        ("jiuwen", True, {"JiuwenMemoryCodingRail", "ProjectMemoryRail"}),
+        ("", True, {"ProjectMemoryRail"}),
+        ("jiuwen", True, {"ProjectMemoryRail"}),
+        ("", True, {"ProjectMemoryRail"}),
+        ("jiuwen", True, {"ProjectMemoryRail"}),
         ("jiuwen", False, set()),
     ]:
         cfg["memory"]["builtin"]["provider"] = provider
@@ -445,151 +379,10 @@ async def test_v01_v05_mode_update_preserves_exact_memory_rail_set(monkeypatch, 
         assert obj._memory_rail is None and obj._external_memory_rail is None
 
 
-def test_v04_only_code_agent_reuses_the_http_memory_rail(monkeypatch, tmp_path):
-    from unittest.mock import MagicMock
-
-    cfg = config()
-    obj = adapter(monkeypatch, tmp_path, cfg)
-    obj._sys_operation = MagicMock()
-    monkeypatch.setattr(obj, "_browser_runtime_enabled", lambda: False)
-    rail = obj._build_coding_memory_rail()
-    specs, _ = obj._build_configured_subagents(
-        MagicMock(), {"subagents": {"code_agent": {"enabled": True}}}, cfg)
-    by_name = {spec.agent_card.name: spec for spec in specs}
-    assert rail in by_name["code_agent"].rails
-    for name in ("explore_agent", "plan_agent"):
-        assert rail not in (by_name[name].rails or [])
-
-
-@pytest.mark.asyncio
-async def test_http_root_change_keeps_client_through_full_spec_reload(
-    monkeypatch, tmp_path, memory_dependencies,
-):
-    from copy import copy
-    from unittest.mock import MagicMock
-
-    from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
-    from openjiuwen.core.runner import Runner
-    from openjiuwen.harness.factory import DeepAgentParts, create_deep_agent
-
-    cfg = config()
-    obj = adapter(monkeypatch, tmp_path, cfg)
-    obj._last_mode = "agent.code.normal"
-    rail = obj._build_coding_memory_rail()
-    model = Model(model_client_config=ModelClientConfig(
-        client_provider="OpenAI", api_key="mock", api_base="http://mock-base"),
-        model_config=ModelRequestConfig(model="mock-model"))
-    agent = create_deep_agent(model=model, rails=[rail], workspace=str(tmp_path),
-                              enable_task_loop=False, add_general_purpose_agent=False,
-                              enable_read_image_multimodal=False)
-    obj._instance = agent
-    obj._code_spec_rails = [rail]
-    await Runner.start()
-    try:
-        await agent.ensure_initialized()
-        lifecycle = Mock()
-        lifecycle.attach_mock(rail.init, "mount")
-        lifecycle.attach_mock(rail.uninit, "unmount")
-        ensure_initialized = agent.ensure_initialized
-
-        async def ensure_after_remount():
-            lifecycle.ready()
-            await ensure_initialized()
-
-        monkeypatch.setattr(agent, "ensure_initialized", ensure_after_remount)
-        cfg["memory"]["builtin"]["jiuwen"]["sdk"] = {"markdown_store": {
-            "default": {"target": "local", "params": {"root": str(tmp_path / "unused")}}}}
-        candidate = obj._build_coding_memory_rail()
-        assert candidate is rail
-        parts = DeepAgentParts(
-            config=copy(agent.deep_config),
-            rails=[candidate],
-            tool_cards=[],
-            tool_instances=[],
-            extension_bus=agent._extension_bus,
-        )
-        spec = MagicMock()
-        spec.resolve_parts.return_value = parts
-        context = SimpleNamespace(tool_owner_id=None, artifacts=SimpleNamespace(tools=[]))
-        monkeypatch.setattr(obj, "_apply_reload_config_snapshot", AsyncMock(return_value=cfg))
-        monkeypatch.setattr(obj, "_create_model", lambda _: model)
-        monkeypatch.setattr(obj, "_build_code_spec_snapshot", lambda *a, **kw: (spec, context))
-        for name in ("_load_active_packages", "load_user_rails", "_sync_mcp_servers_for_runtime",
-                     "_fan_out_reload_to_session_adapters", "_sync_skill_retrieval_prompt_rail_for_runtime"):
-            monkeypatch.setattr(obj, name, AsyncMock())
-        for name in ("_sync_active_evolution_review_agent_after_reload", "_sync_paid_search_tool_for_runtime",
-                     "_sync_symphony_tools_for_runtime", "_sync_skill_retrieval_tools_for_runtime"):
-            monkeypatch.setattr(obj, name, MagicMock())
-        await obj.reload_agent_config(cfg, {})
-        assert obj._coding_memory_rail is rail
-        rail.aclose.assert_not_awaited()
-        assert lifecycle.mock_calls[:3] == [
-            call.unmount(agent), call.mount(agent), call.ready(),
-        ]
-        assert sum(item is rail for item in agent.configured_rails()) == 1
-        memory_dependencies.assert_awaited_once_with(cfg, rail._provider.options["project"])
-    finally:
-        await agent.unregister_rail(rail)
-        await Runner.stop()
-
-
 @pytest.mark.parametrize("markdown", [[], {"default": []}, {"default": {"params": []}}])
 def test_sdk_rejects_invalid_mapping_instead_of_discarding_config(markdown):
     with pytest.raises(ValueError, match="must be a mapping"):
         builder._sdk_inline_config({"sdk": {"markdown_store": markdown}}, shared_document_root=True)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("changed", ["models", "project", "identity"])
-@pytest.mark.parametrize("raises", [False, True])
-async def test_failed_jiuwen_rebuild_clears_memory_and_can_recover(
-    monkeypatch, tmp_path, changed, raises,
-):
-    cfg = config()
-    cfg["memory"]["builtin"]["jiuwen"].update({"mode": "sdk"})
-    monkeypatch.setattr(builder, "get_embed_config", lambda: {})
-    obj = adapter(monkeypatch, tmp_path, cfg)
-    obj._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock(),
-                                    deep_config=SimpleNamespace(subagents=[]))
-    first = obj._build_coding_memory_rail()
-    assert first is not None
-    first.aclose = AsyncMock()
-    project_rail = object()
-    obj._project_memory_rail = project_rail
-    obj._code_spec_rails = [project_rail, first]
-    code_spec = SimpleNamespace(agent_card=SimpleNamespace(name="code_agent"), rails=[first])
-    obj._instance.deep_config.subagents = [code_spec]
-    monkeypatch.setattr(interface_code, "create_coding_memory_rail",
-                        lambda **kwargs: pytest.fail("Jiuwen must not fall back to the native rail"))
-    if changed == "models":
-        cfg["models"] = {"model": "changed-model"}
-    elif changed == "project":
-        obj._memory_project_dir = str(tmp_path / "another-project")
-    else:
-        cfg["memory"]["builtin"]["jiuwen"]["agent_id"] = "another-agent"
-    original = interface_code.build_jiuwen_memory_rail
-
-    def fail_build(*args, **kwargs):
-        if raises:
-            raise ValueError("invalid memory configuration")
-        return None
-
-    monkeypatch.setattr(interface_code, "build_jiuwen_memory_rail", fail_build)
-    await obj._reconcile_coding_memory()
-    assert obj._coding_memory_rail is None
-    assert obj._coding_memory_binding is None
-    assert obj._coding_memory_config_fingerprint is None
-    first.aclose.assert_awaited_once()
-    obj._instance.unregister_rail.assert_awaited_once_with(first)
-    obj._instance.register_rail.assert_not_awaited()
-    assert obj._project_memory_rail is project_rail
-    assert obj._code_spec_rails == [project_rail]
-    assert first not in code_spec.rails
-    monkeypatch.setattr(interface_code, "build_jiuwen_memory_rail", original)
-    await obj._reconcile_coding_memory()
-    assert obj._coding_memory_rail is not None and obj._coding_memory_rail is not first
-    obj._instance.register_rail.assert_awaited_once_with(obj._coding_memory_rail)
-    assert obj._coding_memory_rail in code_spec.rails
 
 
 def test_native_memory_fingerprint_matches_constructor_directory(monkeypatch, tmp_path):
@@ -649,3 +442,93 @@ def test_work_assembly_does_not_import_coding_rail(monkeypatch):
 
 def test_unknown_memory_scene_is_disabled():
     assert builder.build_jiuwen_memory_rail(config(), scene="unknown") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attach_only", [False, True])
+async def test_team_stream_only_reconciles_memory_for_user_input(monkeypatch, attach_only):
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+
+    cfg = config()
+    monkeypatch.setattr(interface_deep, "get_config", lambda: cfg)
+    obj = interface_deep.JiuWenSwarmDeepAdapter()
+    obj._is_session_scoped_adapter = True
+    obj._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    previous = object()
+    obj._memory_rail = previous
+    monkeypatch.setattr(obj, "_drain_jiuwen_memory_rail", AsyncMock())
+    monkeypatch.setattr(obj, "_ensure_enterprise_models", AsyncMock())
+    monkeypatch.setattr(obj, "_model_config_error", lambda _request: None)
+    monkeypatch.setattr(obj, "_resolve_model_for_request", lambda _request: None)
+    monkeypatch.setattr(obj, "_apply_model_to_react_agent", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(obj, "_write_runtime_state", lambda **_kwargs: None)
+
+    async def team_stream(request, _inputs, _instance):
+        yield AgentResponseChunk(
+            request_id=request.request_id, channel_id=request.channel_id,
+            payload={"event_type": "chat.delta", "content": "team event"},
+        )
+
+    monkeypatch.setattr(team_helpers, "process_team_message_stream", team_stream)
+    request = AgentRequest(
+        request_id="observer" if attach_only else "user-turn", channel_id="web",
+        session_id="memory-race", is_stream=True,
+        params={"mode": "team.work.normal", "query": "" if attach_only else "count",
+                "attach_only": attach_only},
+    )
+    chunks = [chunk async for chunk in obj.process_message_stream_impl(
+        request, {"query": request.params["query"]},
+    )]
+
+    assert [chunk.payload for chunk in chunks] == [
+        {"event_type": "chat.delta", "content": "team event"},
+    ], "Both input and passive subscriptions must reach the Team stream"
+    if attach_only:
+        obj._drain_jiuwen_memory_rail.assert_not_awaited()
+        obj._instance.unregister_rail.assert_not_awaited()
+        assert obj._memory_rail is previous
+    else:
+        obj._drain_jiuwen_memory_rail.assert_awaited_once_with(previous)
+        obj._instance.unregister_rail.assert_awaited_once_with(previous)
+        assert obj._memory_rail is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_team_memory_reconciliation_unregisters_once(monkeypatch):
+    monkeypatch.setattr(interface_deep, "get_config", config)
+    obj = interface_deep.JiuWenSwarmDeepAdapter()
+    previous = SimpleNamespace(get_callbacks=lambda: {})
+    obj._memory_rail = previous
+    obj._instance = SimpleNamespace(
+        unregister_rail=AsyncMock(side_effect=lambda candidate: candidate.get_callbacks()),
+    )
+    draining = asyncio.Event()
+    release = asyncio.Event()
+    contender_started = asyncio.Event()
+
+    async def drain(_rail):
+        draining.set()
+        await release.wait()
+
+    async def contend():
+        contender_started.set()
+        await obj._handle_memory_rail_by_config("team")
+
+    monkeypatch.setattr(obj, "_drain_jiuwen_memory_rail", AsyncMock(side_effect=drain))
+    tasks = [asyncio.create_task(obj._handle_memory_rail_by_config("team.work.normal"))]
+    try:
+        await asyncio.wait_for(draining.wait(), timeout=2)
+        tasks.append(asyncio.create_task(contend()))
+        await asyncio.wait_for(contender_started.wait(), timeout=2)
+        drain_count_while_waiting = obj._drain_jiuwen_memory_rail.await_count
+    finally:
+        release.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=2,
+        )
+
+    assert results == [None, None], "Concurrent reconciliation must not unregister None"
+    assert drain_count_while_waiting == 1, "The second request must wait for the first cleanup"
+    obj._drain_jiuwen_memory_rail.assert_awaited_once_with(previous)
+    obj._instance.unregister_rail.assert_awaited_once_with(previous)
+    assert obj._memory_rail is None

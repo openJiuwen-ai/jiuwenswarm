@@ -16,6 +16,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+from jiuwenswarm.runtime.config_reload import (
+    reload_runtime_after_config_save as reload_runtime_after_config_save,
+)
 
 from jiuwenswarm.common.config import resolve_env_vars
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
@@ -106,35 +109,6 @@ class _ConfigRpcChannel:
         }
 
 
-async def reload_runtime_after_config_save(
-    agent_manager: Any,
-    _updated_keys: Any = None,
-    *,
-    env_updates: dict[str, Any] | None = None,
-    config_payload: dict[str, Any] | None = None,
-    reload_options: dict[str, Any] | None = None,
-) -> bool:
-    """Publish a saved config to every agent in this process before acknowledging it.
-
-    Permission changes share one config file across channels, so they are not
-    narrowed to the channel that submitted the panel request.
-    """
-    options = reload_options if isinstance(reload_options, dict) else {}
-    scopes = {
-        str(scope)
-        for scope in (options.get("reload_scopes") or [])
-        if isinstance(scope, str) and scope
-    }
-    target_channel = str(options.get("target_channel_id") or "").strip() or None
-    if "permissions" in scopes:
-        target_channel = None
-    await agent_manager.reload_agents_config(
-        config_payload if isinstance(config_payload, dict) else None,
-        env_updates if isinstance(env_updates, dict) else None,
-        target_channel_id=target_channel,
-        reload_scopes=scopes or None,
-    )
-    return True
 
 
 class ConfigAdapter(GatewayAdapter):
@@ -144,6 +118,7 @@ class ConfigAdapter(GatewayAdapter):
         self._on_config_saved = on_config_saved
 
     methods = frozenset({
+        ReqMethod.MEMORY_PORTAL_OPEN.value,
         ReqMethod.CONFIG_GET.value,
         ReqMethod.CONFIG_MOA_STATUS.value,
         ReqMethod.CONFIG_SET.value,
@@ -174,6 +149,16 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method == ReqMethod.MEMORY_PORTAL_OPEN:
+            from jiuwenswarm.common.config import get_config
+            from jiuwenswarm.server.runtime.memory_portal import get_memory_portal_service
+
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True, payload=await get_memory_portal_service().open(get_config()),
+                metadata=request.metadata,
+            )
+
         if request.req_method in {ReqMethod.CONFIG_SET, ReqMethod.CONFIG_SAVE_ALL}:
             from jiuwenswarm.common.config import get_config_raw
             from jiuwenswarm.common.multimodal_models import CAPABILITIES, MultimodalError

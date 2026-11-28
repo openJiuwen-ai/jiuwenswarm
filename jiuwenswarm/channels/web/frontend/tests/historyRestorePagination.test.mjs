@@ -8,7 +8,11 @@ const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
 const outfile = join(frontendRoot, 'node_modules/.cache/history-restore-pagination/restore.mjs');
 await build({
   stdin: {
-    contents: 'export { beginHistoryRestore } from "./src/features/historyRestore.ts"; export { webClient } from "./src/services/webClient.ts";',
+    contents: `
+      export { beginHistoryRestore } from './src/features/historyRestore.ts';
+      export { webClient } from './src/services/webClient.ts';
+      export { getSessionErrorMessage, getSessionIndicator } from './src/multi-session/sidebar/sidebarModel.ts';
+    `,
     resolveDir: frontendRoot,
     loader: 'ts',
   },
@@ -22,6 +26,10 @@ await build({
 
 globalThis.window = globalThis;
 globalThis.window.location = { protocol: 'http:', host: 'localhost:18180' };
+const windowEvents = new EventTarget();
+globalThis.window.addEventListener = windowEvents.addEventListener.bind(windowEvents);
+globalThis.window.removeEventListener = windowEvents.removeEventListener.bind(windowEvents);
+globalThis.window.dispatchEvent = windowEvents.dispatchEvent.bind(windowEvents);
 
 class Socket {
   static OPEN = 1;
@@ -61,7 +69,7 @@ class Socket {
 }
 
 globalThis.WebSocket = Socket;
-const { beginHistoryRestore, webClient } = await import(pathToFileURL(outfile).href);
+const { beginHistoryRestore, getSessionErrorMessage, getSessionIndicator, webClient } = await import(pathToFileURL(outfile).href);
 await webClient.connect();
 after(() => webClient.disconnect());
 
@@ -116,6 +124,41 @@ function batch(state, cursor, records, nextCursor, extra = {}) {
   for (const message of records) emit(state.sessionId, 'history.message', { ...meta, message });
   emit(state.sessionId, 'history.message', { ...meta, status: 'done' });
 }
+
+test('a restored model output-limit error drives the sidebar until a newer turn starts', async () => {
+  const state = restore();
+  const error = '[181001] model call failed, reason: model hit its output limit (finish_reason=length, output_tokens=256) before completing the response';
+  const errorRecord = {
+    id: 'output-limit',
+    role: 'assistant',
+    event_type: 'chat.error',
+    content: error,
+    error,
+    timestamp: 1792980000,
+  };
+
+  batch(state, null, [errorRecord, ...visibleRecords.toReversed()], null);
+  await flush();
+
+  const [restored] = state.calls.ready;
+  const runtime = { messages: restored.messages };
+  const getIndicator = (value, sessionProcessing = false) =>
+    getSessionIndicator(value, false, sessionProcessing, Boolean(getSessionErrorMessage(value, sessionProcessing)));
+  assert.equal(restored.messages.at(-1).content, error);
+  assert.equal(getSessionErrorMessage(runtime), error);
+  assert.equal(getIndicator(runtime), 'error');
+  assert.equal(getIndicator({ ...runtime, isProcessing: true }), 'processing');
+  assert.equal(getIndicator(runtime, true), 'processing');
+  assert.equal(getIndicator({ ...runtime, pendingQuestions: [{}] }), 'waiting');
+
+  const retried = restore();
+  const newInput = { id: 'retry', role: 'user', content: 'Try again', timestamp: 1792980001 };
+  const newReply = { id: 'success', role: 'assistant', event_type: 'chat.final', content: 'Completed', timestamp: 1792980002 };
+  batch(retried, null, [newReply, newInput, errorRecord, ...visibleRecords.toReversed()], null);
+  await flush();
+  const [restoredRetry] = retried.calls.ready;
+  assert.equal(getIndicator({ messages: restoredRetry.messages }), 'time');
+});
 
 test('discarding a superseded history recovery releases buffered live output', async () => {
   const live = [];

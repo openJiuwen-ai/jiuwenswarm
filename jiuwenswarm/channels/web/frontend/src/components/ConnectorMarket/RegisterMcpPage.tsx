@@ -107,6 +107,10 @@ interface RegisterMcpPageProps {
   editName?: string;
 }
 
+// 连接器名称同时作为自定义 MCP 的 server 标识（state.json 的 name / server_id_scope），
+// 与技能名、定时任务名保持同一档 64 字符上限；超长名称会在卡片标题和 tooltip 里溢出。
+const NAME_MAX_LENGTH = 64;
+
 const JSON_EXAMPLE = `// 示例:
 // {
 //   "mcpServers": {
@@ -195,7 +199,8 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
     setJsonPaste(value);
     const parsed = parseJsonPasteConfig(value);
     if (!parsed) return;
-    if (parsed.name) setName(parsed.name);
+    // JSON 里解析出的名称同样受输入框上限约束，避免绕过 maxLength 塞进超长名称。
+    if (parsed.name) setName(parsed.name.slice(0, NAME_MAX_LENGTH));
     setType(parsed.transport);
     if (parsed.command !== undefined) setCommand(parsed.command);
     if (parsed.args !== undefined) setArgs(rowsFromArray(parsed.args));
@@ -284,6 +289,9 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
           readOnly={!!editName}
           disabled={!!editName}
           invalid={fieldErrors.name}
+          maxLength={NAME_MAX_LENGTH}
+          showCounter={!editName}
+          counterTestId="connector-market-register-mcp-name-counter"
           data-testid="connector-market-register-mcp-name"
         />
       </Field>

@@ -157,6 +157,9 @@ def _resolve_workspace_dir() -> Path | None:
             workspace,
         )
         return None
+    from jiuwenswarm.common.sandbox_fs import ensure_sandbox_writable
+
+    ensure_sandbox_writable(workspace)
     return workspace
 
 
@@ -576,7 +579,7 @@ def _team_context_from_spec(spec: Any) -> dict[str, str] | None:
        ``<outer>/runs/<hash>``) still has its members' workspaces under the
        standard team home.
     2. jiuwenswarm aligns the openjiuwen home to its own data root at startup
-       (``configure_openjiuwen_home(get_domain_data_dir())``, bootstrap.py),
+       (``configure_openjiuwen_home(get_workspace_root_dir())``, bootstrap.py),
        so ``team_home(team_name)`` and the jiuwenswarm-side team directory
        are the same tree — there is no second data root to diverge.
 
@@ -853,6 +856,9 @@ def build_filesystem_policy(
                 exc,
             )
             continue
+        from jiuwenswarm.common.sandbox_fs import ensure_sandbox_writable
+
+        ensure_sandbox_writable(intent_path)
         _mount_rw_dir(intent_path)
 
     if effective_startup_mode == "internal":

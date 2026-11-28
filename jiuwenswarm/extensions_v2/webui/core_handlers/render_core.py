@@ -34,6 +34,7 @@ def build_render_core_handler(
     *,
     on_delivered: Callable[[UiRenderInput, EventHandlerOps | None], Awaitable[None]] | None = None,
     on_dropped: Callable[[RenderTarget], None] | None = None,
+    reuse_frame: Callable[[RenderFrame, RenderInstance, EventHandlerOps | None], Awaitable[bool]] | None = None,
 ) -> EventHandler:
     """Build the single CORE handler for ui.render."""
 
@@ -68,7 +69,22 @@ def build_render_core_handler(
             await transport.send_error(request.target, report.code or CODE_SCHEMA_ERROR, report.message)
             return UiRenderOutput(status=RenderStatus.REJECTED)
 
-        async with registry.claim(request.target) as claim:
+        max_instances = spec.max_instances if spec is not None else None
+        claim_context = (
+            registry.claim(request.target)
+            if max_instances is None
+            else registry.claim(
+                request.target,
+                max_instances=max_instances,
+                create=request.mode is RenderMode.REPLACE,
+            )
+        )
+        async with claim_context as claim:
+            if claim.rejected:
+                # Do not send an error frame: a rejected new instance has no
+                # browser-side slot yet, and the plugin already sees REJECTED.
+                logger.warning("[WebUI] slot instance limit reached: %s", request.target.key)
+                return UiRenderOutput(status=RenderStatus.REJECTED)
             if application and connection is not None and connection.closed:
                 if claim.created:
                     registry.drop_instance(request.target)
@@ -93,19 +109,28 @@ def build_render_core_handler(
                 )
                 return UiRenderOutput(status=RenderStatus.REJECTED)
 
+            if reuse_frame is not None and previous.root is not None and request.mode is RenderMode.REPLACE:
+                if await reuse_frame(preview, claim.instance, ops):
+                    return UiRenderOutput(status=RenderStatus.DELIVERED, revision=previous.revision)
+
+            registered = registry.get(request.target) is claim.instance
             frame = registry.commit(claim.instance, request)
-            if request.mode is RenderMode.CLEAR:
-                delivered = await transport.send_clear(
-                    ClearFrame(target=request.target, revision=frame.revision, reason="requested")
-                )
-            else:
-                delivered = await transport.send_frame(frame)
+            delivered = False
+            try:
+                if request.mode is RenderMode.CLEAR:
+                    delivered = await transport.send_clear(
+                        ClearFrame(target=request.target, revision=frame.revision, reason="requested")
+                    )
+                else:
+                    delivered = await transport.send_frame(frame)
+            finally:
+                if not delivered and (not registered or registry.get(request.target) is claim.instance):
+                    registry.restore(claim.instance, previous)
+                    if claim.created:
+                        registry.drop_instance(request.target)
 
             if not delivered:
                 logger.warning("[WebUI] frame delivery failed: %s", request.target.key)
-                registry.restore(claim.instance, previous)
-                if claim.created:
-                    registry.drop_instance(request.target)
                 return UiRenderOutput(
                     status=RenderStatus.DELIVERY_FAILED,
                     revision=previous.revision,

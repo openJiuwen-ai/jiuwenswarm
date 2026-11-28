@@ -173,7 +173,7 @@ def test_request_enforces_slot_root_components():
     iframe = RenderNode("Iframe", {"title": "Web", "src": "https://example.com"})
     text = RenderNode("Text", {"value": "body"})
     right = replace(TARGET, slot_id="conversation.panel.right")
-    menu_main = replace(TARGET, slot_id="application.menu.main")
+    menu_main = RenderTarget("", "application.menu.main", "pkg.demo", "main", connection_id="sock-1")
 
     assert validate_request(UiRenderInput(right, panel)).ok
     assert validate_request(UiRenderInput(right, iframe)).ok

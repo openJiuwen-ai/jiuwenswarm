@@ -247,15 +247,22 @@ class WebUIResourceService:
                 raise FileNotFoundError("WebUI resource changed after publication")
             return data, RESOURCE_MIME_TYPES[Path(path).suffix.lower()]
 
-    async def drop(self, *, package_id: str = "", session_id: str = "", connection_id: str = "") -> None:
-        """Revoke a closed scope and wait for its active file writers before deleting output."""
-        await complete_before_cancel(self._drop(package_id, session_id, connection_id))
+    async def drop(self, *, package_id: str = "", session_id: str = "", connection_id: str = "",
+                   generation: int | None = None) -> None:
+        """Revoke a closed scope and wait for its active file writers before deleting output.
 
-    async def _drop(self, package_id: str, session_id: str, connection_id: str) -> None:
+        ``generation`` names the retired activation when a hot reload cleans up the
+        previous one. The successor is already active then, so revoking whatever the
+        catalog currently returns would permanently block the new activation.
+        """
+        await complete_before_cancel(self._drop(package_id, session_id, connection_id, generation))
+
+    async def _drop(self, package_id: str, session_id: str, connection_id: str,
+                    generation: int | None = None) -> None:
         async with self._lock:
             if package_id:
                 record = self._catalog.active_package(package_id)
-                if record is not None:
+                if record is not None and (generation is None or record.generation == generation):
                     self._revoked_activations[package_id] = record
             if session_id:
                 self._closed_sessions.add(session_id)
@@ -265,6 +272,9 @@ class WebUIResourceService:
             for resource_id, item in tuple(self._sets.items()):
                 _, session, connection = decode_resource_route(item.route)
                 package_matches = package_id and item.package_id == package_id
+                if package_matches and generation is not None and item.generation != generation:
+                    # The successor may have published before this cleanup ran; keep those URLs.
+                    package_matches = False
                 session_matches = session_id and session == session_id
                 connection_matches = connection_id and connection == connection_id
                 if package_matches or session_matches or connection_matches:

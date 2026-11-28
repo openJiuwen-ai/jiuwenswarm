@@ -1,11 +1,11 @@
-import type { WebUIAppearance } from './appearance.ts';
+import type { WebUIColors } from './appearance.ts';
 import { buildAppearanceCss, readSurfaceBases } from './derive.ts';
 
 export const APPEARANCE_STYLE_ID = 'webui-appearance';
 let writes = 0;
 
 /** Write or remove the appearance contribution layer of a document. */
-export function applyAppearance(doc: Document, appearance: WebUIAppearance | null): void {
+export function applyAppearance(doc: Document, appearance: WebUIColors | null): void {
   const root = doc.documentElement;
   const existing = doc.getElementById(APPEARANCE_STYLE_ID);
   if (!appearance) {

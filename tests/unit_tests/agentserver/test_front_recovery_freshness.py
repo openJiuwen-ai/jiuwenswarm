@@ -60,6 +60,9 @@ async def test_preprobe_completion_must_match_current_fresh_request(transport, i
             await front.send(request)
             assert await worker.recv() == request
         if invalid == "old_request":
+            # Windows Python may expose a coarse monotonic clock. Cross a
+            # clock tick so this request is observably older, not equal-aged.
+            await asyncio.sleep(0.02)
             since = time.monotonic()
         done = {**request, "kind": KIND_REQUEST_DONE}
         if invalid == "wrong_generation":
@@ -67,6 +70,7 @@ async def test_preprobe_completion_must_match_current_fresh_request(transport, i
         await worker.send(done)
         assert await front.recv() == done
         if invalid == "old_completion":
+            await asyncio.sleep(0.02)
             since = time.monotonic()
         owner = front._loop if isinstance(front, stream.StreamConnection) else asyncio.get_running_loop()
         await stream.on_loop(owner, front._write_lock.acquire())

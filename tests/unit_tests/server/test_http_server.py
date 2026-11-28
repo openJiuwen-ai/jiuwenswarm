@@ -641,12 +641,131 @@ def _app_client():
     )
 
 
+@pytest.fixture
+def builtin_http_routes(monkeypatch) -> None:
+    """Keep built-in route tests independent of the optional Runtime registry."""
+    from jiuwenswarm.server import agent_http_routes
+
+    monkeypatch.setattr(agent_http_routes, "_register_declared_routes", lambda app, services: None)
+
+
 @pytest.mark.asyncio
-async def test_health_reports_ok() -> None:
+async def test_health_reports_ok(builtin_http_routes) -> None:
     async with _app_client() as client:
         response = await client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+@pytest.fixture
+def native_http_spans(monkeypatch, builtin_http_routes):
+    """Capture real native spans without installing a process-wide provider."""
+    import inspect
+
+    from fastapi import FastAPI
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    if "telemetry" not in inspect.signature(FastAPI).parameters:
+        pytest.skip("FastAPI version does not provide native telemetry")
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+    try:
+        yield exporter
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/health", "/api/v1/health?probe=ready"])
+async def test_health_probes_do_not_export_native_spans(native_http_spans, path, caplog) -> None:
+    with caplog.at_level("INFO"):
+        async with _app_client() as client:
+            for _ in range(3):
+                response = await client.get(path)
+                assert response.status_code == 200
+                assert response.json() == {"ok": True}
+
+    assert native_http_spans.get_finished_spans() == ()
+    assert any("path=/api/v1/health" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_failed_health_probe_is_still_excluded(native_http_spans, monkeypatch) -> None:
+    async def _failed_health():
+        raise RuntimeError("health probe failed")
+
+    app = build_http_app(AppServices())
+    health_route = next(route for route in app.routes if route.path == "/api/v1/health")
+    monkeypatch.setattr(health_route.dependant, "call", _failed_health)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/health")
+
+    assert response.status_code == 500
+    assert native_http_spans.get_finished_spans() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "status"),
+    [
+        ("GET", "/api/v1/healthcheck", 404),
+        ("GET", "/api/v1/health/details", 404),
+        ("POST", "/api/v1/health", 405),
+    ],
+)
+async def test_health_exclusion_keeps_other_requests_traced(
+    native_http_spans, method, path, status,
+) -> None:
+    from opentelemetry.trace import SpanKind
+
+    async with _app_client() as client:
+        response = await client.request(method, path)
+
+    assert response.status_code == status
+    server_spans = [s for s in native_http_spans.get_finished_spans() if s.kind == SpanKind.SERVER]
+    assert len(server_spans) == 1
+    assert server_spans[0].attributes["url.path"] == path
+
+
+@pytest.mark.asyncio
+async def test_health_exclusion_preserves_chat_trace_context(native_http_spans, monkeypatch) -> None:
+    from opentelemetry import trace
+
+    async def _chat(ctx: RequestContext) -> None:
+        with trace.get_tracer(__name__).start_as_current_span("test.agent.run"):
+            await ctx.sink.send_response(
+                AgentResponse(
+                    request_id=ctx.request.request_id,
+                    channel_id=ctx.request.channel_id,
+                    ok=True,
+                    payload={"reply": "hello"},
+                )
+            )
+
+    monkeypatch.setattr("jiuwenswarm.server.http_chat.handle_http_chat", _chat)
+    async with _app_client() as client:
+        response = await client.post(
+            "/api/v1/chat",
+            headers={"traceparent": "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"},
+            json={"request_id": "req-trace", "channel_id": "http", "params": {"query": "hello"}},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["payload"] == {"reply": "hello"}
+    spans = native_http_spans.get_finished_spans()
+    server_spans = [s for s in spans if s.kind == trace.SpanKind.SERVER]
+    business_spans = [s for s in spans if s.name == "test.agent.run"]
+    assert len(server_spans) == len(business_spans) == 1
+    assert server_spans[0].parent.span_id == int("1234567890abcdef", 16)
+    assert all(s.context.trace_id == int("1234567890abcdef1234567890abcdef", 16) for s in spans)
+    assert business_spans[0].parent.span_id in {s.context.span_id for s in spans}
 
 
 @pytest.mark.asyncio

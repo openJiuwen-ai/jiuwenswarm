@@ -5,9 +5,11 @@
 # TEST ONLY: credential-shaped values are constructed synthetic fixtures and
 # URL literals use RFC-reserved domains; no external request is performed.
 
+import errno
 import importlib
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -15,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
+from jiuwenswarm.common import paths
 from jiuwenswarm.common import utils
 
 
@@ -471,7 +474,7 @@ def test_oversized_structured_log_keeps_valid_json():
 class TestUserWorkspace:
     """Test user workspace functions."""
 
-    @patch("jiuwenswarm.common.utils.get_user_workspace_dir")
+    @patch("jiuwenswarm.common.paths.get_user_workspace_dir")
     @patch("jiuwenswarm.common.utils._find_package_root")
     @patch("pathlib.Path.exists")
     @patch("builtins.input")
@@ -530,16 +533,218 @@ def test_prepare_workspace_copies_rsi_program_dataset_creator(
     ).is_file()
 
 
+def test_merge_tree_never_touches_metadata_of_preexisting_dirs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """增量合并不得 chmod/utime 已存在的目标目录（共享卷属主不同会 EPERM）。
+
+    场景回放：PVC 上的 workspace/memory 由另一 uid 的历史部署创建，
+    本次启动只应补缺失文件，不得对已存在目录做 copystat。已存在的目标
+    根目录同样不得触碰——issue 现网报错里 EPERM 正是落在工作区根目录上。
+    """
+    src = tmp_path / "src"
+    (src / "memory").mkdir(parents=True)
+    (src / "memory" / "MEMORY.md").write_text("template-memory", encoding="utf-8")
+    (src / "AGENT.md").write_text("template-agent", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+    preexisting_dir = dst / "memory"
+    preexisting_dir.mkdir(parents=True)
+    (preexisting_dir / "user-notes.md").write_text("keep-me", encoding="utf-8")
+
+    real_copystat = shutil.copystat
+    copystat_targets: list[Path] = []
+
+    def spying_copystat(src_, dst_):
+        target = Path(dst_)
+        copystat_targets.append(target)
+        if target in (dst, preexisting_dir):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        real_copystat(src_, dst_)
+
+    monkeypatch.setattr(shutil, "copystat", spying_copystat)
+
+    utils._merge_tree_keep_dir_metadata(src, dst)
+
+    assert dst not in copystat_targets
+    assert preexisting_dir not in copystat_targets
+    assert (preexisting_dir / "user-notes.md").read_text(encoding="utf-8") == "keep-me"
+    assert (preexisting_dir / "MEMORY.md").read_text(encoding="utf-8") == "template-memory"
+    assert (dst / "AGENT.md").read_text(encoding="utf-8") == "template-agent"
+
+
+def test_merge_tree_survives_metadata_eperm_on_shared_volume(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """卷对 chmod/utime 一律拒绝（如 NFS root_squash）时内容拷贝仍须完成。"""
+    src = tmp_path / "src"
+    (src / "memory").mkdir(parents=True)
+    (src / "memory" / "MEMORY.md").write_text("m", encoding="utf-8")
+    (src / "AGENT.md").write_text("a", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+
+    def denying_copystat(src_, dst_):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(shutil, "copystat", denying_copystat)
+
+    utils._merge_tree_keep_dir_metadata(src, dst)
+
+    assert (dst / "AGENT.md").read_text(encoding="utf-8") == "a"
+    assert (dst / "memory" / "MEMORY.md").read_text(encoding="utf-8") == "m"
+
+
+def test_merge_tree_still_raises_on_real_copy_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """真实内容拷贝失败仍须聚合报错，不得被元数据容错掩盖。"""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "AGENT.md").write_text("a", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+    dst.mkdir()
+
+    real_copyfile = shutil.copyfile
+
+    def failing_copyfile(src_, dst_):
+        if Path(dst_).name == "AGENT.md":
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return real_copyfile(src_, dst_)
+
+    monkeypatch.setattr(shutil, "copyfile", failing_copyfile)
+
+    with pytest.raises(shutil.Error):
+        utils._merge_tree_keep_dir_metadata(src, dst)
+
+
+def test_merge_tree_aggregates_traversal_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """模板目录不可遍历（EACCES/IO 错误）须聚合报错。
+
+    os.walk 默认吞掉 scandir 失败并静默跳过该目录；若不收集，模板不可读
+    时会产出缺文件却报"工作区已就绪"的不完整工作区，问题延迟到运行期
+    才以间接现象暴露。
+    """
+    src = tmp_path / "src"
+    (src / "memory").mkdir(parents=True)
+    (src / "memory" / "MEMORY.md").write_text("m", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+
+    real_scandir = os.scandir
+
+    def failing_scandir(path):
+        if Path(path).name == "memory":
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", failing_scandir)
+
+    with pytest.raises(shutil.Error):
+        utils._merge_tree_keep_dir_metadata(src, dst)
+
+
+def test_merge_tree_applies_ignore_patterns(tmp_path: Path) -> None:
+    """ignore 语义与 copytree 对齐：命中模式的文件/目录不落盘。"""
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "sub" / "inner.md").write_text("i", encoding="utf-8")
+    (src / "AGENT_ZH.md").write_text("zh", encoding="utf-8")
+    (src / "AGENT.md").write_text("a", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+    utils._merge_tree_keep_dir_metadata(
+        src, dst, ignore=shutil.ignore_patterns("*_ZH.md", "sub")
+    )
+
+    assert (dst / "AGENT.md").is_file()
+    assert not (dst / "AGENT_ZH.md").exists()
+    assert not (dst / "sub").exists()
+
+
+def test_prepare_workspace_rerun_tolerates_foreign_owned_dirs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """二次启动（共享卷上已有工作区）不得因目录元数据 EPERM 而失败。
+
+    场景回放 issue 现网：PVC 复用、Pod uid 变化后 copytree 对已存在
+    目录 copystat 报 Operation not permitted，readinessProbe 失败。
+    """
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    utils.prepare_workspace(
+        overwrite=False,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+    # 用户数据已在位：增量合并不得动它。
+    user_notes = workspace_dir / "agent" / "workspace" / "memory" / "user-notes.md"
+    user_notes.write_text("keep-me", encoding="utf-8")
+
+    foreign_dirs = {
+        path
+        for path in workspace_dir.rglob("*")
+        if path.is_dir()
+    }
+    real_copystat = shutil.copystat
+
+    def denying_copystat(src_, dst_, **kwargs):
+        if Path(dst_) in foreign_dirs:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        real_copystat(src_, dst_, **kwargs)
+
+    monkeypatch.setattr(shutil, "copystat", denying_copystat)
+
+    # 证明播种路径确实执行：模板增量合并必须被调用到，否则本用例对
+    # 已存在目录的 EPERM 模拟全部空转（幂等重跑本就不产生任何 copystat）。
+    merge_targets: list[Path] = []
+    real_merge = utils._merge_tree_keep_dir_metadata
+
+    def spying_merge(src_dir, dst_dir, ignore=None):
+        merge_targets.append(Path(dst_dir))
+        return real_merge(src_dir, dst_dir, ignore=ignore)
+
+    monkeypatch.setattr(utils, "_merge_tree_keep_dir_metadata", spying_merge)
+
+    # 回放现网条件：infra 为 emptyDir，新 Pod 上 config/config.yaml 不存在，
+    # 二次调用仍完整走首装播种路径。
+    (workspace_dir / "config" / "config.yaml").unlink()
+
+    # 修复前：copytree 对已存在目录 copystat → EPERM → 启动失败。
+    utils.prepare_workspace(
+        overwrite=False,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    assert (workspace_dir / "agent" / "workspace") in merge_targets
+    assert user_notes.read_text(encoding="utf-8") == "keep-me"
+    assert (
+        workspace_dir / "agent" / "workspace" / "AGENT.md"
+    ).is_file()
+
+
 def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, monkeypatch):
     """数据目录被整体删除（无旧 config 可保留）时，从状态旁路恢复三方 agent 配置。"""
     import json as json_lib
     import yaml
 
+    valid_cli = tmp_path / "tools" / "claude.exe"
+    valid_cli.parent.mkdir(parents=True)
+    valid_cli.write_text("stub", encoding="utf-8")
+
     sidecar = tmp_path / "outside" / "external_cli_state.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text(
         json_lib.dumps({
-            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "agents": [{"cli_agent": "claude", "cli_path": str(valid_cli)}],
             "histories": {"claude": ["D:/tools/claude-old.exe"]},
             "transport": {"type": "hybrid", "params": {"external_publish_url": "http://hub"}},
         }),
@@ -558,7 +763,7 @@ def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, m
     restored = yaml.safe_load((workspace_dir / "config" / "config.yaml").read_text(encoding="utf-8"))
     team = restored["modes"]["team"]["jiuwen_team"]
     assert team["external_cli_agents"] == [
-        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+        {"cli_agent": "claude", "cli_path": str(valid_cli)}
     ]
     assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
     assert team["external_transport"] == {
@@ -605,6 +810,121 @@ def test_prepare_workspace_keeps_deliberately_empty_external_cli(tmp_path, monke
     restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
     team = restored["modes"]["team"]["jiuwen_team"]
     assert not team.get("external_cli_agents")
+
+
+def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch):
+    """旁路文件镜像 config.yaml 里的三方 agent 配置与路径历史。"""
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    utils.prepare_workspace(overwrite=True, preferred_language="en", workspace_dir=workspace_dir)
+    config_path = workspace_dir / "config" / "config.yaml"
+
+    # 保存管线落盘启用 agent 后刷新旁路（等价于 config.py 更新函数的挂接点）
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["modes"]["team"]["jiuwen_team"]["external_cli_agents"] = [
+        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+    ]
+    config_path.write_text(yaml.dump(data), encoding="utf-8")
+    utils.refresh_external_cli_state_sidecar(config_path, workspace_dir)
+
+    mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    assert mirrored["agents"] == [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}]
+
+
+def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeypatch):
+    """init -f 强制重置同样从旁路恢复三方 agent 状态且保留旁路文件
+    （2026-11-19 语义调整：init 一律保留已安装/已开启状态，不再清旁路）。
+    指向已删除安装的条目（路径根可达且文件不存在）被剔除（AI 检视 !10636）。"""
+    import json as json_lib
+    import yaml
+
+    valid_cli = tmp_path / "tools" / "claude.exe"
+    valid_cli.parent.mkdir(parents=True)
+    valid_cli.write_text("stub", encoding="utf-8")
+    missing_cli = tmp_path / "tools" / "missing.exe"
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [
+                {"cli_agent": "claude", "cli_path": str(valid_cli)},
+                {"cli_agent": "codex", "cli_path": str(missing_cli)},
+            ],
+            "histories": {"claude": ["D:/tools/claude-old.exe"]},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    config_dir = workspace_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text(
+        "\n".join([
+            "modes:",
+            "  team:",
+            "    jiuwen_team:",
+            "      external_cli_agents:",
+            "        - cli_agent: claude",
+            "          cli_path: D:/tools/claude-old.exe",
+        ]),
+        encoding="utf-8",
+    )
+
+    utils.prepare_workspace(
+        overwrite=True,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    assert sidecar.exists()
+    restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert team["external_cli_agents"] == [
+        {"cli_agent": "claude", "cli_path": str(valid_cli)}
+    ]
+    assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="盘符/共享不可达语义仅 Windows（AI 检视 !10636）")
+def test_prepare_workspace_force_reset_keeps_offline_drive_entries(tmp_path, monkeypatch):
+    """盘符/共享暂不可达（路径根不可达）的条目视为暂时不可用，保留不剔除。
+    盘符语义仅 Windows，非 Windows 平台跳过（AI 检视 !10636）。"""
+    import json as json_lib
+    import os
+    import yaml
+
+    offline_cli = "Q:/tools/claude.exe"
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [{"cli_agent": "claude", "cli_path": offline_cli}],
+            "histories": {},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+
+    utils.prepare_workspace(
+        overwrite=True,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    restored = yaml.safe_load((workspace_dir / "config" / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert team["external_cli_agents"] == [
+        {"cli_agent": "claude", "cli_path": offline_cli}
+    ]
 
 
 def test_sidecar_refreshes_through_the_config_write_exit(tmp_path, monkeypatch):
@@ -701,8 +1021,8 @@ class TestConstants:
     def test_get_user_workspace_dir_defined(monkeypatch):
         """Test get_user_workspace_dir is defined."""
         monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
-        monkeypatch.setattr(utils, "_workspace_base_dir", None)
-        monkeypatch.setattr(utils, "_user_home", None)
+        monkeypatch.setattr(paths, "_workspace_base_dir", None)
+        monkeypatch.setattr(paths, "_user_home", None)
         assert hasattr(utils, "get_user_workspace_dir")
         assert isinstance(utils.get_user_workspace_dir(), Path)
         assert ".jiuwenswarm" in str(utils.get_user_workspace_dir())
@@ -715,8 +1035,8 @@ class TestMultiInstanceEnvVars:
     def test_workspace_env_var():
         """Test JIUWENSWARM_DATA_DIR environment variable overrides default workspace."""
         # Reset cache before test - must reset _workspace_base_dir for workspace tests
-        setattr(utils, '_workspace_base_dir', None)
-        setattr(utils, '_user_home', None)
+        setattr(paths, '_workspace_base_dir', None)
+        setattr(paths, '_user_home', None)
         original_env = os.environ.pop("JIUWENSWARM_DATA_DIR", None)
         original_home_env = os.environ.pop("JIUWENSWARM_HOME", None)
 
@@ -726,16 +1046,16 @@ class TestMultiInstanceEnvVars:
             assert ".jiuwenswarm" in str(default_workspace)
 
             # Reset cache and set env var
-            setattr(utils, '_workspace_base_dir', None)
-            setattr(utils, '_user_home', None)
+            setattr(paths, '_workspace_base_dir', None)
+            setattr(paths, '_user_home', None)
             os.environ["JIUWENSWARM_DATA_DIR"] = "/custom/workspace/path"
             custom_workspace = utils.get_user_workspace_dir()
             # Use Path comparison for cross-platform compatibility
             assert custom_workspace == Path("/custom/workspace/path")
         finally:
             # Cleanup
-            setattr(utils, '_workspace_base_dir', None)
-            setattr(utils, '_user_home', None)
+            setattr(paths, '_workspace_base_dir', None)
+            setattr(paths, '_user_home', None)
             os.environ.pop("JIUWENSWARM_DATA_DIR", None)
             if original_env:
                 os.environ["JIUWENSWARM_DATA_DIR"] = original_env
@@ -746,7 +1066,7 @@ class TestMultiInstanceEnvVars:
     def test_jiuwenswarm_home_env_var():
         """Test JIUWENSWARM_HOME environment variable overrides default home."""
         # Reset cache before test
-        setattr(utils, '_user_home', None)
+        setattr(paths, '_user_home', None)
         original_home_env = os.environ.pop("JIUWENSWARM_HOME", None)
         original_workspace_env = os.environ.pop("JIUWENSWARM_DATA_DIR", None)
 
@@ -757,14 +1077,14 @@ class TestMultiInstanceEnvVars:
             assert custom_home == Path("/custom/home")
 
             # Workspace should derive from custom home
-            setattr(utils, '_user_home', None)
+            setattr(paths, '_user_home', None)
             os.environ.pop("JIUWENSWARM_HOME", None)  # Clear for fresh test
             workspace = utils.get_user_workspace_dir()
             # Without env vars, should use Path.home()
             assert isinstance(workspace, Path)
         finally:
             # Cleanup
-            setattr(utils, '_user_home', None)
+            setattr(paths, '_user_home', None)
             os.environ.pop("JIUWENSWARM_HOME", None)
             os.environ.pop("JIUWENSWARM_DATA_DIR", None)
             if original_home_env:
@@ -776,8 +1096,8 @@ class TestMultiInstanceEnvVars:
     def test_workspace_priority_over_home():
         """Test JIUWENSWARM_DATA_DIR takes priority over JIUWENSWARM_HOME for workspace."""
         # Reset both caches - _workspace_base_dir is used by get_user_workspace_dir
-        setattr(utils, '_workspace_base_dir', None)
-        setattr(utils, '_user_home', None)
+        setattr(paths, '_workspace_base_dir', None)
+        setattr(paths, '_user_home', None)
         original_home_env = os.environ.pop("JIUWENSWARM_HOME", None)
         original_workspace_env = os.environ.pop("JIUWENSWARM_DATA_DIR", None)
 
@@ -790,8 +1110,8 @@ class TestMultiInstanceEnvVars:
             workspace = utils.get_user_workspace_dir()
             assert workspace == Path("/workspace/b")
         finally:
-            setattr(utils, '_workspace_base_dir', None)
-            setattr(utils, '_user_home', None)
+            setattr(paths, '_workspace_base_dir', None)
+            setattr(paths, '_user_home', None)
             os.environ.pop("JIUWENSWARM_HOME", None)
             os.environ.pop("JIUWENSWARM_DATA_DIR", None)
             if original_home_env:
@@ -906,7 +1226,7 @@ class TestHardcodedPathsPhase2:
         # get_agent_home_dir() = get_user_workspace_dir() / "agent" / "home"
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "home" / "cron_jobs.json"
+        expected_path = workspace / "profile" / "agent" / "home" / "cron_jobs.json"
         actual_path = get_agent_home_dir() / "cron_jobs.json"
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -916,17 +1236,17 @@ class TestHardcodedPathsPhase2:
     def test_task_tools_path_structure():
         """Test task_tools.py path uses workspace (migrated from legacy jiuwenswarm_workspace)."""
         # Reset caches to ensure clean state after previous tests
-        setattr(utils, '_user_home', None)
-        setattr(utils, '_initialized', False)
-        setattr(utils, '_config_dir', None)
-        setattr(utils, '_workspace_dir', None)
-        setattr(utils, '_root_dir', None)
+        setattr(paths, '_user_home', None)
+        setattr(paths, '_initialized', False)
+        setattr(paths, '_config_dir', None)
+        setattr(paths, '_workspace_dir', None)
+        setattr(paths, '_root_dir', None)
 
         from jiuwenswarm.agents.harness.common.tools.task_tools import _get_task_data_path
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "task-data.json"
+        expected_path = workspace / "profile" / "agent" / "workspace" / "task-data.json"
         actual_path = Path(_get_task_data_path())
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -936,16 +1256,16 @@ class TestHardcodedPathsPhase2:
     def test_im_inbound_path_structure():
         """Test im_inbound.py uses DeepAgent standard USER.md path."""
         # Reset caches to ensure clean state after previous tests
-        setattr(utils, '_user_home', None)
-        setattr(utils, '_initialized', False)
-        setattr(utils, '_config_dir', None)
-        setattr(utils, '_workspace_dir', None)
-        setattr(utils, '_root_dir', None)
+        setattr(paths, '_user_home', None)
+        setattr(paths, '_initialized', False)
+        setattr(paths, '_config_dir', None)
+        setattr(paths, '_workspace_dir', None)
+        setattr(paths, '_root_dir', None)
 
         from jiuwenswarm.common.utils import get_deepagent_user_md_path, get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "USER.md"
+        expected_path = workspace / "profile" / "agent" / "workspace" / "USER.md"
         actual_path = get_deepagent_user_md_path()
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -968,7 +1288,7 @@ class TestAdditionalHardcodedPaths:
         monkeypatch.setattr(RailManager, "_instance", None)
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "extensions"
+        expected_path = workspace / "profile" / "agent" / "workspace" / "extensions"
         rail_manager = RailManager()
 
         extensions_dir = getattr(rail_manager, '_extensions_dir')
@@ -995,13 +1315,13 @@ class TestAdditionalHardcodedPaths:
     def test_interactions_dir_structure():
         """Test get_interactions_dir() returns correct path structure."""
         # Reset caches to ensure clean state
-        setattr(utils, '_user_home', None)
-        setattr(utils, '_workspace_base_dir', None)
+        setattr(paths, '_user_home', None)
+        setattr(paths, '_workspace_base_dir', None)
 
         from jiuwenswarm.common.utils import get_interactions_dir, get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "interactions"
+        expected_path = workspace / "profile" / "agent" / "workspace" / "interactions"
         actual_path = get_interactions_dir()
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -1131,6 +1451,11 @@ class TestCleanupStaleOpenjiuwenDescs:
             bootstrap.prepare_group_workspace(stages.append)
             assert stages == ["cleanup", ("prepare", False), "runtime_workspace_ready"]
             cleanup_call = source.index("prepare_group_workspace(_mark_startup_import_phase)")
+            # 单进程装配重构后 BaseWebChannel 等重导入移入 assembly；app_gateway
+            # 以显式 phase 标记 SDK/channel-base 导入边界，清理必须在其之前
+            assert cleanup_call < source.index(
+                '_mark_startup_import_phase("openjiuwen_and_channel_base_imported")'
+            )
         else:
             cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 

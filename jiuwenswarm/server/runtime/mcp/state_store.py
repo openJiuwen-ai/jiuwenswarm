@@ -480,11 +480,10 @@ def replace_default_mcps(names: list[str]) -> None:
             if not isinstance(rec, dict):
                 continue
             target = name in wanted
+            # Missing key reads as None, which covers the "set a new flag"
+            # case; the single branch below handles both set and clear.
             if rec.get("is_default") is not target:
                 rec["is_default"] = target
-                changed = True
-            elif target and "is_default" not in rec:
-                rec["is_default"] = True
                 changed = True
         if changed:
             _save(st)

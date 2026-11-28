@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createWebUIRuntime } from '../node_modules/.cache/webui-runtime/runtime/index.js';
 import { createMockTransport } from '../node_modules/.cache/webui-runtime/transport/index.js';
-import { DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-runtime/testing/demoCatalog.js';
+import { DEMO_COMPONENT, DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-runtime/testing/demoCatalog.js';
 import {
   demoClearFrame,
   demoErrorFrame,
@@ -101,6 +101,26 @@ test('reconnect resends ready per consumer', async () => {
   transport.setConnectionState('connected');
   await flush();
   assert.equal(transport.dispatches.filter((request) => request.event === 'ui.ready').length, 2);
+  handle.release();
+});
+
+test('a host restart applies renders whose revisions restarted from 1', async () => {
+  const { transport, runtime } = setup();
+  const handle = runtime.mountSlot('sess-1', DEMO_SLOT);
+  await handle.notifyReady();
+  transport.injectRenderFrame(demoRenderFrame({ revision: 7 }));
+
+  transport.setConnectionState('disconnected');
+  transport.setConnectionState('connected');
+  await flush();
+  transport.injectRenderFrame(demoRenderFrame({
+    revision: 1,
+    root: { component: DEMO_COMPONENT, props: { title: 'restarted' } },
+  }));
+
+  const instance = runtime.getInstance(INSTANCE_KEY);
+  assert.equal(instance.revision, 1, 'the new host process starts its revisions at 1');
+  assert.equal(instance.frame.tree.props.title, 'restarted');
   handle.release();
 });
 
@@ -393,49 +413,132 @@ test('package change notification preserves the host notifyReady opt-out', async
   runtime.dispose();
 });
 
-const appearanceFrame = (revision, appearance, packageId = 'pkg.theme') => ({ package_id: packageId, revision, appearance });
+const colorsSnapshot = (revision, accent, packageId = 'pkg.theme') => ({
+  revision, parts: { colors: { package_id: packageId, value: { accent } } },
+});
 
-test('appearance frames apply in revision order and ignore malformed payloads', () => {
+test('appearance snapshots apply in revision order and ignore malformed payloads', () => {
   const { transport, runtime } = setup();
   let notifications = 0;
   runtime.subscribeAppearance(() => { notifications += 1; });
-  transport.injectAppearanceFrame(appearanceFrame(2, { accent: '#b45309' }));
-  assert.deepEqual(runtime.getAppearance(), { packageId: 'pkg.theme', revision: 2, appearance: { accent: '#b45309' } });
+  transport.injectAppearanceFrame(colorsSnapshot(2, '#b45309'));
+  assert.deepEqual(runtime.getAppearance(), {
+    revision: 2, parts: { colors: { packageId: 'pkg.theme', value: { accent: '#b45309' } } },
+  });
   for (const payload of [
-    appearanceFrame(1, { accent: '#2f6fae' }),
-    appearanceFrame(2, { accent: '#2f6fae' }),
-    appearanceFrame(3, { accent: 'red' }),
-    appearanceFrame(3, {}),
-    { ...appearanceFrame(3, { accent: '#2f6fae' }), extra: true },
-    { revision: 3, appearance: null },
-    appearanceFrame(0, null),
-    appearanceFrame(3.5, null),
+    colorsSnapshot(1, '#2f6fae'),
+    colorsSnapshot(2, '#2f6fae'),
+    colorsSnapshot(3, 'red'),
+    { revision: 3, parts: { colors: { package_id: 'pkg.theme', value: {} } } },
+    { revision: 3, parts: { colors: { package_id: '', value: { accent: '#2f6fae' } } } },
+    { revision: 3, parts: { colors: { package_id: 'pkg.theme', value: { accent: '#2f6fae' }, extra: true } } },
+    { ...colorsSnapshot(3, '#2f6fae'), extra: true },
+    // The former single-provider frame is not a snapshot.
+    { package_id: 'pkg.theme', revision: 3, appearance: { accent: '#2f6fae' } },
+    { revision: 3, parts: null },
+    { revision: 0, parts: {} },
+    { revision: 3.5, parts: {} },
     'webui.appearance',
   ]) transport.injectAppearanceFrame(payload);
-  assert.equal(runtime.getAppearance().appearance.accent, '#b45309');
+  assert.equal(runtime.getAppearance().parts.colors.value.accent, '#b45309');
   assert.equal(notifications, 1);
-  transport.injectAppearanceFrame(appearanceFrame(3, { accent: '#2f6fae' }, 'pkg.other'));
-  assert.equal(runtime.getAppearance().packageId, 'pkg.other');
-  transport.injectAppearanceFrame(appearanceFrame(4, null, 'pkg.other'));
-  assert.equal(runtime.getAppearance(), null);
+  transport.injectAppearanceFrame({ revision: 3, parts: {
+    colors: { package_id: 'pkg.theme', value: { accent: '#2f6fae' } },
+    identity: { package_id: 'pkg.logo', value: { name: ' Acme ', logo: '/extension-assets/pkg.logo/g1/logo.svg' } },
+  } });
+  assert.deepEqual(runtime.getAppearance().parts.identity, {
+    packageId: 'pkg.logo',
+    value: { name: 'Acme', logo: '/extension-assets/pkg.logo/g1/logo.svg', favicon: '/extension-assets/pkg.logo/g1/logo.svg' },
+  }, 'part values are read in their normalized form');
+  transport.injectAppearanceFrame({ revision: 4, parts: {} });
+  assert.deepEqual(runtime.getAppearance(), { revision: 4, parts: {} }, 'an empty snapshot means host defaults');
   assert.equal(notifications, 3);
+});
+
+test('the host appearance snapshot applies its colors part', () => {
+  const { transport, runtime } = setup();
+  const colors = (accent) => ({ package_id: 'pkg.theme', value: { accent } });
+  transport.injectAppearanceFrame({ revision: 1, parts: { colors: colors('#2f6fae') } });
+  assert.deepEqual(runtime.getAppearance(), {
+    revision: 1,
+    parts: { colors: { packageId: 'pkg.theme', value: { accent: '#2f6fae' } } },
+  });
+
+  // A part this client does not render yet must not hide the colors sent with it.
+  transport.injectAppearanceFrame({
+    revision: 2,
+    parts: { border: { package_id: 'pkg.brand', value: {} }, colors: colors('#b45309') },
+  });
+  assert.deepEqual(runtime.getAppearance(), {
+    revision: 2,
+    parts: { colors: { packageId: 'pkg.theme', value: { accent: '#b45309' } } },
+  });
+
+  // Malformed color values are ignored as a whole and keep the accepted frame.
+  for (const payload of [
+    { revision: 3, parts: { colors: { package_id: 'pkg.theme', value: { accent: 'red' } } } },
+    { revision: 3, parts: { colors: { package_id: '', value: { accent: '#2f6fae' } } } },
+    { revision: 3, parts: 'nope' },
+  ]) transport.injectAppearanceFrame(payload);
+  assert.equal(runtime.getAppearance().revision, 2);
+
+  // A snapshot without colors means the host defaults apply.
+  transport.injectAppearanceFrame({ revision: 3, parts: {} });
+  assert.deepEqual(runtime.getAppearance(), { revision: 3, parts: {} });
+  runtime.dispose();
+});
+
+test('held snapshots wait for every hold and then show only the latest one', () => {
+  const { transport, runtime } = setup();
+  const seen = [];
+  runtime.subscribeAppearance(() => seen.push(runtime.getAppearance()?.revision ?? null));
+  const first = runtime.holdAppearance();
+  const second = runtime.holdAppearance();
+  transport.injectAppearanceFrame(colorsSnapshot(1, '#b45309'));
+  transport.injectAppearanceFrame(colorsSnapshot(2, '#2f6fae'));
+  assert.equal(runtime.getAppearance(), null, 'nothing shows while held');
+  first();
+  first();
+  assert.equal(runtime.getAppearance(), null, 'a release counts once');
+  second();
+  assert.equal(runtime.getAppearance().revision, 2);
+  assert.deepEqual(seen, [2], 'the intermediate snapshot never showed');
+  transport.injectAppearanceFrame(colorsSnapshot(3, '#0d8f72'));
+  assert.equal(runtime.getAppearance().revision, 3, 'without holds snapshots show at once');
+  runtime.dispose();
+});
+
+test('a ready start hook runs before the notification and settling follows it', async () => {
+  const { transport, runtime } = setup({ autoAccept: false });
+  const events = [];
+  const handle = runtime.mountSlot('sess-1', DEMO_SLOT, {
+    onReadyStart: () => events.push(`start:${transport.dispatches.length}`),
+    onReadySettled: (receipt) => events.push(`settled:${receipt?.status ?? null}`),
+  });
+  const ready = handle.notifyReady();
+  assert.deepEqual(events, ['start:0']);
+  transport.resolveNextDispatch({ accepted: true, status: 'ready' });
+  await ready;
+  assert.deepEqual(events, ['start:0', 'settled:ready']);
+  handle.release();
+  runtime.dispose();
 });
 
 test('appearance survives a reconnect only when a provider re-applies it', async () => {
   const { transport, runtime } = setup();
   const handle = runtime.mountSlot('sess-1', DEMO_SLOT);
   await handle.notifyReady();
-  transport.injectAppearanceFrame(appearanceFrame(5, { surface: 'translucent' }));
+  transport.injectAppearanceFrame({ revision: 5, parts: { colors: { package_id: 'pkg.theme', value: { surface: 'translucent' } } } });
 
   transport.setConnectionState('disconnected');
   assert.equal(runtime.getAppearance().revision, 5, 'kept while disconnected');
-  transport.injectAppearanceFrame(appearanceFrame(9, null));
+  transport.injectAppearanceFrame({ revision: 9, parts: {} });
   assert.equal(runtime.getAppearance().revision, 5, 'frames are not accepted while disconnected');
   transport.setConnectionState('connected');
   // Revisions restart with the new connection.
-  transport.injectAppearanceFrame(appearanceFrame(1, { accent: '#b45309' }));
+  transport.injectAppearanceFrame(colorsSnapshot(1, '#b45309'));
   await flush();
-  assert.deepEqual(runtime.getAppearance().appearance, { accent: '#b45309' });
+  assert.deepEqual(runtime.getAppearance().parts.colors.value, { accent: '#b45309' });
 
   transport.setConnectionState('disconnected');
   transport.setConnectionState('connected');

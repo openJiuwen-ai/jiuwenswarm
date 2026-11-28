@@ -194,12 +194,12 @@ def test_build_scripts_reject_inno_setup_6_when_payload_exceeds_max_path() -> No
     assert "return \"payload directory not found: $SourceRoot\"" in finder
     assert 'Join-Path (Join-Path $ProjectRoot "dist") $SourceDir' in source
 
-    for script, source_dir in (
-        (BUILD_EXE, "-SourceDir $BuildDistDirName"),
-        (BUILD_ELECTRON, '-SourceDir "$BuildDisplayName-Electron"'),
+    for script, source_dir, inno_6_condition in (
+        (BUILD_EXE, "-SourceDir $BuildDistDirName", "if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc))"),
+        (BUILD_ELECTRON, '-SourceDir "$BuildDisplayName-Electron"', "if (-not $InnoSupportsLongPaths) {"),
     ):
         text = script.read_text(encoding="utf-8")
-        iscc_6_branch = text.index("if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc))")
+        iscc_6_branch = text.index(inno_6_condition)
         gate = text.index("$PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot", iscc_6_branch)
         violation = text.index("Find-MaxPathViolation -SourceRoot $PayloadRoot", gate)
         failure = text.index("Inno Setup 6 cannot build this payload", violation)

@@ -315,6 +315,16 @@ agents:
     max_iterations: 200000
     completion_timeout: 600.0
 
+# ============================================================
+# Gateway 进程 OTel 遥测
+# ============================================================
+# 本段不由 jiuwenswarm 包读取：gateway 进程（agent-gateway 仓的
+# agent_gateway.app_gateway）在启动时经 configure_gateway_telemetry
+# 读取其生效配置中的 telemetry。默认使用 <数据目录>/infra/config/config.yaml，
+# 可由 JIUWENSWARM_GATEWAY_CONFIG_DIR 覆盖为本模板部署的目录。
+# Gateway 自身使用独立的 TracerProvider，不触碰全局 provider。
+# Agent 运行轨迹观测用下面的 observability 段，两者互不影响。
+# ============================================================
 telemetry:
   enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）
   exporter: otlp                    # otlp / console / none
@@ -338,28 +348,24 @@ telemetry:
 # ============================================================
 # 可观测性配置（OTel；Team 与单 Agent / Coding Agent 共用）
 # ============================================================
-# 与 telemetry 不同，本段专门用于 Agent 运行轨迹的 OTel span 采集：
-#   - team.enabled  ：TeamAgent 路径，产生 team/member/task/message 级 span
-#                     （自动注册 OtelTeamMonitorHandler）
-#   - agent.enabled ：非 team 路径（Runner.run_agent / run_agent_streaming，
-#                     即 agent.* 与 code.* 模式），为 LLM 调用与工具调用生成 span
-# 其余字段是两条路径共用的导出配置。OTel 一个进程只允许一个全局
-# TracerProvider，所以导出配置只有一份；两个开关各自登记 demand，
+# 与 Gateway 使用的 telemetry 不同，本段配置 Agent / Team / Code 共用的
+# OTel provider 与导出目标；enabled 只控制导出。轨迹 UI、演进和插件
+# 可以在 enabled=false 时独立申请 span 采集，不触发导出。
+# 其余字段是各路径共用的导出配置。OTel 一个进程只允许一个全局
+# TracerProvider，所以导出配置只有一份；Team 与 Agent 各自登记 demand，
 # 一方关闭不会拆掉另一方仍在使用的 provider。
 #
-# 旧版的 team_observability / agent_observability 两段会在升级时自动迁移到
-# 本段（各自的 enabled 迁到 team.enabled / agent.enabled）。
+# 旧版的 team_observability / agent_observability 两段，以及更早的
+# observability.team.enabled / observability.agent.enabled 两个开关，会在
+# 升级时自动迁移到本段：两个开关都为 false 才迁移为 false，否则为 true。
 #
 # 前置条件（otlp 模式）：启动 OTLP 后端（OTel Collector + Langfuse，或
 # 直接使用 Jaeger 等原生支持 OTLP 的后端）。
 # skill_evolution / symphony evolution / react.ttse.enabled 任一开启时，
-# 即使 agent.enabled 为 false，也会自动 acquire 以采集演进所需轨迹 span。
+# 即使 enabled 为 false，也会自动 acquire 以采集演进所需轨迹 span。
 # ============================================================
 observability:
-  team:
-    enabled: true                   # Team 可观测性开关
-  agent:
-    enabled: true                   # 单 Agent / Coding Agent 可观测性开关
+  enabled: true                    # 导出开关（Team / Agent / Code 共用）
   exporter: file                    # otlp_grpc / otlp_http / langfuse / console / file
   endpoint: http://localhost:4317   # OTLP endpoint（file 模式不需要）
   service_name: jiuwenswarm         # 服务名称（OTel resource service.name）

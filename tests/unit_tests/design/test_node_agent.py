@@ -187,6 +187,129 @@ def test_vllm_omni_clip_waits_as_long_as_the_video_poll(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", ["阿岚回头。", "STYLE LOCK: watercolor. Sam waves. Do not add extras."])
+async def test_call_video_model_preserves_short_and_labeled_agent_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prompt: str,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+
+    saved = tmp_path / "clip.mp4"
+    saved.write_bytes(b"mp4" * 200)
+    calls = []
+
+    async def generate(prompt: str, **kwargs) -> dict[str, str]:
+        calls.append(prompt)
+        return {"video_path": str(saved)}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.handlers.clip.generate_clip_video", generate,
+    )
+    node = {
+        "id": "n_clip_1",
+        "type": "video",
+        "config": {"pipeline": "clip", "clip_index": 1, "clip_action": "A different action"},
+    }
+    ctx = NodeExecutionContext(graph={"nodes": [node]}, run_id="run_video", node_id="n_clip_1")
+    toolkit = DesignerGraphToolkit(_DummySpawner(), ctx)
+    result = await toolkit.call_video_model(prompt=prompt)
+    assert result.startswith("video_ready")
+    assert calls == [prompt]
+    assert toolkit.completed is not None
+
+
+@pytest.mark.asyncio
+async def test_call_video_model_excludes_storyboard_but_keeps_other_text_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.schema.designer_graph import (
+        NODE_ROLE_STORYBOARD,
+        NODE_TYPE_TABLE,
+    )
+    from jiuwenswarm.server.runtime.designer.handlers.common import file_output_ref
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"mp4" * 200)
+    storyboard = tmp_path / "storyboard.md"
+    storyboard.write_text("STORYBOARD LEAK SENTINEL: other shots and locations", encoding="utf-8")
+    note = tmp_path / "direction.md"
+    note.write_text("Keep the camera low and steady.", encoding="utf-8")
+    calls: list[str] = []
+
+    async def generate(prompt: str, **kwargs) -> dict[str, str]:
+        calls.append(prompt)
+        return {"video_path": str(video)}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.handlers.clip.generate_clip_video",
+        generate,
+    )
+    clip = {
+        "id": "n_clip_1",
+        "type": "video",
+        "config": {"pipeline": "clip", "clip_index": 1},
+    }
+    graph = {
+        "nodes": [
+            {
+                "id": "n_storyboard",
+                "type": NODE_TYPE_TABLE,
+                "label": "storyboard",
+                "config": {"role": NODE_ROLE_STORYBOARD},
+            },
+            {
+                "id": "n_direction",
+                "type": NODE_TYPE_TEXT,
+                "label": "direction",
+                "config": {"role": NODE_ROLE_BRIEF},
+            },
+            clip,
+        ],
+        "edges": [
+            {"source": "n_storyboard", "target": "n_clip_1", "kind": "data"},
+            {"source": "n_direction", "target": "n_clip_1", "kind": "data"},
+        ],
+    }
+    ctx = NodeExecutionContext(
+        graph=graph,
+        run_id="run_video_inputs",
+        node_id="n_clip_1",
+        run={
+            "node_states": {
+                "n_storyboard": {
+                    "status": "completed",
+                    "output_ref": file_output_ref(
+                        storyboard,
+                        kind=NODE_TYPE_TABLE,
+                        mime_type="text/markdown",
+                    ),
+                },
+                "n_direction": {
+                    "status": "completed",
+                    "output_ref": file_output_ref(
+                        note,
+                        kind=NODE_TYPE_TEXT,
+                        mime_type="text/markdown",
+                    ),
+                },
+            }
+        },
+    )
+
+    result = await DesignerGraphToolkit(_DummySpawner(), ctx).call_video_model(
+        prompt="Ada crosses the library."
+    )
+
+    assert result.startswith("video_ready")
+    assert len(calls) == 1
+    assert "Keep the camera low and steady." in calls[0]
+    assert "STORYBOARD LEAK SENTINEL" not in calls[0]
+
+
+@pytest.mark.asyncio
 async def test_call_image_model_uses_designer_helper_not_localfunction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -397,7 +520,7 @@ async def test_task_loop_error_does_not_submit_another_video(
     monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "vllm-omni")
     monkeypatch.setenv("VIDEO_GEN_API_BASE", "http://127.0.0.1:8091/v1")
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     captured = _install_fake_deep_agent(
@@ -446,7 +569,7 @@ async def test_task_loop_failure_keeps_original_cause(
     from jiuwenswarm.server.runtime.designer.node_agent import NodeAgentHost
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     _install_fake_deep_agent(
@@ -480,7 +603,7 @@ async def test_creative_text_still_materializes_one_video(
     from jiuwenswarm.server.runtime.designer.node_agent import NodeAgentHost
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     _install_fake_deep_agent(
@@ -591,7 +714,7 @@ async def test_completed_character_image_is_not_generated_again(
     )
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        "jiuwenswarm.common.paths.get_agent_workspace_dir",
         lambda: tmp_path,
     )
     _install_fake_deep_agent(monkeypatch, {"output": "done", "result_type": "answer"})

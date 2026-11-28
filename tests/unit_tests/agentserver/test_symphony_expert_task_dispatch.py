@@ -287,7 +287,10 @@ async def test_three_platform_launch_compose_and_dispatch(tmp_path, monkeypatch,
     host_config = SimpleNamespace(
         capability=SimpleNamespace(sources=[]), orchestration=core.config,
     )
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.symphony.service.resolve_preferred_language",
+        lambda: "zh",
+    )
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: host_config)
     monkeypatch.setattr(host, "_runtime_for", lambda _config: SimpleNamespace(orchestration=SymphonyGraphEngine(core)))
 
@@ -737,3 +740,14 @@ async def test_task_tool_preserves_ordinary_synchronous_delegation(tmp_path, mon
 
     agent = _chat_agent(tmp_path, monkeypatch, None, reply, persistent=False)
     assert (await agent.invoke(_chat_input("Delegate a task")))["output"] == "Delivered"
+
+
+def test_deferred_symphony_policy_tracks_current_configuration():
+    """A lazily loaded toolkit still supplies policy on the first SDK invoke."""
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._config_base_cache = _CONFIG
+    rail = adapter._build_subagent_rail(_CONFIG)
+    assert rail is not None
+    assert rail._symphony_tasks_enabled() is True
+    adapter._config_base_cache = {"symphony": {"orchestration": {"enabled": False}}}
+    assert rail._symphony_tasks_enabled() is False

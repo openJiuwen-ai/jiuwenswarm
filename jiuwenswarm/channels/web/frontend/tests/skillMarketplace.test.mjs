@@ -20,9 +20,13 @@ await i18next.use(initReactI18next).init({
   lng: 'en', showSupportNotice: false, resources: { en: { translation: {} } },
 });
 const { MarketplaceView } = await import('../node_modules/.cache/skill-marketplace/MarketplaceView.mjs');
-const { groupMarketplaceSkills, resolveSkillFileReference } = await import(
-  '../node_modules/.cache/skill-marketplace/skillPanelUtils.mjs'
-);
+const {
+  canUploadLocalSkill,
+  groupMarketplaceSkills,
+  isUploadedSkill,
+  resolveSkillFileReference,
+  shouldShowSkillPublish,
+} = await import('../node_modules/.cache/skill-marketplace/skillPanelUtils.mjs');
 
 const skill = { asset_id: 'ordinary', name: 'Ordinary Skill', plugin_type: 'skill', skill_type: 'skill' };
 const legacy = {
@@ -87,3 +91,22 @@ for (const searchKeyword of ['', 'standup']) {
     }
   });
 }
+
+test('企业版上传门禁：仅 Agent 模板显式开启时允许上传', () => {
+  assert.equal(canUploadLocalSkill(true, true), true);
+  assert.equal(canUploadLocalSkill(true, false), false);
+  assert.equal(canUploadLocalSkill(true, undefined), false);
+  assert.equal(canUploadLocalSkill(false, true), false);
+});
+
+test('上传安装的技能隐藏发布入口，普通本地技能不受影响', () => {
+  const uploaded = { source_type: 'user', source: 'local', origin: 'file-api:upload' };
+  assert.equal(isUploadedSkill(uploaded), true);
+  assert.equal(isUploadedSkill({ origin: 'local:demo' }), false);
+  assert.equal(shouldShowSkillPublish(uploaded, true), false);
+  assert.equal(shouldShowSkillPublish(uploaded, false), true);
+  assert.equal(
+    shouldShowSkillPublish({ source_type: 'user', source: 'local', origin: 'local:demo' }, true),
+    true,
+  );
+});

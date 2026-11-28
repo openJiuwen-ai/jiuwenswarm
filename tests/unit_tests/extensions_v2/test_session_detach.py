@@ -288,7 +288,8 @@ async def test_wire_adapter_returns_actual_release_and_clear_errors(detach_host,
         sent.append(asdict(parse_agent_server_wire_unary(payload)))
 
     monkeypatch.setattr(server, "send_wire_payload", capture)
-    host = SimpleNamespace(_session_association_participant=base.participant)
+    host = object.__new__(server.AgentWebSocketServer)
+    host._session_association_participant = base.participant
     params = {"session_id":old.session_id, "view_id":old.surface_id, "attachment_id":"0"*32}
     request = AgentRequest(request_id="detach-wire", req_method=ReqMethod.SESSION_DETACH, channel_id="web", params=params)
     await server.AgentWebSocketServer._handle_session_detach(host, None, request, asyncio.Lock())
@@ -301,5 +302,5 @@ async def test_wire_adapter_returns_actual_release_and_clear_errors(detach_host,
     request.params = {}
     await server.AgentWebSocketServer._handle_session_detach(host, None, request, asyncio.Lock())
     assert sent[-1]["payload"]["code"] == "BAD_REQUEST"
-    await server.AgentWebSocketServer._handle_session_detach(SimpleNamespace(), None, request, asyncio.Lock())
+    await server.AgentWebSocketServer._handle_session_detach(object.__new__(server.AgentWebSocketServer), None, request, asyncio.Lock())
     assert sent[-1]["payload"]["code"] == "NOT_READY"

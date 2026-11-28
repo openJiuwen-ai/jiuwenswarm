@@ -5,12 +5,13 @@
 
 无论是通过 pip/whl 安装，还是在源码目录里直接运行：
 - 运行本脚本会先询问语言偏好（zh/en），写入 config 的 preferred_language；
-- 同时复制 config.yaml、将 ``.env.template`` 复制为 ``<用户数据根>/infra/config/.env``、agent 模板等到 ``<用户数据根>``；
+- 同时复制 config.yaml、将 ``.env.template`` 复制为 ``<用户数据根>/config/.env``、agent 模板等到 ``<用户数据根>``；
 - 根据语言偏好复制多语言文件（AGENT.md、IDENTITY.md、SOUL.md 等），
   源文件使用 _ZH/_EN 后缀，目标文件不带后缀。
 
 使用方式:
-- jiuwenswarm-init -f: 强制清理，删除整个用户数据根目录后重新初始化
+- jiuwenswarm-init -f: 强制清理，删除整个用户数据根目录后重新初始化（三方
+  agent 状态会从数据目录之外的状态旁路恢复，指向已删除安装的条目自动剔除）
 - jiuwenswarm-init: 保留原有数据，执行迁移合并
 - jiuwenswarm-init --name alice: 创建命名实例 alice
 - jiuwenswarm-init -f --name alice: 强制重建命名实例 alice

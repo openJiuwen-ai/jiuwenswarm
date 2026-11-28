@@ -233,6 +233,8 @@ def symphony_config_from_dict(
     context_window_tokens: int | None = None,
 ) -> SymphonyConfig:
     """Migrate legacy fields, resolve capability sources, and validate the Core configuration."""
+    from jiuwenswarm.common.paths import get_symphony_dir
+
     workspace = get_agent_workspace_dir()
     defaults = {
         "capability": {
@@ -242,7 +244,7 @@ def symphony_config_from_dict(
                 "max_output_tokens": None,
             }},
         },
-        "storage": {"artifact_root": str(workspace / "symphony" / "runtime")},
+        "storage": {"artifact_root": str(get_symphony_dir() / "runtime")},
         "retrieval": {"enabled": False, "use_existing_index": True},
         "orchestration": {
             "enabled": False, "min_edge_confidence": 0.5,

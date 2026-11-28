@@ -18,6 +18,7 @@ from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.extensions_v2 import assembly
 from jiuwenswarm.extensions_v2.event_types import context_usage
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import session_turns, session_usage
+from jiuwenswarm.server.runtime.session import lifecycle
 from jiuwenswarm.server.runtime.session import session_history as history
 from jiuwenswarm.server.runtime.session import session_statistics as stats
 from .management.support import write_package
@@ -157,6 +158,68 @@ def test_usage_latest_primary_window_ignores_child_member_and_payload_secrets(se
     assert result["context"]["request_id"] == "r2"
     assert result["turn"]["request_id"] == "r1"
     assert "private" not in json.dumps(result) and "secret" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(("mode", "expected"), [("team.work.normal", "leader"), ("agent.work.normal", "single")])
+def test_team_history_selects_only_the_top_level_leader_window(sessions, monkeypatch, mode, expected):
+    def metadata(session_id, *, enable_writeback):
+        assert session_id == "s1" and not enable_writeback
+        return {"mode": mode}
+
+    monkeypatch.setattr(stats, "get_session_metadata", metadata)
+    leader = {**_window(request="leader"), "role": " Leader ", "member_name": "owner", "team_id": "team-a"}
+    _save(sessions, "s1", [
+        _window(request="single"),
+        leader,
+        {**leader, "request_id": "teammate", "role": "teammate"},
+        {**leader, "request_id": "nested", "depth": 1},
+        {**leader, "request_id": "delegated", "delegation_id": "delegation-1"},
+        {**leader, "request_id": "child", "parent_invocation_id": "parent"},
+        {**leader, "request_id": "subagent", "subagent_id": "sub-1"},
+        {**leader, "request_id": "foreign", "session_id": "another"},
+        {**_summary("leader-summary"), "member_name": "owner", "team_id": "team-a"},
+    ])
+
+    snapshot = stats.read_session_usage("s1")
+    assert snapshot["context"]["request_id"] == expected
+    assert snapshot["turn"] is None
+
+
+@pytest.mark.parametrize("metadata", [None, ["invalid"]])
+def test_missing_session_mode_keeps_primary_window(sessions, monkeypatch, metadata):
+    _save(sessions, "s1", [
+        _window(request="primary"),
+        {**_window(request="team-leader"), "role": "leader", "member_name": "owner", "team_id": "team-a"},
+    ])
+    monkeypatch.setattr(stats, "get_session_metadata", lambda *args, **kwargs: metadata)
+
+    assert stats.read_session_usage("s1")["context"]["request_id"] == "primary"
+
+
+@pytest.mark.parametrize("error", [
+    PermissionError("session metadata is inaccessible"),
+    lifecycle.LifecycleError("CONFLICT", "session metadata is invalid"),
+])
+def test_metadata_read_failure_uses_statistics_error(sessions, monkeypatch, error):
+    _save(sessions, "s1", [_window()])
+
+    def unavailable_metadata(session_id, *, enable_writeback):
+        raise error
+
+    monkeypatch.setattr(stats, "get_session_metadata", unavailable_metadata)
+    with pytest.raises(stats.SessionStatisticsError) as failure:
+        stats.read_session_usage("s1")
+    assert failure.value.__cause__ is error
+
+
+def test_team_host_snapshot_requires_explicit_leader_selection():
+    leader = {**_window(), "role": "leader", "member_name": "owner", "team_id": "team-a"}
+    assert stats.build_usage_snapshot("s1", context_usage=leader) is None
+    snapshot = stats.build_usage_snapshot("s1", context_usage=leader, team_leader=True)
+    assert snapshot["context"]["context_window"]["input_tokens"] == 120
+    assert snapshot["turn"] is None
+    teammate = {**leader, "role": "teammate"}
+    assert stats.build_usage_snapshot("s1", context_usage=teammate, team_leader=True) is None
 
 
 @pytest.mark.parametrize("kind", ["context", "turn", "zero", "legacy-frame"])

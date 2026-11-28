@@ -41,6 +41,9 @@ def test_team_quota_notice_is_restorable_history_event() -> None:
     assert history_assistant_event_is_restorable(
         {"event_type": "chat.notice", "notice_type": "team_teammate_quota"}
     )
+    assert history_assistant_event_is_restorable(
+        {"event_type": "chat.notice", "notice_type": "team_predefined_size"}
+    )
     assert not history_assistant_event_is_restorable(
         {"event_type": "chat.notice", "notice_type": "image_tool_fallback"}
     )

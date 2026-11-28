@@ -3,66 +3,96 @@
 """Tests for ``call_goal`` schema injection and argument extraction.
 
 ``call_goal`` is produced by the model and rendered by every channel, so the
-description injected into the tool schema must not pin its language: it has to
-follow the conversation instead of mandating one language.
+injected schema must pin the output language to the current UI / preferred
+language (``zh`` / ``en``), not to the conversation or skill-document language.
 """
 
 from __future__ import annotations
 
 import json
 
-from jiuwenswarm.common.tool_display import extract_call_goal, inject_call_goal_schema
+from jiuwenswarm.common.tool_display import (
+    call_goal_schema_for_language,
+    extract_call_goal,
+    inject_call_goal_schema,
+    is_our_call_goal_schema,
+)
 
 
-def _injected_description() -> str:
+def _injected_description(language: str | None = None) -> str:
     parameters: dict = {"type": "object", "properties": {}}
-    inject_call_goal_schema(parameters)
+    inject_call_goal_schema(parameters, language=language)
     return str(parameters["properties"]["call_goal"]["description"])
 
 
 class TestCallGoalSchemaLanguage:
 
     @staticmethod
-    def test_description_does_not_mandate_chinese_output():
-        """描述不得要求模型固定用中文产出 call_goal。"""
+    def test_default_language_is_english():
+        """未传 language 时默认英文，避免无 UI 上下文时落到中文。"""
         description = _injected_description()
-        assert "一句简短中文" not in description
+        assert "Always fill this field" in description
+        assert "Write it in English to match the current UI language" in description
 
     @staticmethod
-    def test_description_ties_the_goal_to_the_conversation_language():
-        """描述必须把 call_goal 的语言绑定到当前对话。"""
-        description = _injected_description()
-        assert "当前对话所用的语言" in description
-        assert "same language as the conversation" in description
-
-    @staticmethod
-    def test_description_shows_a_non_chinese_example():
-        """描述给出非中文示例，避免模型把中文示例当成语言要求。"""
-        description = _injected_description()
+    def test_english_schema_asks_for_english_ui_language():
+        description = _injected_description("en")
+        assert "Always fill this field" in description
+        assert "Write it in English to match the current UI language" in description
         assert "Research the openJiuwen website" in description
+        assert "请用中文写" not in description
+
+    @staticmethod
+    def test_chinese_schema_asks_for_chinese_ui_language():
+        description = _injected_description("zh")
+        assert "每次调用都必须填写" in description
+        assert "请用中文写" in description
+        assert "调研 openJiuwen 官网信息" in description
+        assert "Always fill this field" not in description
+
+    @staticmethod
+    def test_cn_alias_maps_to_chinese_schema():
+        description = _injected_description("cn")
+        assert "请用中文写" in description
 
     @staticmethod
     def test_description_keeps_the_display_name_disambiguation():
         """仍需保留与 display_name / summary 的区分说明，避免撞名回归。"""
-        description = _injected_description()
-        assert "display_name" in description
-        assert "send_message.summary" in description
+        for language in ("en", "zh"):
+            description = _injected_description(language)
+            assert "display_name" in description
+            assert "send_message.summary" in description
 
     @staticmethod
     def test_injection_still_adds_an_optional_string_field():
         """注入形状不变：可选 string 字段，不进 required。"""
         parameters: dict = {"type": "object", "properties": {}, "required": []}
-        inject_call_goal_schema(parameters)
+        inject_call_goal_schema(parameters, language="en")
         assert parameters["properties"]["call_goal"]["type"] == "string"
         assert parameters["required"] == []
 
     @staticmethod
-    def test_injection_does_not_overwrite_an_existing_call_goal():
+    def test_injection_does_not_overwrite_an_existing_tool_owned_call_goal():
         """工具自带 call_goal 定义时不覆盖。"""
         own = {"type": "string", "description": "tool own"}
         parameters: dict = {"type": "object", "properties": {"call_goal": own}}
-        inject_call_goal_schema(parameters)
+        inject_call_goal_schema(parameters, language="en")
         assert parameters["properties"]["call_goal"] is own
+
+    @staticmethod
+    def test_injection_refreshes_our_schema_when_ui_language_changes():
+        """我们注入过的 call_goal 应按新的 UI 语言刷新 description。"""
+        parameters: dict = {"type": "object", "properties": {}}
+        inject_call_goal_schema(parameters, language="zh")
+        assert "请用中文写" in parameters["properties"]["call_goal"]["description"]
+        inject_call_goal_schema(parameters, language="en")
+        assert "Write it in English to match the current UI language" in parameters["properties"]["call_goal"]["description"]
+
+    @staticmethod
+    def test_is_our_call_goal_schema_detects_injected_descriptions():
+        assert is_our_call_goal_schema(call_goal_schema_for_language("en"))
+        assert is_our_call_goal_schema(call_goal_schema_for_language("zh"))
+        assert not is_our_call_goal_schema({"type": "string", "description": "tool own"})
 
 
 class TestExtractCallGoal:

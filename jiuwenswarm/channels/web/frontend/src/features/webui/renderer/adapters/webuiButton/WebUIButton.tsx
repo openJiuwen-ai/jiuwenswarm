@@ -20,6 +20,10 @@ const SIZE_MAP: Readonly<Record<string, ButtonProps['size']>> = {
   large: 'large',
 };
 
+const TYPE_VARIANT: Readonly<Record<NonNullable<ButtonProps['type']>, NonNullable<ButtonProps['variant']>>> = {
+  primary: 'solid', default: 'outlined', dashed: 'dashed', link: 'link', text: 'text',
+};
+
 export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterProps) {
   const p = node.props as Pick<
     ButtonProps,
@@ -100,7 +104,7 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
     <AntButton
       type={p.type}
       color={p.color ?? (p.variant && p.variant !== 'solid' ? 'default' : undefined)}
-      variant={p.variant}
+      variant={p.variant ?? (p.color ? TYPE_VARIANT[p.type ?? 'default'] : undefined)}
       shape={p.shape}
       size={size}
       danger={p.danger}

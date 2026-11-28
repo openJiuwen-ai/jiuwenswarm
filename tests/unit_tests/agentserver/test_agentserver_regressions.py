@@ -525,6 +525,21 @@ async def test_agent_mode_web_tools_keep_chinese_schema_for_zh(monkeypatch):
     for name in _WEB_TOOL_NAMES:
         assert _CJK.search(registered[name].card.description), name
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edition", ["enterprise", "personal"])
+async def test_read_email_is_discoverable_in_both_editions(monkeypatch, edition):
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import classify_tool
+    from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import discovery_search_text
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    adapter, _registered = _make_adapter(monkeypatch, "en")
+    cards = {card.name: card for card in await adapter._get_tool_cards("agent-1")}
+    assert "read_pdf" in cards
+    assert "read_docx" in cards
+    assert "邮件" in discovery_search_text(cards["read_email"])
+    assert classify_tool("read_email").operation_family == classify_tool("read_docx").operation_family
+
+
 # --- from test_enterprise_skill_http_route.py ---
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -563,7 +578,7 @@ def _forward_sets_contain(method: str) -> bool:
 
 def test_enterprise_install_http_route_reaches_web_install_handler(tmp_path) -> None:
     method = "skills.enterprise.install"
-    interface = _ROOT / "jiuwenswarm/server/runtime/agent_adapter/interface.py"
+    interface = _ROOT / "jiuwenswarm/server/runtime/agent_adapter/management_routes.py"
     handler_name = _assigned_handler(interface, "SKILLS_ENTERPRISE_INSTALL")
     from jiuwenswarm.common.schema.message import ReqMethod
     assert ReqMethod.SKILLS_ENTERPRISE_INSTALL.value == method
@@ -649,7 +664,6 @@ import json
 import os
 import sys
 class Observer(importlib.abc.MetaPathFinder):
-    baseline = set()
     def find_spec(self, name, path=None, target=None):
         if name != "jiuwenswarm.server.front.router":
             return None
@@ -662,23 +676,75 @@ class Observer(importlib.abc.MetaPathFinder):
                 original.exec_module(module)
                 dispatch = module.MethodRouter._dispatch_control
                 async def observed(instance, ws, request, lock):
+                    baseline = set(sys.modules.copy())
                     await dispatch(instance, ws, request, lock)
+                    # Background control preparation imports on another thread.
+                    # Filter and report one snapshot instead of the live dict.
+                    loaded_modules = sorted(sys.modules.copy())
                     prefixes = ("openjiuwen", "mcp", "jiuwenswarm.agents.harness",
                         "jiuwenswarm.server.runtime.agent_adapter",
                         "jiuwenswarm.server.runtime.skill.skill_manager", "jiuwenswarm.runtime.project_lsp",
                         "jiuwenswarm.server.runtime.session.kv_cache")
-                    hits = {name for name in sys.modules if any(name == p or name.startswith(p + ".") for p in prefixes)}
-                    if not Observer.baseline:
-                        Observer.baseline.update(hits)
-                    delta = sorted(hits - Observer.baseline)
+                    hits = {name for name in loaded_modules if any(name == p or name.startswith(p + ".") for p in prefixes)}
+                    delta = sorted(hits - baseline)
                     with open(os.environ["ISSUE4689_MODULE_OBSERVER"], "a", encoding="utf-8") as file:
                         file.write(json.dumps({"pid": os.getpid(), "method": request.req_method.value,
-                            "forbidden": delta, "loaded_modules": sorted(sys.modules)}) + "\\n")
+                            "forbidden": delta, "loaded_modules": loaded_modules}) + "\\n")
                 module.MethodRouter._dispatch_control = observed
         spec.loader = Loader()
         return spec
 sys.meta_path.insert(0, Observer())
 '''
+
+
+@pytest.mark.asyncio
+async def test_control_query_observer_snapshots_modules_during_import(tmp_path: Path, monkeypatch):
+    import importlib.abc
+    import importlib.machinery
+
+    modules = {}
+
+    class ImportingName(str):
+        def startswith(self, *args):
+            modules["background_import_during_observation"] = object()
+            return super().startswith(*args)
+
+    modules[ImportingName("observer_test_module")] = object()
+
+    class Router:
+        async def _dispatch_control(self, ws, request, lock):
+            modules["openjiuwen.observed_runtime"] = object()
+
+    class Loader(importlib.abc.Loader):
+        def exec_module(self, module):
+            module.MethodRouter = Router
+
+    spec = importlib.machinery.ModuleSpec("jiuwenswarm.server.front.router", Loader())
+    namespace = {}
+    exec(_OBSERVER, namespace)
+    observer = next(finder for finder in sys.meta_path if isinstance(finder, namespace["Observer"]))
+    sys.meta_path.remove(observer)
+    namespace["sys"] = SimpleNamespace(modules=modules)
+    namespace["importlib"] = SimpleNamespace(
+        abc=importlib.abc,
+        machinery=SimpleNamespace(PathFinder=SimpleNamespace(find_spec=lambda *args: spec)),
+    )
+    observations = tmp_path / "modules.jsonl"
+    monkeypatch.setenv("ISSUE4689_MODULE_OBSERVER", str(observations))
+    wrapped = observer.find_spec(spec.name)
+    module = SimpleNamespace()
+    wrapped.loader.exec_module(module)
+    request = SimpleNamespace(req_method=SimpleNamespace(value="session.list"))
+
+    await module.MethodRouter()._dispatch_control(None, request, None)
+
+    row = json.loads(observations.read_text(encoding="utf-8"))
+    assert row["method"] == "session.list"
+    assert row["forbidden"] == ["openjiuwen.observed_runtime"]
+    assert "openjiuwen.observed_runtime" in row["loaded_modules"]
+    assert "background_import_during_observation" in modules
+    assert "background_import_during_observation" not in row["loaded_modules"]
+
 
 @pytest.mark.asyncio
 async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp_path: Path):
@@ -721,6 +787,7 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                         break
                 await asyncio.sleep(.01)
             assert len(rows) == 4
+            assert {row["method"] for row in rows} == {"session.list", "project.list", "config.get", "history.get"}
             assert len({row["pid"] for row in rows}) == 1
             assert all(row["forbidden"] == [] for row in rows)
         finally:
@@ -738,9 +805,21 @@ def team_config(language):
 
 @pytest.mark.parametrize('language, expected', [('zh', 'cn'), (' ZH ', 'cn'), ('cn', 'cn'), ('en', 'en')])
 def test_team_config_uses_core_language(language, expected, monkeypatch):
-    monkeypatch.setenv('AGENT_PROMPT_LANGUAGE', 'en')
+    """Harness language follows request memo (simulated UI preference), not config_base alone."""
+    from jiuwenswarm.enterprise.config import preferred_language as pref
+
+    # Memo is enterprise-only; personal edition always falls back to yaml.
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mariadb")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "db.internal")
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+    monkeypatch.setenv("GATEWAY_DB_USER", "root")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "p@ss")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "gw")
+
     config = team_config(language)
-    spec = load_team_spec_dict(config_base=config)
+    with pref.bind_preferred_language_memo(user_id="test", language=language):
+        spec = load_team_spec_dict(config_base=config)
     assert spec['language'] == expected
     assert config['preferred_language'] == language
 

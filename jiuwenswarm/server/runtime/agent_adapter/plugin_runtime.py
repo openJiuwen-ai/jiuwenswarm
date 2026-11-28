@@ -15,14 +15,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
-
 from agent_gateway.common.mode_matrix import resolve_request_mode
 from jiuwenswarm.extensions.sdk.plugin_runtime import PluginRuntimeServices
 from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
 logger = logging.getLogger(__name__)
-_SERVICES = {"trajectory", "main_model", "agent_data_workspace", "embedding_factory"}
+_SERVICES = {"trajectory", "main_model", "agent_data_workspace", "embedding_factory", "memory_context"}
 
 
 @dataclass(frozen=True, repr=False)
@@ -37,6 +35,7 @@ class PluginRuntimeHost:
     config: dict
     has_conflicting_turn: Callable[[str], bool]
     wants_attach_goal: Callable[[dict], bool]
+    memory_context: Any = None
 
 
 @dataclass
@@ -361,20 +360,21 @@ class PluginRuntimeManager:
         spec = load_plugin_package(manifest_path)
         if not spec.rails:
             raise ValueError("Runtime plugin must declare at least one Rail")
-        config_path = path / "config.yaml"
-        package_config = {}
-        if config_path.is_file():
-            if not config_path.resolve().is_relative_to(path.resolve()):
-                raise ValueError("Plugin config.yaml must stay inside the package")
-            package_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        from jiuwenswarm.server.runtime.extension_package_manager import read_plugin_package_config
+
+        package_config = read_plugin_package_config(path)
         config = host.config
         plugin_config = config.get("plugins", {})
         if not isinstance(plugin_config, dict):
             raise ValueError("Host plugins configuration must be a mapping")
         overrides = plugin_config.get(spec.id, {})
-        if not isinstance(package_config, dict) or not isinstance(overrides, dict):
+        if not isinstance(overrides, dict):
             raise ValueError("Plugin configuration must be a mapping")
         services: dict[str, Any] = {}
+        if "memory_context" in requirements:
+            if host.memory_context is None:
+                raise ValueError("Plugin requires a host-bound memory context")
+            services["memory_context"] = host.memory_context
         if "main_model" in requirements:
             model, model_name = host.main_model
             if model is None or not model_name:
@@ -408,8 +408,15 @@ class PluginRuntimeManager:
                     raise ValueError("Plugin preflight must return an options mapping")
                 runtime = runtime.with_options(options)
         # Include business configuration changes without logging credentials.
-        digest = hashlib.sha256(json.dumps({"manifest": manifest, "config": config,
-                                           "package_config": package_config}, sort_keys=True).encode()).hexdigest()
+        fingerprint = {"manifest": manifest, "config": config, "package_config": package_config}
+        if "memory_context" in services:
+            from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
+
+            memory_context = services["memory_context"]
+            fingerprint["memory_project_dir"] = memory_context.project_dir
+            if name == MEMORY_PLUGIN_ID:
+                fingerprint["memory_endpoint"] = [runtime.options.get("base_url"), runtime.options.get("api_key")]
+        digest = hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode()).hexdigest()
         return PluginCandidate(name, version, path, contract, runtime, digest)
 
     async def prepare(self, candidate: PluginCandidate) -> PluginBinding:
@@ -479,7 +486,8 @@ class PluginRuntimeManager:
                         declared(True)
 
     @asynccontextmanager
-    async def transition(self, params: dict, session_id: str):
+    async def transition(self, params: dict, session_id: str, *, keep_memory_binding: bool = False):
+        from jiuwenswarm.agents.harness.common.memory.plugin import MEMORY_PLUGIN_ID
         from jiuwenswarm.server.runtime import extension_package_manager as equipment
         async with self._lock:
             if self._disposed:
@@ -489,12 +497,15 @@ class PluginRuntimeManager:
             if not isinstance(names, list) or not all(isinstance(name, str) and name for name in names):
                 raise ValueError("plugin_names must be a list of non-empty strings")
             for name in names:
-                path = equipment.resolve_plugin_dir(name)
-                version = equipment.read_manifest_version(path)
-                try:
-                    candidate = await asyncio.to_thread(self._candidate, name, path, version, params, session_id)
-                except Exception as exc:
-                    raise ValueError(f"Invalid runtime plugin {name}: {exc}") from exc
+                if keep_memory_binding and name == MEMORY_PLUGIN_ID and name in self.bindings:
+                    candidate = self.bindings[name].candidate
+                else:
+                    path = equipment.resolve_plugin_runtime_dir(name)
+                    version = equipment.read_manifest_version(path)
+                    try:
+                        candidate = await asyncio.to_thread(self._candidate, name, path, version, params, session_id)
+                    except Exception as exc:
+                        raise ValueError(f"Invalid runtime plugin {name}: {exc}") from exc
                 if candidate is None:
                     continue
                 for capability in candidate.contract.get("capabilities", []):

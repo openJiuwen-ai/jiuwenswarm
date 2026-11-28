@@ -49,27 +49,44 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        # Lightweight single-host deployments point USER_BACKEND_DB_TYPE=sqlite at
+        # the manager's SQLite file (USER_BACKEND_SQLITE_PATH). The shared
+        # user_access_* views are provisioned by the deployment against that
+        # file; no dedicated reader account exists, so the credential checks
+        # below do not apply to this branch.
+        if (os.environ.get("USER_BACKEND_DB_TYPE") or "").strip().lower() == "sqlite":
+            sqlite_path = os.environ["USER_BACKEND_SQLITE_PATH"].strip()
+            if not sqlite_path:
+                raise ValueError("USER_BACKEND_SQLITE_PATH is required for sqlite")
+            return cls(
+                URL.create("sqlite+aiosqlite", database=sqlite_path),
+                None,
+                os.environ["USER_BACKEND_IDENTITY_URL"].rstrip("/"),
+                os.getenv("USER_BACKEND_MANAGER_URL", "").rstrip("/"),
+                os.getenv("USER_BACKEND_DEFAULT_GATEWAY_HTTP", ""),
+                os.getenv("USER_BACKEND_DEFAULT_GATEWAY_WS", ""),
+            )
         driver = {
             "postgresql": "postgresql+asyncpg", "mysql": "mysql+aiomysql",
             "mariadb": "mysql+aiomysql",
-        }[os.environ["USER_BACKEND_DB_TYPE"]]
-        user = os.environ["USER_BACKEND_DB_USER"]
-        password = os.environ["USER_BACKEND_DB_PASSWORD"]
+        }[os.environ["WEB_SERVER_DB_TYPE"]]
+        user = os.environ["WEB_SERVER_DB_USER"]
+        password = os.environ["WEB_SERVER_DB_PASSWORD"]
         if user.lower() in {"root", "postgres"} or not user.strip() or not password:
             raise ValueError("A dedicated user-plane database account is required")
-        schema = os.getenv("USER_BACKEND_PG_SCHEMA") or None
+        schema = os.getenv("WEB_SERVER_PG_SCHEMA") or None
         return cls(
             URL.create(
                 driver, username=user, password=password,
-                host=os.environ["USER_BACKEND_DB_HOST"],
-                port=int(os.environ["USER_BACKEND_DB_PORT"]),
-                database=os.environ["USER_BACKEND_DB_NAME"],
+                host=os.environ["WEB_SERVER_DB_HOST"],
+                port=int(os.environ["WEB_SERVER_DB_PORT"]),
+                database=os.environ["WEB_SERVER_DB_NAME"],
             ),
             schema if driver == "postgresql+asyncpg" else None,
-            os.environ["USER_BACKEND_IDENTITY_URL"].rstrip("/"),
-            os.getenv("USER_BACKEND_MANAGER_URL", "").rstrip("/"),
-            os.getenv("USER_BACKEND_DEFAULT_GATEWAY_HTTP", ""),
-            os.getenv("USER_BACKEND_DEFAULT_GATEWAY_WS", ""),
+            os.environ["WEB_SERVER_IDENTITY_URL"].rstrip("/"),
+            os.getenv("WEB_SERVER_MANAGER_URL", "").rstrip("/"),
+            os.getenv("WEB_SERVER_DEFAULT_GATEWAY_HTTP", ""),
+            os.getenv("WEB_SERVER_DEFAULT_GATEWAY_WS", ""),
         )
 
 
@@ -237,10 +254,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user = await current_user(request)
         try:
             async with asyncio.timeout(5), db.connect() as connection:
-                result = await catalog.contexts(connection, user)
+                items, matched = await catalog.contexts(connection, user)
         except (SQLAlchemyError, TimeoutError):
             raise HTTPException(503, "user access data unavailable") from None
-        return {"code": 200, "message": "success", "data": {"contexts": result}}
+        empty_reason = None
+        if not items:
+            empty_reason = "no_agent_template" if matched else "no_grant"
+        return {
+            "code": 200, "message": "success",
+            "data": {"contexts": items, "empty_reason": empty_reason},
+        }
 
     @console.post("/active-cluster")
     async def active_cluster(body: ActiveCluster, request: Request, response: Response):

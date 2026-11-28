@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock
 
 from jiuwenswarm.server.lifecycle import Readiness
+from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
@@ -170,6 +171,7 @@ async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path
     release = asyncio.Event()
     children = []
     monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity", AsyncMock(return_value=("a" * 64, None)))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
 
     async def lookup(*args, **kwargs):
@@ -197,7 +199,7 @@ async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path
         raise TimeoutError("IPC unavailable")
 
     monkeypatch.setattr(supervisor_module, "try_connect", lookup)
-    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: False)
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: phase == "lookup")
     monkeypatch.setattr(supervisor_module, "connect_with_retry", slow_connect)
     monkeypatch.setattr(supervisor_module, "WorkerProcess", ObservedWorker)
     monkeypatch.setattr(worker_module, "build_worker_command", lambda *a, **kw: [
@@ -251,12 +253,14 @@ async def test_published_pid_retains_the_identity_checked_during_hello(monkeypat
             cmdline=lambda: [sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", str(tmp_path / "worker")],
             wait=lambda **kw: 0, kill=killed)
 
-    hello = {"kind": "hello", "protocol": 2, "pid": pid, "process_created": 1,
+    hello = {"kind": "hello", "protocol": PROTOCOL_VERSION, "pid": pid, "process_created": 1,
              "deployment_scope": identity.deployment_scope(), "data_scope": identity.data_scope(),
              "code_identity": "a" * 64, "stub": True}
     peer = SimpleNamespace(recv=AsyncMock(return_value=hello), send=AsyncMock(), close=AsyncMock())
     monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity", AsyncMock(return_value=("a" * 64, None)))
     monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=peer))
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _path: True)
     monkeypatch.setattr(psutil, "Process", lookup)
     front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True)
     monkeypatch.setattr(front, "_start_side_tasks", Mock())
@@ -277,12 +281,12 @@ async def test_public_complete_stop_during_unverified_hello_does_not_terminate_p
     monkeypatch, tmp_path, ipc_dir, busy, protocol,
 ):
     from pathlib import Path
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.ipc.client import connect_with_retry
 
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path / "data")
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
     path = str(ipc_dir / "worker")
     worker = WorkerProcess(path, host="127.0.0.1", port=0, stub=True)
@@ -295,7 +299,7 @@ async def test_public_complete_stop_during_unverified_hello_does_not_terminate_p
         connection = await connect_with_retry(path, timeout=15)
         hello = await asyncio.wait_for(connection.recv(), 5)
         legacy = {key: value for key, value in hello.items() if key not in {
-            "deployment_scope", "process_created",
+            "deployment_scope", "process_created", "process_started",
         }}
         legacy["protocol"] = protocol
 
@@ -354,12 +358,12 @@ async def test_complete_stop_cannot_reuse_an_old_connections_validation():
 @pytest.mark.asyncio
 async def test_complete_stop_can_reap_its_own_child_without_sending_unverified_ipc(monkeypatch, tmp_path, ipc_dir):
     from pathlib import Path
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths, utils
     from jiuwenswarm.server.ipc.client import connect_with_retry
 
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setattr(paths, "_workspace_base_dir", tmp_path / "data")
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
     monkeypatch.setattr(supervisor_module, "_FINAL_SHUTDOWN_TIMEOUT", .1)
     worker = WorkerProcess(str(ipc_dir / "worker"), host="127.0.0.1", port=0, stub=True)
@@ -413,7 +417,7 @@ def test_shutdown_cli_keeps_the_workspace_spelling_that_names_the_worker(monkeyp
     # The Worker's endpoint and --socket argv come from JIUWENSWARM_DATA_DIR as
     # written. Resolving a symlinked root (macOS /var -> /private/var) made the
     # helper look for a different endpoint and report a running Worker absent.
-    from jiuwenswarm.common import utils
+    from jiuwenswarm.common import paths
     from jiuwenswarm.server.supervisor import shutdown
 
     real = tmp_path / "real"
@@ -427,7 +431,8 @@ def test_shutdown_cli_keeps_the_workspace_spelling_that_names_the_worker(monkeyp
         return {"ok": True}
 
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", "")
-    monkeypatch.setattr(utils, "_workspace_base_dir", None)
+    # 数据根缓存已随路径契约迁移 common.paths（utils 仅转发）
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
     monkeypatch.setattr(sys, "argv", ["shutdown", "--shutdown-worker", "--workspace", str(link), "--timeout", "2"])
     monkeypatch.setattr(shutdown, "shutdown_resident_worker", shutdown_worker)
     shutdown.main()

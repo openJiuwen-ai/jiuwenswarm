@@ -35,7 +35,7 @@ from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBr
 import json
 from pathlib import Path
 import psutil
-from jiuwenswarm.common import utils
+from jiuwenswarm.common import paths, utils
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.ipc.client import endpoint_is_listening
 from jiuwenswarm.server.lifecycle import Readiness
@@ -398,22 +398,22 @@ async def test_replacement_worker_reclaims_and_executes_persisted_session(monkey
         "    from session_owner_worker import configure\n"
         "    configure()\n", encoding="utf-8",
     )
-    paths = [str(bootstrap), str(Path(__file__).parent / "fixtures"), str(root)]
+    bootstrap_paths = [str(bootstrap), str(Path(__file__).parent / "fixtures"), str(root)]
     if os.environ.get("PYTHONPATH"):
-        paths.append(os.environ["PYTHONPATH"])
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(paths))
+        bootstrap_paths.append(os.environ["PYTHONPATH"])
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(bootstrap_paths))
     data = tmp_path / "data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data))
-    monkeypatch.setattr(utils, "_workspace_base_dir", data)
+    monkeypatch.setattr(paths, "_workspace_base_dir", data)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     monkeypatch.setenv("JIUWENSWARM_BUILD_ID", "owner-recovery-old-build")
-    session = data / "agent" / "sessions" / "persisted"
+    session = utils.get_agent_sessions_dir() / "persisted"
     session.mkdir(parents=True)
     metadata = '{"session_id":"persisted","channel_id":"web","title":"Keep me"}'
     (session / "metadata.json").write_text(metadata, encoding="utf-8")
     original = {"content": "original persisted history"}
     (session / "history.jsonl").write_text(json.dumps(original) + "\n", encoding="utf-8")
-    owner_path = data / "agent" / "lifecycle" / "resources" / "session_persisted.json"
+    owner_path = paths.get_lifecycle_dir() / "resources" / "session_persisted.json"
     endpoint = (str(tmp_path / "worker.pipe") if os.name == "nt"
                 else f"/tmp/jw-owner-{uuid.uuid4().hex[:8]}.sock")
     first = RuntimeSupervisor(Readiness(), forwarder=EventForwarder(), socket_path=endpoint, max_restarts=0)

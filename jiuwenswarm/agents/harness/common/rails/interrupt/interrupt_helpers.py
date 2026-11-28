@@ -619,6 +619,16 @@ def build_permission_rail(
                             verification_error=f"A4P token verification failed: {exc}",
                         )
 
+                # Cron is unattended: never fall through to interactive "interrupt".
+                # Without an A4P token path above, ask must fail closed regardless of
+                # permissions.mode — cron sessions do not install a Smart Approval
+                # LLM rail, so "auto" cannot decide; waiting for HITL would hang.
+                if is_cron:
+                    return _deny_cron_scope(
+                        "定时任务无法使用交互式审批；"
+                        "ask 需有效 A4P cron intent token，或将工具设为 allow/deny"
+                    )
+
             if channel != "acp":
                 return "interrupt"
 
@@ -989,9 +999,6 @@ def build_permission_rail(
                     auto_reviewer = AutoReviewer(
                         client=IsolatedModelReviewerClient(
                             model=reviewer_model,
-                            display_language_getter=lambda: get_config().get(
-                                "preferred_language", "zh"
-                            ),
                         ),
                         timeout_ms=auto_options["reviewer_timeout_ms"],
                         reviewer_output_format=auto_options["reviewer_output_format"],

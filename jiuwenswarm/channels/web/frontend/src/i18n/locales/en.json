@@ -25,6 +25,8 @@
     "backToLogin": "Back to Sign in",
     "language": "Interface language",
     "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
+    "emptyTitleNoTemplate": "No Agent",
+    "noContextNoTemplate": "No Agent is available for this account. Please ask your administrator to add Agent Templates in the Manager console.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -119,6 +121,9 @@
     "retry": "Retry",
     "selectedCount": "{{count}} selected",
     "noMatches": "No matches",
+    "all": "All",
+    "yes": "Yes",
+    "no": "No",
     "editMenu": {
       "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
@@ -173,7 +178,8 @@
     "personalContext": "Knowledge",
     "appMarket": "Apps",
     "workspace": "Workspace",
-    "approvals": "Requests"
+    "approvals": "Requests",
+    "memory": "Memory"
   },
   "appMarket": {
     "resourceMemory": "RAM",
@@ -185,10 +191,12 @@
     "serverResourceHint": "Whole-machine CPU and memory usage on the server running the backend, including every process on that machine; it is not WorkSwarm's own usage. A local connection usually targets this computer, but proxies and port forwarding may target a remote server; containers may report host statistics. Updates every 3 seconds. Warns after 3 samples at or above 85% CPU or memory; clears when both are below 75%.",
     "highResourceUsage": "High system usage. Consider stopping unused apps or other tasks.",
     "title": "Apps",
+    "subtitle": "Manage and monitor Swarm apps",
     "myApps": "My Apps",
     "market": "App Plaza",
     "marketLoadFailed": "Failed to load the App Plaza",
     "noMarketApps": "No apps in the App Plaza",
+    "searchPlaceholder": "Search apps",
     "moreActions": "More actions: {{name}}",
     "pin": "Pin to top",
     "unpin": "Unpin",
@@ -200,8 +208,8 @@
       "title": "AI Roles",
       "empty": "No AI roles declared",
       "loadFailed": "Failed to load AI roles",
-      "agent": "Single-role session",
       "team": "Team session",
+      "teamBadge": "Team",
       "leader": "Leader"
     },
     "backToMyApps": "Back to My Apps",
@@ -284,7 +292,7 @@
     "editSessionTitle": "Edit {{name}}",
     "reloadPreview": "Reload app preview",
     "reloadFailed": "Failed to reload app preview",
-    "editPrompt": "Help me modify the app “{{name}}” (v{{version}}).\nAbout the app: {{description}}\nSource entry: {{entryPath}}\n\nPlease review the existing code and data first and keep existing data and saves. Suggested steps:\n1. Explain the current implementation, entry file, and key data;\n2. Make the smallest change for my request and test it;\n3. Tell me when a new version should be published.\nChanges I want: ",
+    "editPrompt": "Help me modify the app “{{name}}” (v{{version}}).\nAbout the app: {{description}}\nSource entry: {{entryPath}}\n\nConsult the workswarm-app-builder skill in the WorkSwarm built-in capabilities catalog, then review the existing code and data and keep existing data and saves. Suggested steps:\n1. Explain the current implementation, entry file, and key data;\n2. Make the smallest change for my request and test it;\n3. Tell me when a new version should be published.\nChanges I want: ",
     "noDescription": "No description yet",
     "expandPane": "Expand app panel",
     "restorePane": "Restore split view",
@@ -311,8 +319,14 @@
     "deleteCleanFiles": "Delete and clean files",
     "removeKeepSuccess": "Removed from App Market; local files kept",
     "deleteCleanSuccess": "App deleted and local files cleaned",
-    "deleteCleanConfirm": "Delete “{{name}}” and clean its local files? The project is not affected.",
-    "uninstallCleanupWarning": "The app was removed from App Market. Local cleanup was incomplete. Check {{directory}}.",
+    "deleteCleanArchived": "App deleted and local files cleaned. data and .git were archived to {{directory}}.",
+    "deleteCleanConfirm": "Delete “{{name}}” and clean its application directory? Files other than archived data and .git will be permanently deleted and cannot be restored.",
+    "cleanupFailed": "The app was removed from App Market. Could not fully clean up {{directory}}: {{error}}",
+    "cleanupFilesystemBusy": "The app was removed from App Market. {{directory}} is in use and could not be fully cleaned up. Please check the directory.",
+    "cleanupWithArchive": "{{message}} Archive location: {{directory}}",
+    "cleanupKeptUnverified": "Local files were kept because the application directory could not be verified: {{directory}}",
+    "cleanupKeptProtected": "Local files were kept because the directory is protected: {{directory}}",
+    "cleanupKeptInUse": "Local files were kept because the directory is still used by another application: {{directory}}",
     "deleteFailed": "Failed to delete",
     "deleteConfirm": "Are you sure you want to delete this app? Running instances will be stopped.",
     "states": {
@@ -522,6 +536,7 @@
       "removeMaterial": "Remove asset",
       "promptPlaceholder": "This clip's prompt; sent to the model with the reference images above",
       "promptHint": "Prompt for this node's subagent. You can optionally edit it before generating; the subagent may still refine it based on the project.",
+      "sceneReferenceMissing": "The original scene card is gone; this run will generate without a scene reference, so the environment may differ between shots.",
       "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
@@ -630,6 +645,8 @@
       "deleteConfirmMessage": "This node contains generated content. Deleting it cannot be undone. Are you sure you want to delete it?",
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
+      "deleteSceneWarning": "The scene card used by {{count}} video node(s) is being deleted:",
+      "deleteSceneMissing": "\"{{clip}}\" will lose its scene reference; its environment may differ between shots",
       "resize": "Resize",
       "resizeHint": "Drag the bottom-right corner to resize this node",
       "playAudio": "Play audio",
@@ -786,6 +803,16 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "memory": {
+      "reconnect": "Reconnect",
+      "errors": {
+        "not_enabled": "Enable the Memory management page in Settings.",
+        "disconnected": "Swarm is disconnected. Reconnect and retry.",
+        "dependency_unavailable": "The installed dependency does not support Portal. Use an agent-memory version with Portal support.",
+        "timeout": "Opening the memory page timed out. Please retry.",
+        "portal_unavailable": "The memory page is unavailable. Check the service, identity and allowed frame origins, then reconnect."
+      }
+    },
     "multimodal": {
       "tab": "Multimodal models",
       "tabHelp": "Manage models for image, audio and video understanding, and image and video generation. Adjust tool switches and model bindings in Settings → Agent → Tools.",
@@ -874,6 +901,7 @@
       "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
+      "memory": "Memory",
       "voice": "Voice",
       "general": "General",
       "models": "Models",
@@ -1098,9 +1126,9 @@
       "contextWindowPresets": "Common context windows",
       "outputTokens": "Maximum output per request",
       "outputTokensPlaceholder": "For example, 32K or 32768",
-      "outputTokensHint": "Limits the maximum tokens generated by one model request, including reasoning tokens. OpenAI protocol can use Unlimited, subject to provider and model limits.",
+      "outputTokensHint": "Limits the maximum tokens generated by one model request, including reasoning tokens. With the OpenAI protocol, select Model default to use the provider's or model's output limit.",
       "outputTokensPresets": "Common output limits",
-      "outputTokensUnlimited": "Unlimited",
+      "outputTokensUnlimited": "Model default",
       "vendorPlaceholder": "Select",
       "selectVendor": "Select model provider",
       "searchVendor": "Search model providers",
@@ -1221,7 +1249,8 @@
         "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
-      "test": "Test"
+      "test": "Test",
+      "modelsLoadFailedDraftAvailable": "Existing model configurations could not be loaded. Your entries are retained. Retry before saving."
     },
     "agent": {
       "skills": "Skills",
@@ -1713,6 +1742,11 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
+      },
+      "memory_portal_enabled": {
+        "description": "Whether to enable the memory management page.",
+        "title": "Memory management",
+        "placeholder": ""
       }
     },
     "validation": {
@@ -2084,6 +2118,7 @@
     },
     "errors": {
       "loadTeams": "Failed to load teams",
+      "partialLoad": "Some team data failed to load. Showing available data",
       "deleteTeam": "Failed to delete team: {{team}}",
       "stopTeam": "Failed to stop team"
     }
@@ -2488,6 +2523,10 @@
     "placeholderTeamMode": "What can I do for you? Type \"/\" to quickly reference skills",
     "placeholderTeamModeProcessing": "Team mode processing, new messages will run in parallel...",
     "placeholderVoice": "Listening...",
+    "welcomeSuffix": {
+      "work": "makes work easier!",
+      "design": "solves every design problem!"
+    },
     "welcomeLogoAlt": "WorkSwarm logo",
     "welcomeBubbleText": "Hi~ I'm your personal desktop smart buddy.",
     "freeModelsCampaign": {
@@ -2660,7 +2699,11 @@
     "expertBatchError": "Could not start teams: {{error}}. Retry safely; created teams will be reused.",
     "expertBatchRequestFailed": "Could not start expert teams. View details",
     "expertBatchSummary": "Expert teams: {{success}} succeeded, {{failed}} failed",
-    "expertBatchStatus": {"created": "Started", "existing": "Already added; reused", "failed": "Failed"},
+    "expertBatchStatus": {
+      "created": "Started",
+      "existing": "Already added; reused",
+      "failed": "Failed"
+    },
     "agentGroup": "Expert Teams",
     "agentToggle": "Choose an installed Expert",
     "agentSearchPlaceholder": "Enter keywords to search",
@@ -2838,6 +2881,26 @@
     "stagePending": "Pending",
     "stageMessage": "Message",
     "inputPlaceholder": "Enter optimization goal...",
+    "status": {
+      "success": "Completed",
+      "running": "In progress",
+      "failed": "Failed",
+      "timeout": "Timed out",
+      "skipped": "Skipped",
+      "rejected": "Rejected",
+      "waiting": "Awaiting confirmation",
+      "pending": "Not started"
+    },
+    "extension": {
+      "implement": "Implement extension",
+      "verify": "Verify extension"
+    },
+    "summary": {
+      "gapItem": "Key gap",
+      "gapEmpty": "No gap summary yet",
+      "designItem": "Design proposal",
+      "designEmpty": "No design summary yet"
+    },
     "stages": {
       "assess": "Assess",
       "plan": "Plan",
@@ -2993,6 +3056,8 @@
     "enterpriseContext": {
       "user": "User",
       "userContext": "User context",
+      "agentNameLabel": "Agent name",
+      "agentNameHint": "Agent Name",
       "modeAria": "Context mode",
       "selectAgent": "Select agent",
       "custom": "Custom",
@@ -3056,6 +3121,7 @@
   },
   "channels": {
     "fetchFailed": "Fetch failed",
+    "configLoadFailed": "Failed to load configuration",
     "retry": "Retry",
     "hideValue": "Hide value",
     "showValue": "Show value",
@@ -3842,10 +3908,25 @@
       "noNewContent": "No new content",
       "capacityRemoved": "Capacity maintenance removed {{count}} content files",
       "capacityIncomplete": "Capacity maintenance is incomplete. Knowledge may still exceed the limit",
+      "tokenUsage": "Used about {{amount}} tokens",
+      "tokenUsageUnavailable": "Token usage was not fully recorded for this run",
       "collectionDisabledHint": "Enable Personal Context and content collection in settings before fetching now.",
       "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
+      "failureStage": {
+        "scan": "Failed at: directory scan",
+        "fetch": "Failed at: data fetching",
+        "pipeline": "Failed at: content processing (chunking and embedding)",
+        "publish": "Failed at: index writing",
+        "config": "Failed at: configuration validation",
+        "state": "Failed at: state check",
+        "timeout": "Failed at: execution timeout",
+        "unknown": "Failed at: unknown stage"
+      },
+      "failureCode": "Error code {{code}}",
+      "failureCounts": "Scanned {{total}} · succeeded {{completed}} · failed {{failed}}",
+      "failureOmitted": "{{count}} more failed items are not shown; check the run log for details",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
       "stateStopping": "Stopping",
@@ -4690,11 +4771,35 @@
       "skillNetInstallFailedHint": "SkillNet install failed. Check the skill URL or dependencies.",
       "importFailed": "Import failed",
       "importFailedHint": "Import failed. Check the path or permissions.",
+      "localSkillUploadDisabled": "Local Skill upload is not enabled for this Agent template.",
+      "localSkillUploadUnavailable": "Could not verify the current Agent configuration. Please try again later.",
       "knowledgeSkillExists": "Skill \"{{name}}\" already exists. Use another name or uninstall it first.",
       "knowledgeSkillExistsGeneric": "A skill with this name already exists. Use another name or uninstall it first.",
       "uploadFailed": "File upload failed. Please try again.",
       "uploadUnsafePath": "The filename contains disallowed characters or uses a reserved system name. Rename the file and upload it again.",
       "uploadInvalidRequest": "The upload request is invalid or missing a file. Select the file again and upload it.",
+      "uploadMissingPath": "Upload file path is required",
+      "uploadFileMissing": "Upload file not found: {{path}}",
+      "uploadMustBeFile": "Upload must be a regular file",
+      "uploadZipOnly": "Only .zip skill packages are supported.",
+      "uploadSkillZipRejected": ".skill.zip skill packages are not supported. Use a regular .zip skill package.",
+      "uploadUnpackFailed": "Could not unpack the skill package: {{error}}",
+      "uploadZipDepthExceeded": "The skill package directory depth exceeds the limit of {{limit}}.",
+      "uploadZipFileCountExceeded": "The skill package has too many files (limit {{limit}}).",
+      "uploadMissingSkillMd": "SKILL.md was not found in the package; not a valid skill package",
+      "uploadMissingFileField": "The upload is missing a file field. Select the file again and upload it.",
+      "importOverwriteRequired": "Skill \"{{name}}\" already exists and requires overwrite confirmation",
+      "builtinReadOnly": "Built-in skill \"{{name}}\" cannot be overwritten",
+      "prebuiltReadOnly": "Prebuilt skill \"{{name}}\" cannot be overwritten",
+      "invalidMetadataName": "SKILL.md YAML must include a non-empty string name",
+      "invalidMetadataDescription": "SKILL.md YAML must include a non-empty string description",
+      "invalidMetadata": "Invalid skill metadata: {{error}}",
+      "invalidMetadataUnparsable": "Could not parse SKILL.md",
+      "reservedArchivePath": "Skill packages must not include a root-level .archive/ directory",
+      "skillPackageTooLarge": "The skill package is {{sizeMB}}MB, exceeding the {{limitMB}}MB limit. Reduce its size and upload it again.",
+      "skillPackageSingleFileTooLarge": "The file \"{{fileName}}\" in the skill package is {{sizeMB}}MB after extraction, exceeding the {{limitMB}}MB per-file limit. Remove or split it, then upload the package again.",
+      "skillPackageSingleFileTooLargeStreaming": "A file in the skill package exceeds the {{limitMB}}MB per-file limit after extraction (\"{{fileName}}\"). Remove or split it, then upload the package again.",
+      "skillPackageUncompressedTooLarge": "The skill package exceeds the {{limitMB}}MB total limit after extraction. Reduce the number or size of files and upload it again.",
       "uninstallFailed": "Uninstall failed",
       "uninstallFailedHint": "Uninstall failed. Please try again later."
     }
@@ -4856,7 +4961,9 @@
       "updating": "Saving…"
     },
     "confirm": {
-      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone.",
+      "deleteTitle": "Delete Expert “{{name}}”?",
+      "deleteMessage": "Are you sure you want to delete Expert “{{name}}”? This cannot be undone.",
+      "uninstallGroupTitle": "Uninstall the Expert Team “{{name}}”?",
       "uninstallGroupMessage": "Uninstall the Expert Team “{{name}}”?"
     },
     "card": {
@@ -5172,6 +5279,7 @@
     "paused": "Paused",
     "waitingTasks": "Waiting Tasks",
     "messageQueue": "Message Queue",
+    "queuedUploadDocument": "Uploaded document",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
     "turnStarting": "Starting…",
@@ -5372,6 +5480,12 @@
       "acceptAll": "Accept all",
       "submit": "Submit",
       "entryCount": "{{count}} entries total"
+    },
+    "activateConfirm": {
+      "header": "Extension Activation",
+      "question": "Activate extension **{{extensionName}}**?",
+      "accept": "Activate",
+      "reject": "Reject"
     }
   },
   "share": {
@@ -5836,7 +5950,8 @@
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
         "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
         "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
-        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly.",
+        "pinCronNoIdentity": "This scheduled-task session has no job identity; pinning it would hide it from the sidebar, so the pin was cancelled"
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -6080,6 +6195,17 @@
     "detail": {
       "breadcrumbMy": "My Extensions",
       "breadcrumbPlugin": "Plugin details",
+      "memoryConnection": {
+        "edit": "Edit connection settings",
+        "hint": "Enter the full MCP service URL and API key, then save to reconnect to the memory service.",
+        "url": "MCP service URL",
+        "key": "API key"
+      },
+      "memoryAccess": {
+        "managedHttp": "Built-in HTTP service",
+        "serviceRunning": "Service running",
+        "serviceStopped": "Service not running"
+      },
       "breadcrumbMcp": "Connector details",
       "mcpDisconnectedBanner": "This plugin's connector isn't connected, so it can't be used normally",
       "mcpDisconnectedBannerSelf": "Not connected yet. Connect to start using it",
@@ -6203,7 +6329,8 @@
       "importSuccess": "Plugin imported successfully",
       "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
       "missingReadme": "The plugin package is missing README.md.",
-      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths."
+      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths.",
+      "alreadyInstalled": "This package (same ID and version) is already installed; upload a different version."
     },
     "systemPlugin": {
       "badge": "System plugin",
@@ -6255,8 +6382,12 @@
       "installedVersion": "Installed v{{version}}",
       "switchVersion": "Switch version",
       "switchVersionConfirm": "Switch \"{{name}}\" from v{{installed}} to v{{target}}? The current version will stop running, but its files stay in the workspace and are not deleted, so you can switch back later.",
+      "versionLoadFailed": "Version v{{version}} failed to load and was rolled back to v{{previous}}. Reason: {{error}}",
+      "versionUnavailable": "This version failed to load and cannot be selected",
+      "busyMessage": "A running task is using this plugin. Wait for the task to finish or terminate it before trying again.",
       "publish": "Publish",
       "uninstallConfirm": "Choose how to uninstall: \"Uninstall v{{version}}\" removes only the active version and keeps other installed versions (inactive); \"Uninstall all\" deletes every version of \"{{name}}\" from the workspace and cannot be undone.",
+      "uninstallSingleConfirm": "Uninstall \"{{name}}\"? v{{version}} is the only version in the workspace, so uninstalling deletes all of its files and cannot be undone.",
       "uninstallVersion": "Uninstall v{{version}}",
       "uninstallAll": "Uninstall all"
     },
@@ -6727,12 +6858,14 @@
     "closeTag": "Close SwarmFlow",
     "closeTagDisabled": "Cannot close while processing",
     "readonlyHint": "The team has started; the dynamic workflow can no longer be changed",
+    "forbiddenHint": "SwarmFlow is disabled by your administrator",
     "configTitle": "SwarmFlow Configuration",
     "configReadonlyHint": "Session is active, config is read-only",
     "budgetPanelTitle": "SwarmFlow Budget",
     "budgetPanelHint": "Set the Token limit for this session.",
     "budgetPlaceholder": "Enter number",
     "budgetActualHint": "Configured limit: {{count}} tokens",
+    "budgetCapHint": "Enterprise limit: {{cap}} tokens (cannot exceed)",
     "workflowList": "Workflow List",
     "verifyReviewing": "Reviewing…",
     "verifyReviewingShort": "Reviewing",
@@ -6786,6 +6919,7 @@
     "enhancedProgressHint": "Enhanced capability setup is expected to take {{range}}. Details remain available afterwards.",
     "enhancedEstimateFallback": "30–40 minutes",
     "cancelInstall": "Cancel installation",
+    "cancelling": "Cancelling…",
     "installingComponents": "Installing toolchain components",
     "componentCountHint": "{{count}} components in total. Independent components install in parallel.",
     "completedCount": "Completed {{completed}} / {{total}}",
@@ -7500,7 +7634,9 @@
         "failures": {
           "org_access_denied": "Your DingTalk account was confirmed, but the selected organization has not allowed this account to access data through the CLI. Ask an organization administrator to grant access, then authorize again, or select an organization where you already have access.",
           "authorization_expired": "This device authorization expired. Select Authorize DingTalk account to get a new link and code.",
-          "authorization_failed": "Authorization did not complete or its process ended. Start again instead of reusing the old device code."
+          "authorization_failed": "Authorization did not complete or its process ended. Start again instead of reusing the old device code.",
+          "authorization_process_unverified": "DingTalk authorization status could not be confirmed. Your authorization records have been kept. Please try again shortly.",
+          "authorization_cleanup_failed": "Authorization timed out, but cleanup is incomplete. Your authorization records have been kept. Please try again shortly."
         },
         "status": {
           "loading": "Checking authorization…",
@@ -7988,6 +8124,11 @@
     "name": "Group name",
     "description": "Description",
     "addMembers": "Add members",
+    "removeMember": "Remove member",
+    "removeMemberConfirm": "Remove",
+    "removingMember": "Removing…",
+    "removeMemberWarning": "The member will no longer receive messages in this group, while existing message history stays visible. You can add them back anytime.",
+    "removeMemberActiveWarning": "This member has active tasks or collaborations. Removing them will stop their running work and dismiss pending prompts. Existing message history stays visible.",
     "experts": "Experts",
     "teams": "Expert teams",
     "team": "Team",

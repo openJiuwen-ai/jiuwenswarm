@@ -110,6 +110,43 @@ class TestAutoTitle:
         assert _auto_title("") == ""
         assert _auto_title("   ") == ""
 
+    @staticmethod
+    def test_strips_upload_block_keeps_user_query():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("总结\n【上传文档】\n@/x/a.pdf") == "总结"
+
+    @staticmethod
+    def test_pure_upload_uses_basename():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("【上传文档】\n@/.../todo.json") == "todo.json"
+
+    @staticmethod
+    def test_collapsed_upload_title_uses_basename():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("【上传文档】 @/.../todo.json") == "todo.json"
+
+    @staticmethod
+    def test_collapsed_upload_after_query_keeps_query():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title("总结 【上传文档】 @/x/a.pdf") == "总结"
+
+    @staticmethod
+    def test_quoted_upload_path_basename():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        assert _auto_title('【上传文档】\n@"/u/my brief.pdf"') == "my brief.pdf"
+
+    @staticmethod
+    def test_preserves_inline_upload_marker_in_query():
+        from jiuwenswarm.server.runtime.session.session_metadata import _auto_title
+
+        text = "请解释“【上传文档】”这个词在普通文本中的含义"
+        assert _auto_title(text) == text
+
 
 @pytest.mark.parametrize("initialized", [True, False], ids=["existing-session", "implicit-create"])
 @pytest.mark.parametrize(
@@ -128,10 +165,14 @@ class TestAutoTitle:
         ("/debug", "/debug"),
         ("/debug   ", "/debug"),
         ("ordinary message", "ordinary message"),
+        ("总结\n【上传文档】\n@/x/a.pdf", "总结"),
+        ("【上传文档】\n@/.../todo.json", "todo.json"),
+        ("【上传文档】 @/.../todo.json", "todo.json"),
     ],
     ids=[
         "debug", "whitespace", "injected-tags", "truncate", "literal",
         "lookalike", "bare", "bare-spaces", "ordinary",
+        "upload-with-query", "pure-upload", "collapsed-upload",
     ],
 )
 def test_auto_title_strips_only_debug_directive(sessions_dir, initialized, user_content, expected_title):
@@ -2561,7 +2602,7 @@ class TestSetSessionPinnedSyncWrite:
             set_session_pinned,
         )
 
-        init_session_metadata(session_id="s_pw")  # pinned=False
+        init_session_metadata(session_id="s_pw", channel_id="web")  # pinned=False
 
         result = set_session_pinned("s_pw", True)
         # 不调 _drain_queue():验证返回前已落盘
@@ -2579,7 +2620,7 @@ class TestSetSessionPinnedSyncWrite:
             set_session_pinned,
         )
 
-        init_session_metadata(session_id="s_unpw")
+        init_session_metadata(session_id="s_unpw", channel_id="web")
         set_session_pinned("s_unpw", True)  # 先置顶(同步落盘)
 
         result = set_session_pinned("s_unpw", False)  # 再取消置顶
@@ -2611,7 +2652,7 @@ class TestSetSessionPinnedQueuedWriteRace:
 
         monkeypatch.setattr(sm, "_write_metadata_sync", _delayed_write)
 
-        sm.init_session_metadata(session_id="s_async_pin")
+        sm.init_session_metadata(session_id="s_async_pin", channel_id="web")
         sm.update_session_metadata(session_id="s_async_pin", model="old-queued-write")
         assert old_write_started.wait(5), "old queued write did not start"
 
@@ -3318,7 +3359,7 @@ class TestSessionPinOptimization:
     def test_repeated_pin_skips_scan_and_write(self, sessions_dir, monkeypatch):
         from jiuwenswarm.server.runtime.session import session_metadata as sm
 
-        sm.init_session_metadata(session_id="repeat")
+        sm.init_session_metadata(session_id="repeat", channel_id="web")
         assert sm.set_session_pinned("repeat", True) == (True, 1)
         original_read = sm._read_metadata
         reads = []
@@ -3338,7 +3379,7 @@ class TestSessionPinOptimization:
         from jiuwenswarm.server.runtime.session import session_metadata as sm
 
         for sid in ("a", "b", "c"):
-            sm.init_session_metadata(session_id=sid)
+            sm.init_session_metadata(session_id=sid, channel_id="web")
             sm.set_session_pinned(sid, True)
         before = {sid: _read_json(sessions_dir / sid / "metadata.json") for sid in ("a", "b", "c")}
         assert [before[sid]["pin_order"] for sid in ("c", "b", "a")] == [1, 2, 3]
@@ -3354,6 +3395,68 @@ class TestSessionPinOptimization:
             after = _read_json(sessions_dir / sid / "metadata.json")
             assert after["pin_order"] == order
             assert after["last_message_at"] == before[sid]["last_message_at"]
+
+
+class TestSessionPinCronIdentityGuard:
+    """缺 job 身份的 cron 执行会话不得置顶(置顶后三列表盲区)。
+
+    拒绝口径与置顶区准入共用 ``pinned_session_admitted`` 单一谓词:凡置顶区
+    不收的会话一律拒绝,两侧永不漂移。
+    """
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("sid", "cron_id", "channel_id", "rejected"),
+        [
+            # __cron___<ts>_<rand>:随机后缀、无 cron_id → 拒绝
+            ("__cron___1770000000000_abc123", "", "__cron__", True),
+            # 有 cron_id → 放行
+            ("__cron___1770000000000_abc123", "job-1", "__cron__", False),
+            # cron_<ts>_<job>:目录名嵌 job id → 放行
+            ("cron_1770000000000_job-1", "", "__cron__", False),
+            # cron_<job>(tick 会话) → 放行
+            ("cron_job-1", "", "__cron__", False),
+            # web 渠道会话 → 放行
+            ("web_1770000000000_x", "", "web", False),
+            # __cron__ 渠道但 id 无 cron 前缀且无 cron_id → 拒绝(畸形存量)
+            ("plain_sid", "", "__cron__", True),
+            # channel_id 落空(init 默认"")但目录名嵌 job id → 放行:cron 分组
+            # 按名字兜底不按渠道过滤,带身份会话置顶后仍可见
+            ("cron_1770000000000_job-blank", "", "", False),
+            # channel_id 落空、无 cron_id、非 job 形态 → 拒绝(渠道缺失不再旁路守卫)
+            ("plain_blank_sid", "", "", True),
+            # channel_id 落空但有 cron_id → 放行(带身份,置顶后仍可见)
+            ("__cron___1770000000001_rnd", "job-2", "", False),
+            # 非 web 非 cron 渠道(tui)无 job 身份 → 拒绝(置顶区只收 web)
+            ("plain_tui_sid", "", "tui", True),
+        ],
+    )
+    def test_pin_guard_by_identity(sessions_dir, sid, cron_id, channel_id, rejected):
+        from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+        sm.init_session_metadata(
+            session_id=sid, channel_id=channel_id, cron_id=cron_id
+        )
+        if rejected:
+            with pytest.raises(sm.SessionPinRejection) as exc_info:
+                sm.set_session_pinned(sid, True)
+            assert exc_info.value.code == "FORBIDDEN"
+            data = _read_json(sessions_dir / sid / "metadata.json")
+            assert data.get("pinned") is not True
+        else:
+            assert sm.set_session_pinned(sid, True) == (True, 1)
+
+    @staticmethod
+    def test_unpin_not_blocked_for_identity_less_cron_session(sessions_dir):
+        """取消置顶不走拒绝分支:即便会话缺身份,unpin 也要放行(修复存量入口)。"""
+        from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+        sid = "__cron___1770000000000_abc123"
+        sm.init_session_metadata(session_id=sid, channel_id="__cron__")
+        # 模拟修复前的存量状态:已被置顶落盘
+        sm.update_session_metadata(session_id=sid, pinned=True, pin_order=1)
+        _drain_queue()
+        assert sm.set_session_pinned(sid, False) == (False, 0)
 
 class TestCanonicalModeBoundary:
     """公共会话数据保持 canonical mode；客户端兼容由 Gateway 出口负责。"""

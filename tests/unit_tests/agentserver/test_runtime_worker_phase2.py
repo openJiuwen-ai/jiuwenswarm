@@ -693,6 +693,7 @@ async def test_bring_up_closes_conn_when_hello_is_rejected(
     match: str,
 ) -> None:
     conn = _ScriptedConn(message)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.runtime_supervisor.endpoint_is_listening", lambda _path: True)
 
     async def _try_connect(path: str, timeout: float = 0.5) -> _ScriptedConn:
         _ = path, timeout
@@ -715,6 +716,7 @@ async def test_bring_up_closes_conn_when_hello_times_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = _ScriptedConn(hang=True)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.runtime_supervisor.endpoint_is_listening", lambda _path: True)
 
     async def _try_connect(path: str, timeout: float = 0.5) -> _ScriptedConn:
         _ = path, timeout
@@ -885,7 +887,8 @@ async def test_front_stop_leaves_spawned_worker_running() -> None:
     second: RuntimeSupervisor | None = None
     owned = None
     try:
-        await asyncio.wait_for(first.run_until_ipc_ready(), 5)
+        # Let the supervisor's startup timeout surface Worker diagnostics on a failed launch.
+        await asyncio.wait_for(first.run_until_ipc_ready(), 40)
         assert await first_ready.wait_agent_ready(2) is True
         assert first.owns_process is True
         assert first.runtime_loaded is False
@@ -912,6 +915,8 @@ async def test_front_stop_leaves_spawned_worker_running() -> None:
         assert not endpoint_is_listening(path)
         assert await owned.wait(timeout=2) == 0
     finally:
+        if not first._stopping:
+            await first.stop(terminate_worker=True)
         if second is not None and not second._stopping:
             await second.stop()
         if endpoint_is_listening(path):
@@ -1073,7 +1078,7 @@ def test_worker_lifecycle_owns_runtime_construct() -> None:
     text = (root / "jiuwenswarm/server/worker/lifecycle.py").read_text(encoding="utf-8")
     assert "bind_transport=False" in text
     bootstrap = (root / "jiuwenswarm/server/worker/runtime_bootstrap.py").read_text(encoding="utf-8")
-    assert "AgentWebSocketServer.get_instance" in bootstrap
+    assert "WorkerExecutionHost" in bootstrap
 
 
 @pytest.mark.asyncio

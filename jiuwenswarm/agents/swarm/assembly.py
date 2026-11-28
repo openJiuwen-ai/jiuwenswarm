@@ -571,6 +571,9 @@ def enrich_team_spec_for_swarm(
         agent_group_name: Optional AgentGroup package selected for this Team.
         agent_group_package: Optional preloaded package for this AgentGroup.
     """
+    from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
+
+    configure_agent_teams_home()
     scheduled_inprocess = spec.dispatch_mode == "scheduled" and spec.spawn_mode == "inprocess"
     if scheduled_inprocess and "enable_fork" not in spec.model_fields_set:
         spec.enable_fork = True

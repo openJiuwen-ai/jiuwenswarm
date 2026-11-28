@@ -3,7 +3,7 @@
 | 项目 | 约定 |
 | --- | --- |
 | 维护范围 | 插件侧声明、AgentServer / Gateway 后端校验、Web 前端校验与渲染 |
-| 最近修订 | 2026-11-21 |
+| 最近修订 | 2026-11-26 |
 | 适用协议 | `webui-tree`，`schema_version=1`；本文件修订不等于自动升级 wire 版本 |
 | 相关设计与验证记录 | [F_01 组件目录与渲染适配](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md) |
 | 相邻行为契约 | [S_01 组件运行与交互](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md) |
@@ -104,9 +104,10 @@ Tabs 隐藏页签的节点也计入整树预算。更小的组件字段限制优
 Panel / Iframe 只能作为允许其使用的槽位的树根。
 `conversation.panel.right` 的根白名单为 Panel / Iframe，二者的 title 同时作为右侧页签名称，可选的 icon 作为页签图标。
 `application.menu.main` 和 `task.function.main` 允许 Iframe 专用根，也允许普通组件树。
-`task.function` 与 `task.function.main` 使用应用作用域，按当前 Web 连接隔离，不携带 `session_id`；
-空对话也可挂载，切换会话不改变实例归属或关闭已打开的任务页面。入口与页面共享包和实例标识。
-切到聊天时，当前应用范围任务页面仅隐藏、保留 iframe；返回同一任务入口不重建页面。
+`application.menu`、`application.menu.main`、`task.function` 与 `task.function.main` 使用应用作用域，按当前 Web 连接隔离，不携带 `session_id`；
+空对话也可挂载，切换会话不重新挂载入口、不改变实例归属或关闭已打开的页面。入口与页面共享包和实例标识。
+在应用作用域槽位的 Handler 中 `ops.session_context` 为 `None`，插件构造 `RenderTarget` 时应传 `session_id=""`（或直接复用 `request.target.session_id`）且不得声明 `scope="session"`；此前按会话作用域编写并强依赖 `ops.session_context` 或显式 `scope="session"` 的 `application.menu` 插件需移除会话依赖并重载/重装。
+切到聊天时，当前应用范围页面仅隐藏、保留实例与 iframe；返回同一入口不重建页面。
 MediaSurface 只能作为 Gateway 槽位 `application.background`、`application.splash` 的树根，这两个槽位也只接受 MediaSurface 根。
 其他挂载位置和作用域见 [catalog/slots.ts](../../../channels/web/frontend/src/features/webui/catalog/slots.ts)、[后端 constants.py](../../webui/constants.py) 与 [F_07 槽位与交互](../features/F_07_ui-contributions.md)。
 槽位容量、页面导航和插件启停由宿主控制。Button.openPanel 仅表达显式点击后的同包、同会话面板打开意图，不绕过槽位声明、实例存在和生命周期校验。
@@ -118,6 +119,8 @@ MediaSurface 只能作为 Gateway 槽位 `application.background`、`application
 显示条件与每次 replace 一起完整替换，省略即移除之前的条件；后端快照、下行预算、失败回滚均包含它。客户端按实例身份保存，不按标题或包内槽位猜测实例。宿主依据该条件控制外层展示：right 对应 Tab，普通槽位对应实例容器；内部组件不感知此条件。隐藏移除容器和浏览上下文，保留运行时实例和后台观测。当前选中项隐藏后回到已有原生页签，重新开启不自动选中，也不改变用户手动关闭页签的状态。设置开关可独立保留，不自动隐藏同包所有贡献。
 
 已隐藏的源或目标不能产生打开面板请求。存储读取失败由实例错误边界呈现，不当作关闭偏好。客户端偏好控制显示统一使用实例级 visible_when；Box 和 Iframe 均不接受 visibleWhen 属性，也不保留组件级显示偏好的别名。Box.visibleFrom 继续按响应式断点控制子树活动状态。
+
+`application.menu.main`、`task.function.main` 与 `conversation.panel.right` 使用 `keep-mounted`，实例存活期内新帧保留仍然匹配的组件。其余槽位默认按新帧重建。非受控初始值通常在组件挂载时生效；Switch、Slider、TreeSelect 的默认值变化时重新初始化，默认值不变时保留本地编辑，新帧中的受控值会重新应用。Iframe 来源或权限变化时重新挂载文档。独立 Input 的跨帧重置条件见 [Input](#44-input)。需要由服务端决定跨帧值时，使用受控属性（例如 Tabs.activeKey）并处理对应事件。
 
 ## 3. 嵌套数据结构
 
@@ -212,16 +215,13 @@ Box 不接受 background、style 或 className 等自定义背景与样式属性
 | `icon` | IconName | 否 | — | 白名单图标名 |
 | `iconPlacement` | `start` / `end` | 否 | — | 图标在文案前或后 |
 | `aria-label` | LocalizedText | 否 | — | 纯图标按钮必需的无障碍名称 |
-| `openPanel` | string（<= 128 UTF-8 字节） | 否 | — | 已接受的点击回执后选中同包、同会话的活动右侧面板实例 |
 | `form` | string，最多 200 UTF-8 字节 | 否 | — | Gateway 页面中同一实例的 Form.name；去空白后非空 |
-| `openPanel` | string，最多 128 UTF-8 字节 | 否 | — | 同包、同会话右侧面板的实例 key |
+| `openPanel` | string，最多 128 UTF-8 字节 | 否 | — | 同包右侧面板的实例 key |
 
 字号显示回退 medium。icon 存在且 value 去空白后为空时，必须提供非空 aria-label；target 只能与 href 一起提供。loading.delay 当前只要求有限数值。支持 ui.click；加载、禁用或断连时不能派发。
 form 引用必须有效；点击时先校验表单，成功后直接发送字段值，失败时展示本地错误并且不发送事件。
 普通按钮始终发送空 data。表单能力不改变 value、type、variant 或无障碍属性的名称。
-openPanel 遵循 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`。只有用户实际点击且 ui.click 返回明确 accepted 回执、源实例仍存活、目标已在 conversation.panel.right 渲染时，当前客户端打开并选中该目标。目标身份从可信源实例派生，不接受其他包或会话。普通 render、失败、未知或迟到的失效交互不得切换页签。显式再次打开可恢复本客户端关闭的插件 Tab；关闭/隐藏释放 iframe 浏览上下文，后台观测不因此停止。
-
-openPanel 仅接受 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`；实例必须已挂载且活动。渲染更新不触发跳转，拒绝回执不跳转。
+`openPanel` 遵循 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`。用户点击且 `ui.click` 返回明确的 `accepted` 回执后，当前客户端可以打开并选中目标，此时源实例和 `conversation.panel.right` 中已渲染的目标都须保持挂载且活动。目标包取自可信源实例。会话范围源使用源实例的会话，application 范围源使用宿主当前会话。没有当前会话、收到普通渲染帧、失败回执、未知回执或交互已失效时，不切换页签。显式再次打开可恢复本客户端关闭的插件 Tab。关闭或隐藏 Tab 会释放 iframe 浏览上下文，后台观测继续运行。
 
 ### 4.4 Input
 
@@ -243,6 +243,10 @@ openPanel 仅接受 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`；实例必须已挂�
 | `autoComplete` | string | 否 | — | Gateway 原生自动填充提示；浏览器可以忽略 off |
 
 初始化 value / defaultValue 和事件值均不得超过 maxLength，长度按 UTF-16 计算。支持 ui.click、ui.change、ui.press_enter；readOnly 仅允许 click。输入法组合期间标识 isComposing，组合提交不重复发送 Enter；未绑定 change 也允许本地编辑。
+
+在保留组件树的槽位中，同一位置的独立 Input 在 `ariaLabel`、`type`、生效的 `defaultValue` 或事件绑定变更时重新初始化。未提供 `value` 时，仅更新 `placeholder` 等展示属性会保留草稿。绑定参数的对象字段顺序不影响判断。由 Form.Item 管理的 Input 使用表单本身的草稿规则。
+
+独立 Input 在输入法组合期间保留正在编辑的文本。组合期间收到的 `value` 不覆盖草稿，组合结束后收到的新帧会应用显式 `value`。同一 `value` 在新帧中重复下发时也会同步到输入框。
 
 ### 4.5 Switch
 
@@ -281,6 +285,10 @@ checked 优先于 defaultChecked。支持 ui.click、ui.change，初始化不派
 | `showSearch` | boolean | 否 | — | 允许搜索 |
 
 options 的 value 非空、唯一且同类型；tags 仅接受字符串，允许创建非空新值。单选 value / defaultValue 为标量或 null，多选 / tags 必须为无重复数组，且不超过 maxCount。未提供 showSearch 时，准备阶段按是否声明 mode 决定。支持 ui.select、ui.change、ui.search、ui.clear，门禁见第 5 章。
+
+Select 默认宽度为 180px，最大宽度为容器的 100%；宿主外观样式可覆盖这两个值。
+
+保留组件树时，新帧中的显式 `value` 会同步到 Select。省略 `value` 时，保留仍符合新帧的选择和有效自定义标签，多选按 `maxCount` 保留靠前的值。原有选择全部失效或数据形态与模式不符时，回退到新帧的 `defaultValue`，未设置时清空。已经清空的同模式选择继续保持为空。应用新帧不派发选择事件。
 
 ### 4.7 TreeSelect
 
@@ -339,7 +347,7 @@ value / 实际 key 在全树非空且唯一，省略 key 时使用 value。准�
 | `destroyOnHidden` | boolean | 否 | `false` | 销毁隐藏页签内容 |
 | `ariaLabel` | string | 否 | — | 无障碍名称 |
 
-items.key 非空且唯一；activeKey / defaultActiveKey 必须存在且未禁用。省略激活值时，适配器选择首个未禁用页签，无可用项则不激活。内容只放 items[].children，包含隐藏内容的整树一起校验和计数。支持 ui.change。
+items.key 非空且唯一；activeKey / defaultActiveKey 必须存在且未禁用。提供 activeKey 时，用户点击派发 ui.change，选中项随服务端帧更新。未提供 activeKey 时，适配器保留仍可用的本地选中项；初始化未指定默认项或当前项被删除、禁用时，回退到首个可用项，无可用项时不激活。应用新帧和自动回退均不派发 ui.change。内容只放 items[].children，包含隐藏内容的整树一起校验和计数。
 
 ### 4.10 Empty
 
@@ -768,7 +776,7 @@ desktop 页面可通过形态协议申请通用窗口过渡。宿主仅提供当
 | 功能 / 槽位 | 页面与宿主入口 | props 变化时关注 |
 | --- | --- | --- |
 | 首次欢迎页：application.entry | [WebUIAppRoot.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIAppRoot.tsx)、[WebUIEntryHost.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIEntryHost.tsx) | Avatar、Card、Button、首次显示与关闭 |
-| 侧栏菜单与用户入口：application.menu、application.sidebar.footer | [SessionSidebar/index.tsx](../../../channels/web/frontend/src/components/SessionSidebar/index.tsx) | 按钮、头像、Dropdown 触发区与菜单 |
+| 侧栏菜单与用户入口：application.menu、application.sidebar.footer | [SessionSidebar/index.tsx](../../../channels/web/frontend/src/components/SessionSidebar/index.tsx) | 应用作用域、按钮、头像、Dropdown 触发区与菜单 |
 | 任务功能入口：task.function | [ConversationSidebar.tsx](../../../channels/web/frontend/src/multi-session/sidebar/ConversationSidebar.tsx) | 入口组件、导航及应用作用域 |
 | 菜单 / 任务主页面：application.menu.main、task.function.main | [App.tsx](../../../channels/web/frontend/src/App.tsx)、[WebUINavigation.tsx](../../../channels/web/frontend/src/features/webui/react/WebUINavigation.tsx)：WebUINavigationHost / WebUIPageHost | 普通树与 Iframe 专用根、页面切换 |
 | 右侧页签：conversation.panel.right | [ToolPanel/index.tsx](../../../channels/web/frontend/src/components/ToolPanel/index.tsx)、[ExpandedPanel.tsx](../../../channels/web/frontend/src/components/teamArea/ExpandedPanel.tsx)、[useWebUIPanels.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPanels.tsx)、[useWebUIPluginPanelTabs.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPluginPanelTabs.tsx)、[WebUIPluginPanelHome.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIPluginPanelHome.tsx) | Panel / Iframe 的 title 与 icon、加号空白页签、选择后原地转插件页、页签关闭与相邻回退、空态、贡献消失裁剪、滚动与隐藏生命周期 |

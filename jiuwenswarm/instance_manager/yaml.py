@@ -28,26 +28,14 @@ logger = logging.getLogger(__name__)
 
 
 def get_instances_yaml_path() -> Path:
-    """Return path to instances.yaml: ~/.jiuwenswarm/infra/instances.yaml.
+    """Return path to instances.yaml: ~/.jiuwenswarm/instances.yaml.
 
     机器级多实例注册表，按 ``JIUWENSWARM_HOME`` 定位，不随实例的
-    ``JIUWENSWARM_DATA_DIR`` 漂移——因此不走 ``get_infra_data_dir()``
+    ``JIUWENSWARM_DATA_DIR`` 漂移——因此不走 ``get_user_workspace_dir()``
     （那会落到当前实例数据根下，破坏注册表的全机唯一性）。
+    profile 方案下该文件保持数据根原位（不迁移、不建软链）。
     """
-    return get_user_home() / ".jiuwenswarm" / "infra" / "instances.yaml"
-
-
-def _legacy_instances_yaml_path(path: Path) -> Path | None:
-    """返回 *path* 对应的分区前注册表路径，无对应时返回 None。
-
-    分区前注册表位于数据根：HOME/.jiuwenswarm/instances.yaml。
-    仅当 *path* 为分区后的规范位置（<root>/infra/instances.yaml）时存在对应关系。
-    """
-
-
-    if path.parent.name != "infra":
-        return None
-    return path.parent.parent / "instances.yaml"
+    return get_user_home() / ".jiuwenswarm" / "instances.yaml"
 
 
 def get_instances_dir() -> Path:
@@ -220,12 +208,9 @@ def load_instances_yaml() -> dict:
     """
     path = get_instances_yaml_path()
     if not path.exists():
-        # 分区迁移期兼容：新位置（infra/）优先，旧位置（数据根平铺）兜底读取；
-        # 写侧固定新位置，首次 update_instances_yaml 即把旧注册表搬运到位。
-        legacy = _legacy_instances_yaml_path(path)
-        if legacy is None or not legacy.exists():
-            return {"instances": {}}
-        path = legacy
+        # 注册表尚不存在（新环境/未创建实例）：返回空注册表。
+        # profile 方案下该文件保持数据根原位，无分区前旧位置需要兜底。
+        return {"instances": {}}
 
     # Read and parse YAML
     data = _read_yaml_file(path)

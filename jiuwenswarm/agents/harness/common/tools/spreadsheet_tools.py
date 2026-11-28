@@ -193,6 +193,18 @@ def _read_csv(path: Path, req: ReadSpreadsheetRequest) -> str:
         return "[CSV file is empty]"
 
     start_idx = max(0, req.start_row - 1)
+    if not paged_rows and start_idx >= total_data_count:
+        if total_data_count == 0:
+            return (
+                f"**File: {path.name} (CSV, header only)**\n\n"
+                f"{_build_markdown_table([header])}\n\n"
+                "[Note: The file has a header row but no data rows.]"
+            )
+        return (
+            f"**File: {path.name} (CSV, {total_data_count} data rows)**\n\n"
+            f"[Note: start_row={req.start_row} is beyond the last data row. "
+            f"The last page starts at start_row={total_data_count}.]"
+        )
     has_more_rows = (start_idx + len(paged_rows)) < total_data_count
     next_start_row = start_idx + len(paged_rows) + 1
 
@@ -217,12 +229,18 @@ def _stream_excel_page(
     ws: Any,
     start_row: int,
     max_rows: int,
-) -> tuple[list[str] | None, list[list[str]], bool]:
-    """Stream non-empty rows from an openpyxl worksheet for the requested page."""
+) -> tuple[list[str] | None, list[list[str]], bool, int | None]:
+    """Stream non-empty rows from an openpyxl worksheet for the requested page.
+
+    Returns the header, the requested page of rows, whether more rows follow the
+    page, and the total data row count when the whole sheet was scanned (``None``
+    when the scan stopped early, so the total is unknown).
+    """
     header: list[str] | None = None
     data_rows: list[list[str]] = []
     has_more_rows = False
     data_row_count = 0
+    total_rows: int | None = None
     target_start = max(1, start_row)
     target_end = target_start + max_rows
 
@@ -238,8 +256,10 @@ def _stream_excel_page(
         elif data_row_count >= target_end:
             has_more_rows = True
             break
+    else:
+        total_rows = data_row_count
 
-    return header, data_rows, has_more_rows
+    return header, data_rows, has_more_rows, total_rows
 
 
 def _format_sheets_nav(sheetnames: list[str], active_sheet_name: str) -> str:
@@ -257,19 +277,34 @@ def _format_excel_output(
     file_name: str,
     sheetnames: list[str],
     active_sheet_name: str,
-    page: tuple[list[str], list[list[str]], bool],
+    page: tuple[list[str], list[list[str]], bool, int | None],
     req: ReadSpreadsheetRequest,
 ) -> str:
     """Format extracted Excel sheet rows and navigation notes into Markdown."""
-    header, data_rows, has_more_rows = page
+    header, data_rows, has_more_rows, total_rows = page
     sheets_nav = _format_sheets_nav(sheetnames, active_sheet_name)
-    table_md = _build_markdown_table([header] + data_rows)
     target_start = max(1, req.start_row)
+    if not data_rows and total_rows == 0:
+        return (
+            f"**File: {file_name} | Sheet: {active_sheet_name} (header only)**\n"
+            f"{sheets_nav}\n\n"
+            f"{_build_markdown_table([header])}\n\n"
+            "[Note: The sheet has a header row but no data rows.]"
+        )
+    if not data_rows and total_rows is not None and target_start > total_rows:
+        return (
+            f"**File: {file_name} | Sheet: {active_sheet_name} ({total_rows} data rows)**\n"
+            f"{sheets_nav}\n\n"
+            f"[Note: start_row={req.start_row} is beyond the last data row. "
+            f"The last page starts at start_row={max(1, total_rows)}.]"
+        )
+    table_md = _build_markdown_table([header] + data_rows)
     next_start_row = target_start + len(data_rows)
     end_row = target_start + len(data_rows) - 1 if data_rows else target_start
+    total_suffix = f" of {total_rows}" if total_rows is not None else ""
     summary = (
         f"**File: {file_name} | Sheet: {active_sheet_name} "
-        f"(Showing rows {target_start}-{end_row})**\n{sheets_nav}"
+        f"(Showing rows {target_start}-{end_row}{total_suffix})**\n{sheets_nav}"
     )
     output = f"{summary}\n\n{table_md}"
 
@@ -306,12 +341,12 @@ def _read_excel(path: Path, req: ReadSpreadsheetRequest) -> str:
                 f"Sheet '{active_sheet_name}' not found. Available sheets: [{sheets_display}]."
             )
 
-        header, data_rows, has_more_rows = _stream_excel_page(
+        page = _stream_excel_page(
             wb[active_sheet_name],
             req.start_row,
             req.max_rows,
         )
-        if header is None:
+        if page[0] is None:
             sheets_nav = _format_sheets_nav(sheetnames, active_sheet_name)
             return f"{sheets_nav}\n\n[Sheet '{active_sheet_name}' is empty]"
 
@@ -319,7 +354,7 @@ def _read_excel(path: Path, req: ReadSpreadsheetRequest) -> str:
             path.name,
             sheetnames,
             active_sheet_name,
-            (header, data_rows, has_more_rows),
+            page,
             req,
         )
     finally:

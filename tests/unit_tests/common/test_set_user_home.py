@@ -5,20 +5,22 @@ from pathlib import Path
 
 import pytest
 
+import jiuwenswarm.common.paths as paths
 import jiuwenswarm.common.utils as utils
 
 
 @pytest.fixture
 def isolated_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     # Every cache the setter touches goes through monkeypatch, so the real values come
-    # back after the test however it ends.
+    # back after the test however it ends. The resolution truth lives in paths
+    # (utils re-exports it), so the caches are patched there.
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
     monkeypatch.delenv("JIUWENSWARM_HOME", raising=False)
     for name in (
         "_user_home", "_workspace_base_dir", "_initialized",
         "_config_dir", "_workspace_dir", "_root_dir",
     ):
-        monkeypatch.setattr(utils, name, getattr(utils, name))
+        monkeypatch.setattr(paths, name, getattr(paths, name))
 
 
 def test_a_second_home_moves_a_workspace_root_already_cached(

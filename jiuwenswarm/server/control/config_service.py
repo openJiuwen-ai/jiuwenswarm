@@ -9,11 +9,15 @@ Write/validate RPCs stay on the Runtime path.
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import Future
+from copy import deepcopy
 import json
 import logging
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +32,78 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.team_goal_config import leader_goal_enabled
 from jiuwenswarm.common.utils import get_config_file, get_env_file
-from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.common.kv_cache_affinity_config import get_affinity_status
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
 
 logger = logging.getLogger(__name__)
+
+_PANEL_READ_LOCK = threading.Lock()
+_PANEL_READS: dict[tuple, Future[dict[str, Any]]] = {}
+
+
+def _panel_read_scope() -> tuple:
+    """Identify concurrent reads by their live inputs and credential ownership."""
+    from jiuwenswarm.enterprise import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    files = []
+    for getter in (get_config_file, get_env_file):
+        path = Path(getter())
+        try:
+            stamp = path.stat()
+            files.append((str(path), stamp.st_mtime_ns, stamp.st_ctime_ns, stamp.st_size, stamp.st_ino))
+        except OSError:
+            files.append((str(path), None))
+    tenant = None
+    if is_enterprise():
+        tenant = (TenantContext.current_tenant_key(), TenantContext.current_triple(),
+                  TenantContext.current_tenant_root(), TenantContext.current_agent_root(),
+                  TenantContext.current_agent_workspace_root())
+    return tuple(files), tuple(sorted(os.environ.items())), tenant
+
+
+def _get_panel_shared() -> dict[str, Any]:
+    """Coalesce in-flight reads only; completed reads never become a snapshot cache."""
+    try:
+        scope = _panel_read_scope()
+    except OSError:
+        return get_panel()
+    with _PANEL_READ_LOCK:
+        pending = _PANEL_READS.get(scope)
+        owner = False
+        if pending is None:
+            owner = True
+            pending = Future()
+            _PANEL_READS[scope] = pending
+    if owner:
+        try:
+            pending.set_result(get_panel())
+        except BaseException as exc:
+            pending.set_exception(exc)
+            raise
+        finally:
+            with _PANEL_READ_LOCK:
+                _PANEL_READS.pop(scope, None)
+    return deepcopy(pending.result())
+
+
+def get_runtime_version() -> str:
+    from jiuwenswarm.common.version import get_runtime_version as resolve
+
+    return resolve()
+
+
+def resolve_symphony_enabled(value: Any) -> bool:
+    from jiuwenswarm.common.symphony_config import resolve_symphony_enabled as resolve
+
+    return resolve(value)
+
+
+def resolve_symphony_evolution_enabled(value: Any) -> bool:
+    from jiuwenswarm.common.symphony_config import resolve_symphony_evolution_enabled as resolve
+
+    return resolve(value)
 
 _CONFIG_SET_ENV_MAP = {
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
@@ -140,7 +210,9 @@ def _read_raw_config() -> dict[str, Any]:
         return {}
     try:
         with path.open("r", encoding="utf-8") as handle:
-            loaded = yaml.safe_load(handle) or {}
+            from jiuwenswarm.common.yaml_utils import safe_yaml_load
+
+            loaded = safe_yaml_load(handle) or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] failed to read config.yaml: %s", exc)
         return {}
@@ -172,6 +244,28 @@ def _bool_text(value: Any, default: bool = False) -> str:
     if value is None:
         return "true" if default else "false"
     return "true" if str(value).strip().lower() in {"true", "1", "yes", "on"} else "false"
+
+
+def _experimental_entry_flags(raw: dict[str, Any]) -> dict[str, str]:
+    """Expose persisted RSI/REA sidebar switches in the browser config payload."""
+    flags: dict[str, str] = {}
+    for key, section_name in (
+        ("rsi_enabled", "rsi"),
+        ("rea_enabled", "rea"),
+    ):
+        section = raw.get(section_name)
+        enabled = section.get("enabled", True) if isinstance(section, dict) else True
+        if isinstance(enabled, bool):
+            flags[key] = "true" if enabled else "false"
+        elif enabled is None:
+            flags[key] = "true"
+        elif isinstance(enabled, (int, float)):
+            flags[key] = "true" if enabled else "false"
+        elif str(enabled).strip().lower() in {"0", "false", "no", "off", ""}:
+            flags[key] = "false"
+        else:
+            flags[key] = "true"
+    return flags
 
 
 def _affinity_enabled(raw: dict[str, Any]) -> bool:
@@ -436,6 +530,7 @@ def get_panel() -> dict[str, Any]:
     payload.update(cua_backend_settings())
     try:
         raw = _read_raw_config()
+        payload.update(_experimental_entry_flags(raw))
         payload.update(flatten_moa_for_config_panel(raw))
         setup_guide_cfg = raw.get("setup_guide") or {}
         payload["setup_guide_enabled"] = _bool_text(
@@ -459,6 +554,9 @@ def get_panel() -> dict[str, Any]:
         )
         ttse_cfg = react_cfg.get("ttse") or {}
         payload["ttse_enabled"] = _bool_text(ttse_cfg.get("enabled"), False)
+        from jiuwenswarm.common.config_panel.memory_config import flatten_memory_config
+
+        payload.update(flatten_memory_config(raw))
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = _bool_text(memory_cfg.get("enabled"), False)
         payload["memory_forbidden_description"] = memory_cfg.get("description") or {}
@@ -537,6 +635,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("permissions_profile", "full_access")
+        payload.setdefault("rsi_enabled", "true")
+        payload.setdefault("rea_enabled", "true")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
         payload.setdefault("ttse_enabled", "false")
@@ -568,13 +668,18 @@ def get_panel() -> dict[str, Any]:
 
 
 async def handle_config_request(request: AgentRequest) -> AgentResponse:
+    """Read control configuration without blocking the Front event loop."""
+    return await asyncio.to_thread(_handle_config_request, request)
+
+
+def _handle_config_request(request: AgentRequest) -> AgentResponse:
     method = request.req_method
     if method == ReqMethod.CONFIG_GET:
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload=get_panel(),
+            payload=_get_panel_shared(),
             metadata=request.metadata,
         )
     raw = _read_raw_config()

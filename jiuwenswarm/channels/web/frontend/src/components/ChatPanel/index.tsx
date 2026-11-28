@@ -1,3 +1,4 @@
+import { humanMemberDeliveries, withArtifactReferences } from '../../features/humanMemberDeliveries';
 /**
  * ChatPanel 组件
  *
@@ -49,11 +50,10 @@ import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { WebUIHost, type WebUIStyleOverrides } from '../../features/webui';
+import { WelcomeHeading, WelcomeMascot } from './WelcomeBrand';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
-import beeFlyingIcon from '../../assets/bee-flying.webp';
-import beeStaticIcon from '../../assets/bee-static.png';
 import homeBanner from '../../assets/home-banner.svg';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import loadSendIcon from '../../assets/load-send.svg';
@@ -68,6 +68,7 @@ import { GoalBar } from '../GoalBar';
 import { HarnessProgressBar } from './HarnessProgressBar';
 import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
 import { isTeamActivityMessage, parseTeamEventMessage } from './teamEventUtils';
+import { stripUploadDocumentBlocks, toQueueContentPreview } from '../../utils/documentMessage';
 import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
 import { writeClipboard } from '../../utils/writeClipboard';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
@@ -398,10 +399,26 @@ function ActiveTeamGroupEntry({
   const teamTasks = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []);
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
+  useEffect(() => {
+    if (!activeSessionId || mode !== 'team') return;
+    const chat = useChatStore.getState();
+    const existing = new Set(chat.runtimes[activeSessionId]?.messages.map(m => m.id));
+    for (const message of humanMemberDeliveries(teamMemberExecutionEvents, teamMembers)) {
+      if (!existing.has(message.id)) chat.addMessage(activeSessionId, message);
+    }
+  }, [activeSessionId, mode, teamMemberExecutionEvents, teamMembers]);
   const activeTeamMessages = useMemo(
     () => getActiveTeamMessages(teamHistoryMessages, messages),
     [teamHistoryMessages, messages],
   );
+  useEffect(() => {
+    if (!activeSessionId || mode !== 'team') return;
+    const chat = useChatStore.getState();
+    for (const message of messages) {
+      const normalized = withArtifactReferences(message);
+      if (normalized !== message) chat.updateMessage(activeSessionId, message.id, normalized);
+    }
+  }, [activeSessionId, mode, messages]);
   const hasVisibleMembers = teamMembers.some(
     (m) => m.member_id && m.member_id !== 'user' && !isTeamLeaderMember(m.member_id),
   );
@@ -515,9 +532,12 @@ export function AgentActivityCard({
       if (mediaItemCount > 0 && !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))) {
         return;
       }
-      setInputValue(sid, content);
+      // Queue rows store agent-facing 【上传文档】 blocks; restore only the query
+      // text (do not invent a filename placeholder into the composer).
+      const editText = stripUploadDocumentBlocks(content);
+      setInputValue(sid, editText);
       removeFromTaskQueue(sid, taskId);
-      window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value: content } }));
+      window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value: editText } }));
     }
   };
 
@@ -660,7 +680,9 @@ export function AgentActivityCard({
                     <img src={lineUpIcon} alt="" className="w-4 h-4" />
                   </div>
                   <span className="team-event-group-row__member" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {message.content}
+                    {toQueueContentPreview(message.content, {
+                      fallbackLabel: t('chatUi.queuedUploadDocument'),
+                    })}
                   </span>
                 </div>
                 <span
@@ -732,7 +754,10 @@ export function AgentActivityCard({
                     className="team-event-group-row__member"
                     style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                   >
-                    {task.content}
+                    {toQueueContentPreview(task.content, {
+                      mediaItems: task.mediaItems,
+                      fallbackLabel: t('chatUi.queuedUploadDocument'),
+                    })}
                   </span>
                   {(task.mediaItems?.length ?? 0) > 0 && (
                     <span
@@ -820,22 +845,6 @@ function getTeamMessageIdentity(message: Message): string {
     event.timestamp || '',
     event.content,
   ].join(':');
-}
-
-function WelcomeHeading() {
-  const { i18n } = useTranslation();
-  const workMode = useWorkspaceStore((state) => state.workMode);
-  const isZh = i18n.language.startsWith('zh');
-  const suffix = workMode === 'design'
-    ? (isZh ? '轻松解决每个设计问题！' : 'solves every design problem!')
-    : (isZh ? '轻松解决工作每个问题！' : 'makes work easier!');
-
-  return (
-    <>
-      <span className="chat-welcome__heading-highlight">WorkSwarm</span>
-      <span>{suffix}</span>
-    </>
-  );
 }
 
 function GroupCreateWelcomeHeading() {
@@ -1135,52 +1144,7 @@ function scrollToBottom(el: HTMLDivElement): void {
   el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
 }
 
-const BEE_ANIMATION_DURATION = 4536;
 const WELCOME_BUBBLE_HIDE_DELAY = 3000;
-
-function BeeBanner({
-  className,
-  altText,
-  onTrigger,
-  onLeave,
-}: {
-  className: string;
-  altText: string;
-  onTrigger: () => void;
-  onLeave: () => void;
-}) {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const handleMouseEnter = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-    }
-    setIsPlaying(true);
-    onTrigger();
-    timerRef.current = setTimeout(() => {
-      setIsPlaying(false);
-      timerRef.current = null;
-    }, BEE_ANIMATION_DURATION);
-  }, [onTrigger]);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  return (
-    <img
-      className={className}
-      src={isPlaying ? beeFlyingIcon : beeStaticIcon}
-      alt={altText}
-      data-testid="chat-panel-welcome-banner"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={onLeave}
-    />
-  );
-}
 
 /**
  * The chat surface stays mounted while the user inspects trajectory data.
@@ -1420,7 +1384,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
     ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = !isEnterprise() && Boolean(onExportShare);
-  const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
+  const shouldShowHumanShare = !isEnterprise() && mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
   const showFreeModelsCampaign = !isEnterprise() && !isAuthorized;
@@ -2352,7 +2316,12 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <span>{sessionProjectName}</span>
               </div>
             )}
-            <WebUIHost slotId="conversation.header.title.after" sessionId={activeSessionId} layout="row" />
+            <WebUIHost
+              slotId="conversation.header.title.after"
+              sessionId={activeSessionId}
+              layout="row"
+              className="chat-panel-header__plugin-title"
+            />
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
             {diagnosisEntryAvailable && onToggleDiagnosis && (
@@ -2372,6 +2341,7 @@ export const ChatPanel = React.memo(function ChatPanel({
               slotId="conversation.header.actions"
               sessionId={activeSessionId}
               layout="row"
+              className="chat-panel-header__plugin-actions"
               instanceClassName="flex min-w-0 items-center gap-2"
               styles={pluginHeaderActionStyles}
             />
@@ -2483,7 +2453,9 @@ export const ChatPanel = React.memo(function ChatPanel({
           <HarnessProgressBar />
         </div>
       )}
-      {humanShareOpen && <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />}
+      {shouldShowHumanShare && humanShareOpen && (
+        <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />
+      )}
       <div
         ref={scrollContainerRef}
         className="chat-scroll flex-1 overflow-y-auto"
@@ -2551,7 +2523,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               )}
               <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
-                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading />}
+                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading workMode={workMode} />}
               </h2>
               <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
                 {!isGroupCreateWelcome && (
@@ -2606,7 +2578,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                         </>
                       )}
                     </div>
-                    <BeeBanner
+                    <WelcomeMascot
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
                       onTrigger={() => {

@@ -2,6 +2,20 @@
 
 A resident Worker keeps Runtime loaded across Front restarts for desktop and ordinary services. The application or service owner controls final shutdown. HarmonyOS defaults to `front_loopback`: its Worker exits when the Front disconnects and does not use resident endpoint election or reattachment. Both modes verify actual process exit at final shutdown.
 
+## Startup and configuration readiness
+
+Front prepares control-plane configuration reads first. The Web application dismisses its loading-config notification after `config.get` succeeds for the current connection and the configuration is applied. Model discovery and execution resources can continue preparing; configuration readiness does not imply Agent execution readiness. Reconnection refreshes the configuration, and a failed read exposes an error and retry action.
+
+After connection, users can open Add model and fill a draft while the existing model list and vendor catalog load. Saving still waits for both to preserve validation, identity, and conflict checks. Background results retain entered fields; initialization failures allow retrying or canceling the draft.
+
+Worker IPC uses v3. The Supervisor validates the HELLO protocol, process birth identity, build identity, and data directory before granting startup permission; old-protocol Workers are not reused directly. Protocol v2 and newer require a verifiable creation timestamp or process start counter. Safe SDK imports can start earlier, while configuration migration, Runtime resource construction, and execution remain gated by startup permission.
+
+Bounded `runtime_prewarm` is enabled by default for one configured profile. It creates no Session and sends no model request. Defaults are a 1-second idle delay, two attempts, and budgets of 10 seconds wall time, 5 seconds process CPU, and 256 MB RSS growth. Foreground activity prevents subsequent background steps. Synchronous imports cannot be forcibly preempted; CPU/RSS budgets are observations that stop subsequent work. Set `runtime_prewarm.enabled: false` to disable prewarm. Measure true cold starts with prewarm disabled and report them separately from product-default results.
+
+Enabling or disabling a Rail extension updates the SDK instances registered by the current Worker's session adapters across channels and projects. Each instance owns its Rail object, and the RPC acknowledges success after those updates complete. With no instance yet, only configuration is saved; future instances load the current setting without creating an Agent or Session for a configuration request. An instance update failure returns an error and can be retried; completed registrations remain idempotent.
+
+## Shutdown, upgrades, and recovery
+
 - In resident mode, a normal Front restart or Supervisor `stop()` detaches and preserves the Worker.
 - In HarmonyOS's default `front_loopback` mode, Supervisor `stop()` shuts down and reaps its attached Worker.
 - Final desktop exit and upgrade stop the Front, then explicitly drain the current deployment's Worker, including a reattached Worker.
@@ -11,7 +25,11 @@ A resident Worker keeps Runtime loaded across Front restarts for desktop and ord
 
 Endpoints are scoped by installation, Python environment, data directory, and runtime profile. HELLO validates code/build identity, installed dependencies, and process creation time. Changed source, dependencies, or native build instances cannot silently reuse old code. Each wheel or native backend build receives a fresh ID, even with identical inputs. Wheels validate contents at build time; startup reads the artifact manifest and observes installed dependencies. Source checkouts continue content validation.
 
+When a HarmonyOS sandbox denies access to global `/proc/stat`, the Worker and Supervisor can validate process identity using the start counter in `/proc/<pid>/stat`, transmitted separately from the creation timestamp. If neither source is readable, startup fails with a HELLO log containing the PID, stage, and traceback. Cleanup also refuses to terminate an unverified target based on its PID alone.
+
 Successful shutdown requires a successful acknowledgement and observed PID exit. Forced termination, missing acknowledgements, and negative acknowledgements report failure. Install helpers also require this update attempt's successful shutdown receipt before replacing backend files. Legacy peers without acknowledgement support use verified process exit as their compatibility condition.
+
+On macOS, both native desktop builds and wheel installations may observe clock drift when retiring an older Worker that reports only a wall-clock creation time. Shutdown may proceed over the existing Unix socket if the kernel reports the same peer PID and the usual deployment, user, executable, and socket checks pass.
 
 Instances sharing a data directory retain distinct endpoint and deployment identities through `JIUWENSWARM_RUNTIME_INSTANCE` (preferred) or `HOSTNAME`. Stop commands must retain that instance's environment. Historical Workers owned by another instance are left running.
 
@@ -69,8 +87,38 @@ The 90-second budget applies to transport recovery, not normal execution time. C
 
 If both IPC send and close fail, Front retains the original recovery waiters. A failed recovery subscription retires that connection before all preserved streams resume. Service stop cleans up waiters and background tasks even when IPC close raises.
 
+## Process identity
+
+IPC protocol 2 HELLO messages must include a valid creation timestamp or process start counter. Missing or null values for both fields reject the handshake. Protocol 1 retains compatibility with missing birth fields and still requires OS ownership checks. Timestamps and start counters retain separate units; booleans and nonpositive values are invalid.
+
+Debug service state and new DingTalk OAuth PID records retain an OS process identity, including start counters on restricted systems. An unreadable identity remains unknown: debug stop refuses the signal, and OAuth cancellation reports incomplete cleanup while retaining pending state and credentials. Legacy timestamp records remain readable where their identity can be verified.
+
+When debug service identity cannot be verified, an explicit `--legacy-worker-pid` can still enter independent Worker ownership validation and cleanup. No signal is sent to the unverified Front, debug state is retained, and a nonzero exit code reports that overall service shutdown remains unconfirmed. If OAuth timeout cleanup fails during identity revalidation or exit waiting, status queries return `authorization_cleanup_failed`, retain pending records and credentials, and do not write an `expired` exit marker. Later queries continue to check the process state.
+
+develop also sends the optional native `process_started` marker to tolerate clock-correction differences between observers. If that API is unavailable, the marker is null and valid ticks remain usable. It cannot replace the creation time or ticks required by protocol 2, or relax legacy timestamp identity checks. Comparable ticks still take priority.
+
 ## Worker output logs
 
-Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
+For both resident and `front_loopback` Workers, stdout inherits the launching process's output, while stderr is appended directly to a separate `runtime-worker-<UUID>[-<owner>].stderr.log` for each launch. Set `JIUWEN_WORKER_LOG_DIR` before starting the application or Supervisor to select its directory. If unset or empty, logs use `worker-logs` under the parent of the current Worker's socket path. A custom socket path therefore changes the default log directory; `front_loopback` also uses the supplied socket path to select this default. This setting does not change the IPC endpoint.
+
+Use an absolute path for `JIUWEN_WORKER_LOG_DIR` where possible. Relative paths are resolved against the Supervisor's current working directory.
 
 The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.
+
+The same directory contains `latest-worker-error.log`, recording the most recent Worker's error diagnostics with its PID, exception type, message, and traceback. Before spawning a new Worker, the Supervisor attempts to remove the previous diagnostic and passes its path through the internal `JIUWEN_WORKER_DIAGNOSTIC_PATH` environment variable, which normally needs no manual configuration. This file is not a permanent per-Worker archive.
+
+Workers using the same log directory share this fixed diagnostic file: starting a new Worker may clear another Worker's diagnostics, and concurrent writes may interleave. Use a separate log directory for each instance when diagnostic isolation is needed. Each launch's separate stderr file remains available for troubleshooting.
+
+The Worker records top-level exceptions, HELLO failures, and ERROR logs, including unhandled asyncio task exceptions. HELLO failure diagnostics are persisted before closing IPC so that the parent can read them when cleanup starts; ordinary ERROR logs retain background writing. Diagnostic write failures do not replace the original exception. When Worker startup fails, the Supervisor reports the diagnostic path and at most the final 16 KiB while reaping the child. Missing or unreadable diagnostics report their unavailability. Ordinary stderr remains in its original file.
+
+Worker stderr reuses the application logging limits: rotate at 20 MiB and retain at most 20 archives. A Worker-owned background thread checks every five seconds, copies the output into archives, and truncates the original file without replacing its descriptor. A resident Worker continues rotation after its Front exits. Archives are named `runtime-worker-<UUID>[-<owner>].stderr_<UTC-date>_<UTC-time>_<nanoseconds>.log`, with a strictly increasing per-Worker suffix and each at most 20 MiB. Chunk boundaries preserve complete UTF-8 characters. Bursts spanning multiple chunks produce multiple archives. Older output is dropped beyond the full archive budget, retaining at most the most recent 400 MiB. The active file can temporarily exceed the threshold between checks.
+
+The Worker maintenance thread cleans up historical files on its first run and every 60 seconds. Front startup does not wait for a directory scan:
+
+- Worker outputs confirmed closed and their completed archives share a limit of the newest 20 eligible files and 400 MiB.
+- `supervisor-<PID>-<timestamp>.txt` snapshots separately retain the newest 20 files and at most 400 MiB.
+- Temporary archives left by interrupted rotation are removed once confirmed closed and past the 60-second protection period, preserving their complete source log.
+- New Linux/macOS base filenames include an ownership token. Linux derives it from the kernel boot UUID, PID/user namespaces, namespace init start time, and effective UID; macOS uses the kernel boot-session UUID and effective UID. POSIX cleanup requires a matching local token and a complete local handle scan before deleting a base log or temporary archive. It retains foreign tokens, legacy files without tokens, and files whose ownership cannot be established, including logs from previous boots or namespaces; these files remain outside the cleanup budget. A local scan or an old modification time cannot prove that a remote Pod has closed its file. Completed archives remain eligible regardless of their token.
+- Files modified within the last 60 seconds are temporarily protected. Windows probes file delete sharing to protect inherited stderr handles without enumerating system processes. POSIX matches numeric real, effective, and saved UIDs before inspecting open files, so unresolved usernames and inaccessible files in other users' processes do not block cleanup. If process ownership or handles remain inaccessible, or the scan exceeds two seconds, base logs are retained with a warning; a partial scan is never treated as proof of closure. Completed archives can still be pruned. Archives that cannot be deleted while open in a viewer are retried later without blocking active-file rotation.
+
+Copy/truncate follows the application logger's existing policy; writes concurrent with the interval between the copied snapshot and truncation can be lost. Maintenance runs outside the business event loop, failures produce warnings, and shutdown waits at most 0.2 seconds for the maintenance thread. When a configured stderr file cannot be validated at startup, rotation stays disabled and emits a warning; missing parent configuration remains an expected silent skip. Limits reuse `_LOG_FILE_MAX_BYTES` and `_LOG_FILE_BACKUP_COUNT` in `common/utils.py`; no `config.yaml` option is added.

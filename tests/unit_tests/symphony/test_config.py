@@ -12,6 +12,9 @@ from jiuwenswarm.common import symphony_config
 
 def test_product_defaults_are_explicit_and_preserve_core_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(symphony_config, "get_agent_workspace_dir", lambda: tmp_path)
+    # 默认 artifact_root 经 paths.get_symphony_dir() 派生（= agent workspace
+    # 下 symphony/），函数内局部 import，patch 需覆盖 paths 层
+    monkeypatch.setattr("jiuwenswarm.common.paths.get_agent_workspace_dir", lambda: tmp_path)
     cfg = symphony_config.symphony_config_from_dict({})
     assert isinstance(cfg, SymphonyConfig)
     assert [source.model_dump() for source in cfg.capability.sources] == [
@@ -317,7 +320,7 @@ def test_documented_symphony_yaml_examples_use_current_contract(path):
         assert config.storage.artifact_root.endswith("symphony/runtime")
 
 
-def test_dependency_and_container_defaults_pin_the_same_core_commit():
+def test_dependency_defaults_pin_the_same_core_commit():
     import tomllib
     root = Path(__file__).resolve().parents[3]
     project = tomllib.loads((root / "pyproject.toml").read_text())
@@ -332,7 +335,3 @@ def test_dependency_and_container_defaults_pin_the_same_core_commit():
     assert all(f'{pin["git"]}@{pin["rev"]}' in item for item in direct_core)
     package = next(package for package in lock["package"] if package["name"] == "openjiuwen")
     assert package["source"]["git"] == f'{pin["git"]}?rev={pin["rev"]}#{pin["rev"]}'
-    for dockerfile in ("docker/Dockerfile.claw", "docker/openshift/Dockerfile.claw"):
-        source = (root / dockerfile).read_text()
-        assert f'ARG AGENT_CORE_REPOS={pin["git"]}' in source
-        assert f'ARG AGENT_CORE_COMMIT={pin["rev"]}' in source

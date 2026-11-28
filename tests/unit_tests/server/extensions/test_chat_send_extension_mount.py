@@ -143,7 +143,7 @@ class TestChatSendParamsAndMcpUnion:
         assert iface.compute_chat_send_mcp_needed({"query": "hi", "mcp": ["x"]}) == ["x"]
         assert iface.compute_chat_send_mcp_needed({"query": "hi"}) == []
 
-    def test_restore_chat_equipment_params_from_session_metadata(
+    async def test_restore_chat_equipment_params_from_session_metadata(
         self, extension_workspace
     ) -> None:
         from jiuwenswarm.server.runtime.session import session_metadata
@@ -157,7 +157,7 @@ class TestChatSendParamsAndMcpUnion:
         )
         params = {"query": "continue"}
 
-        iface.restore_chat_send_equipment_params("saved-session", params)
+        await iface.restore_chat_send_equipment_params("saved-session", params)
 
         assert params == {
             "query": "continue",
