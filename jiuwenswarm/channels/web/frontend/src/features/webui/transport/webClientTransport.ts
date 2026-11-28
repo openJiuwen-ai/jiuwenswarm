@@ -44,12 +44,14 @@ export function mapWebClientState(state: string): WebUIConnectionState {
 const PACKAGE_NOTICE_DEDUPE_MS = 1000;
 const recentPackageNotices = new Map<string, number>();
 
-function uniquePackageIds(ids: string[]): string[] {
+function uniquePackageIds(ids: string[], sessionId?: string): string[] {
   const now = Date.now();
+  const scopeKey = sessionId ?? null;
   return ids.filter((id) => {
-    const previous = recentPackageNotices.get(id) ?? 0;
+    const key = JSON.stringify([scopeKey, id]);
+    const previous = recentPackageNotices.get(key) ?? 0;
     if (now - previous < PACKAGE_NOTICE_DEDUPE_MS) return false;
-    recentPackageNotices.set(id, now);
+    recentPackageNotices.set(key, now);
     return true;
   });
 }
@@ -78,11 +80,11 @@ export function createWebClientTransport(client: WebUIClientLike, capabilities?:
       const offPackagesChanged = client.on('extensions.v2.installed', (event) => {
         const ids = event.payload.package_ids;
         if (Array.isArray(ids) && ids.length <= 128 && ids.every((id) => typeof id === 'string' && id.length <= 128)) {
-          const sessionId = event.payload.session_id;
-          const unique = uniquePackageIds(ids);
+          const sessionId = typeof event.payload.session_id === 'string' ? event.payload.session_id : undefined;
+          const unique = uniquePackageIds(ids, sessionId);
           prunePackageNotices();
           if (unique.length > 0) {
-            handlers.onPackagesChanged?.(unique, typeof sessionId === 'string' ? sessionId : undefined);
+            handlers.onPackagesChanged?.(unique, sessionId);
           }
         }
       });
