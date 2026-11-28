@@ -326,6 +326,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     channel_context = (
         envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
     )
+    # W3C trace 上下文随请求头透传，链路追踪在 Agent 侧续接同一 trace。
+    for w3c_key in ("traceparent", "tracestate"):
+        w3c_value = channel_context.get(w3c_key)
+        if w3c_value:
+            headers[w3c_key] = str(w3c_value)
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext

@@ -2110,6 +2110,8 @@ class CronSchedulerService:
                     user_id=str(getattr(job, "user_id", None) or "").strip() or None,
                     metadata={
                         "cron": {"job_id": job.id, "run_id": run_id},
+                        # cron 无外部请求头，身份在此显式带上，链路追踪按用户归属。
+                        "user_id": str(getattr(job, "user_id", None) or "").strip(),
                         "service_id": self._service_id,
                         "agent_id": self._agent_id,
                         "routing": {

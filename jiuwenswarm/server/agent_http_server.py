@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import uuid
+from contextvars import ContextVar
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_STATUS_FAILED
@@ -374,9 +375,36 @@ def _build_channel_context(
     from jiuwenswarm.common.request_identity import apply_routing_metadata
 
     channel_context = apply_routing_metadata({}, routing)
+    # W3C trace 上下文从请求头并入 channel_context，链路追踪在 Agent 侧
+    # 续接上游 trace；缺失时保持原样，不影响无追踪的调用方。
+    for key, value in (_W3C_HEADER_CONTEXT.get() or {}).items():
+        channel_context.setdefault(key, value)
     if not request_ext:
         return channel_context
     return attach_to_metadata(channel_context, ext=request_ext) or {}
+
+
+# 请求入口捕获的 W3C trace 头（traceparent/tracestate），请求生命周期内有效。
+# default 用 None 而非共享可变 dict：ContextVar 的 default 会被所有 task 读到，
+# 可变共享对象一旦被原地修改会全局污染；读取方统一 ``or {}`` 判空。
+_W3C_PROPAGATION_KEYS = ("traceparent", "tracestate")
+_W3C_HEADER_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "jiuwenswarm_http_w3c_headers", default=None
+)
+
+
+def capture_w3c_headers(headers: Any) -> None:
+    """从 HTTP 请求头捕获 W3C trace 上下文（best-effort，不阻断请求）。"""
+    try:
+        values = {
+            key: str(headers.get(key))
+            for key in _W3C_PROPAGATION_KEYS
+            if headers.get(key)
+        }
+        _W3C_HEADER_CONTEXT.set(values)
+    except Exception as error:
+        logger.debug("[AgentHTTPServer] capture w3c headers failed: %s", error)
+        return
 
 
 def build_agent_request(
