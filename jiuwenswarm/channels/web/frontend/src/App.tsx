@@ -2312,6 +2312,44 @@ function AppContent({
             setThinking(targetSessionId, false);
           }
         }
+        // Team 模式：服务端权威 idle，本地前台仍 busy 时强制灭灯。
+        // 终态 chat.processing_status 丢帧或被历史加载吞掉时，侧栏会一直转圈、
+        // 输入框停在「集群模式处理中」；team 又不用 chat.final 兜底灭灯。
+        // 回放中的 execution recovery 仍交给 cursor 回放，避免抢跑。
+        //
+        // 故意不要求 allowDowngrade：主修复是「终态已丢、本地仍 busy」，往往不是
+        // 断线重连后的首个快照；套上 mayDowngrade 会把旁路废掉。
+        // 但仍复用 turnRevision 匹配与 cron 乐观宽限，避免滞后快照压掉新轮次 /
+        // 误灭 cron「任务执行」提示。
+        const sessionMode = useSessionStore.getState().getRuntime(targetSessionId)?.mode;
+        const snapshotMatchesCurrentTurn =
+          (runtime?.turnRevision ?? 0) === snapshotTurnRevision;
+        const keepCronOptimistic = shouldKeepLocalCronProcessing(
+          targetSessionId,
+          session.is_processing,
+          localProcessing,
+          {
+            hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
+            authoritativeIdle:
+              session.organization_owner_stopped === true
+              || isOrganizationOwnerStopped(targetSessionId),
+          },
+        );
+        if (
+          isTeamAgentMode(sessionMode)
+          && session.is_processing === false
+          && locallyBusy
+          && !recoveringExecution
+          && snapshotMatchesCurrentTurn
+          && !keepCronOptimistic
+        ) {
+          setProcessing(targetSessionId, false);
+          setThinking(targetSessionId, false);
+          useWorkspaceStore.getState().patchSession(targetSessionId, {
+            is_processing: false,
+            updated_at: new Date().toISOString(),
+          });
+        }
       }
       if (session.session_equipment && typeof session.session_equipment === 'object') {
         restoreSessionEquipment(targetSessionId, session.session_equipment);
