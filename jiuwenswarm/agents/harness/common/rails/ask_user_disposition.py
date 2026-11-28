@@ -39,7 +39,6 @@ __all__ = [
     "LEGACY_MARKERS",
     "normalize_disposition_text",
     "is_skipped_or_cancelled",
-    "display_key_for_disposition_text",
 ]
 
 
@@ -84,21 +83,3 @@ def is_skipped_or_cancelled(text: str | None) -> bool:
         if marker in value:
             return True
     return False
-
-
-def display_key_for_disposition_text(text: str | None) -> Disposition | None:
-    """Map wire/history text to a display disposition for UI remap."""
-    value = (text or "").strip()
-    if not value:
-        return None
-    if value == SKIPPED or value in LEGACY_SKIPPED or SKIPPED in value:
-        return "skipped"
-    if value == CANCELLED or value in LEGACY_CANCELLED or CANCELLED in value:
-        return "cancelled"
-    for marker in LEGACY_SKIPPED:
-        if marker in value:
-            return "skipped"
-    for marker in LEGACY_CANCELLED:
-        if marker in value:
-            return "cancelled"
-    return None

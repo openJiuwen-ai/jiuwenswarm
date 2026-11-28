@@ -168,6 +168,7 @@ generated: true
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 | [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 | [B_20261128_1414_call-goal-ui-language](jiuwenswarm/common/B_20261128_1414_call-goal-ui-language.md) | B | call_goal 副标题语言与 UI preferred_language 不一致 | wangxin | 无独立 D：在既有 call_goal schema 注入与 preferred_language 请求契约上的局部缺陷修复，不新增架构方案。 |
+| [B_20261128_1816_ask-user-disposition-sentinel](jiuwenswarm/agents/harness/common/B_20261128_1816_ask-user-disposition-sentinel.md) | B | ask_user Skip/Cancel 改为语言无关 disposition 哨兵 | whds5279 | 无独立 D：无独立 D；对既有 ask_user 答案协议做语言解耦：Skip/Cancel 从写入中英固定文案改为 disposition 字段 + 裸哨兵，legacy 短语仅识别兼容。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-recommendation"></a>
 

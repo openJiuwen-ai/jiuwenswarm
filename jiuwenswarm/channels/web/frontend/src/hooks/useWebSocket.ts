@@ -2994,9 +2994,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             answers[0]?.custom_input?.trim()
             || answers[0]?.selected_options.join(', ').trim()
             || '';
-          // 取消/跳过：发显式 skip。优先 disposition，其次裸哨兵 / legacy 全文。
+          // 取消/跳过：发显式 skip。与 answerText 同口径，只看 answers[0]
+          // （多题部分跳过不得把整轮放大成 skip）。
           const isSkipOrCancelAnswer =
-            answers.some((a) => isAskUserSkipOrCancelDisposition(a.disposition))
+            isAskUserSkipOrCancelDisposition(answers[0]?.disposition)
             || isAskUserSkipOrCancelText(answerText);
           if (!answerText || isSkipOrCancelAnswer) {
             try {
