@@ -149,6 +149,13 @@ export const systemPluginApi = {
     throwReportFailure(result, 'INSTALL_FAILED');
   },
 
+  async inspectImportPath(path: string): Promise<string | null> {
+    const payload = (await readPluginState('extensions.v2.import', { path, inspect: true })) as {
+      package_id?: string;
+    } | null;
+    return payload?.package_id ?? null;
+  },
+
   async importPath(path: string): Promise<void> {
     const result = (await webRequest(
       'extensions.v2.import',
