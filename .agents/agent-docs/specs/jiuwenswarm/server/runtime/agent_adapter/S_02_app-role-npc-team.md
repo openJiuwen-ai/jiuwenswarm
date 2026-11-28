@@ -16,6 +16,7 @@ modules:
 files:
   - gateway/channel_manager/web/web_connect.py
   - jiuwenswarm/runtime/app_role.py
+  - jiuwenswarm/runtime/service.py
   - jiuwenswarm/server/runtime/agent_adapter/interface_app_role.py
   - jiuwenswarm/runtime/session_provisioner.py
   - jiuwenswarm/server/runtime/session/session_metadata.py
@@ -36,6 +37,8 @@ files:
 NPC 会话在创建时固定 `npc_session:true`，在创建响应、会话元数据和列表中对外提供。所有 `app_role` 会话自动具备标识，已有同 profile 的会话读取时同样识别。使用默认执行配置的角色可在创建时显式传入该字段。会话分叉保留标识。
 
 Swarm Web/Electron 聊天页显示 NPC 标识和只读历史。当前前端通过 WebSocket 和 HTTP 发送对话时携带 `chat_surface:"swarm"`，Runtime 拒绝这类请求向 NPC 会话发送消息，并返回 `NPC_SESSION_READ_ONLY`。该标记用于识别发送入口，缺少标记的客户端仍走原有接口。Team 的空输入订阅继续用于只读观察。
+
+原生 NPC Team 的空 `chat.send` 订阅携带 `attach_only:true`，且无正文或附件。Runtime 使用已保存的会话模式和工作模式订阅事件。历史会话缺少工作模式时，从已保存的会话模式推断。旧客户端传入 `mode:"team"` 时也沿用此规则。真实对话继续使用创建响应中的固定模式。
 
 ## 能力边界
 
