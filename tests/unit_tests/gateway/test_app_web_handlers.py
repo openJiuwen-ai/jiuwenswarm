@@ -28,6 +28,7 @@ from agent_gateway.channel_manager.web.app_web_handlers import (
     _validate_wechat_numeric_params,
 )
 from agent_gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.cron.scheduler import CronSchedulerService
 from agent_gateway.heartbeat import HeartbeatServiceUnavailableError
 from agent_gateway.runtime.cron import factory as _cron_factory_module
 
@@ -690,6 +691,63 @@ async def test_cron_job_run_now_accepts_matching_owner_with_dict_job() -> None:
     assert cron.get_kwargs["project_id"] is None
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["run_id"] == "run-1"
+
+
+def _previous_run_active_guard_available() -> bool:
+    """Whether the pinned agent-gateway already carries the JW-77 run-now guard.
+
+    The guard (scheduler active-run check plus the channel-layer
+    accepted/reason passthrough) lands in the agent-gateway repo and reaches
+    this repo only through the ``pyproject.toml`` pin rev. While the pin still
+    points at a pre-guard rev these regressions would fail deterministically
+    on a bare checkout, so they are skipped until the pin moves (fail-closed:
+    a partially landed guard still fails the assertions below).
+    """
+    return hasattr(CronSchedulerService, "_find_active_run")
+
+
+_JW77_GUARD_SKIP = pytest.mark.skipif(
+    not _previous_run_active_guard_available(),
+    reason="JW-77 run-now guard lives in agent-gateway; pending the pyproject pin rev bump",
+)
+
+
+@pytest.mark.asyncio
+@_JW77_GUARD_SKIP
+async def test_cron_job_run_now_reports_rejected_guard_as_ok_payload() -> None:
+    """JW-77: previous_run_active rejection is a successful RPC with a reason.
+
+    The scheduler refusing a parallel run is a caller-visible outcome, not a
+    server fault: the response stays ok=True and carries
+    ``accepted=False, reason="previous_run_active"`` so the panel can show
+    "task is already running" instead of a generic error.
+    """
+    channel = FakeWebChannel()
+
+    class _RejectedCronController(_DictOwnedCronController):
+        async def run_now_info(self, job_id):
+            self.run_now_calls += 1
+            return {
+                "accepted": False,
+                "run_id": "run-active",
+                "session_id": "sess-active",
+                "reason": "previous_run_active",
+            }
+
+    cron = _RejectedCronController()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, cron_controller=cron))
+
+    await channel.methods["cron.job.run_now"](
+        object(), "req-cron-run", {"id": "cron-dict-owner"}, None, "user-owner"
+    )
+
+    assert cron.run_now_calls == 1
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"]["accepted"] is False
+    assert response["payload"]["reason"] == "previous_run_active"
+    assert response["payload"]["run_id"] == "run-active"
+    assert response["payload"]["session_id"] == "sess-active"
 
 
 @pytest.mark.asyncio

@@ -838,7 +838,21 @@ async function _handleRun(ctx: CommandContext, parts: string[]): Promise<void> {
   }
 
   try {
-    const payload = await ctx.request("cron.job.run_now", { id: jobId }) as { run_id: string };
+    const payload = await ctx.request("cron.job.run_now", { id: jobId }) as {
+      accepted?: boolean;
+      run_id: string;
+      reason?: string;
+    };
+    if (payload.accepted === false) {
+      ctx.addItem(
+        addInfo(
+          ctx.sessionId,
+          `Cron job ${jobId} is already running; this run-now request was ignored`,
+          "clock",
+        ),
+      );
+      return;
+    }
     ctx.addItem(
       addInfo(ctx.sessionId, `Triggered cron job: ${jobId} (run_id: ${payload.run_id})`, "clock"),
     );

@@ -56,4 +56,22 @@ for (const cronExpr of ["0 0 9 ? * 7 *", "0 9 * * 7"]) {
   assert.match(items[0].content, /Invalid target channel: "xiaoyi"/);
 }
 
+// 上一轮还在跑时 Gateway 返回 accepted=false：不能提示「已触发」。
+{
+  const { ctx, items, requests } = makeContext();
+  ctx.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === "cron.job.run_now") {
+      return { accepted: false, run_id: "job-1:1793070000", reason: "previous_run_active" };
+    }
+    throw new Error(`unexpected request: ${method}`);
+  };
+  await command.action(ctx, "run job-1");
+  const run = requests.find((request) => request.method === "cron.job.run_now");
+  assert.equal(run?.params.id, "job-1");
+  assert.equal(items.at(-1)?.kind, "info");
+  assert.match(items.at(-1)?.content, /already running/);
+  assert.doesNotMatch(items.at(-1)?.content, /Triggered/);
+}
+
 console.log("cron-command tests passed");
