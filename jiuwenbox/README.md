@@ -125,16 +125,16 @@ sudo ./run_docker.sh
 
 ### Lite container image
 
-For `runtime: lite`, use the dedicated image. The default image is unchanged;
-`docker/Dockerfile.lite` adds the `bubblewrap` toolchain and installs Python
-dependencies into a venv, so commands work inside the container without manual
+For `runtime: lite`, use the standard image built by `docker/Dockerfile`: it
+already includes the `bubblewrap` toolchain and installs Python dependencies
+system-wide, so Lite commands work inside the container without manual
 dependency-path fixes.
 
 Build it from the `jiuwenbox` directory:
 
 ```bash
 cd jiuwenswarm/jiuwenbox
-docker build -f docker/Dockerfile.lite -t jiuwenbox:lite .
+docker build -t jiuwenbox:lite .
 ```
 
 This adapter requires the enclio engine from !11101. Until !11101 is merged

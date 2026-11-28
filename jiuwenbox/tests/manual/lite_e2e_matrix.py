@@ -11,7 +11,7 @@ Three layers behind one entry point:
 * **http** — drives a live jiuwenbox over HTTP and runs the functional matrix
   (mounts, seccomp, capability, network modes, isolated egress, cgroup, run
   lifecycle, policy gates, concurrency, file API, I/O limits).
-* **container** — builds the repo's ``docker/Dockerfile.lite`` and runs the chapter-6
+* **container** — builds the repo's ``docker/Dockerfile`` and runs the chapter-6
   HTTP matrix inside it, so the same assertions cover the containerized form;
   adds bwrap flag probing, the non-root case, a host-directory bind across the
   container boundary, and cleanup after the container is removed. Needs docker
@@ -44,7 +44,7 @@ Usage::
     E2E_BASE=http://127.0.0.1:8323 PYTHONPATH=src .venv/bin/python \\
         tests/manual/lite_e2e_matrix.py --http-only
 
-    # container layer only: build docker/Dockerfile.lite and verify inside a container
+    # container layer only: build docker/Dockerfile and verify inside a container
     PYTHONPATH=src .venv/bin/python tests/manual/lite_e2e_matrix.py --container
 
     # same layer under a docker-explicit alias; --dry-run only prints the
@@ -112,7 +112,7 @@ BACKING_ROOT = os.environ.get(
 WS_ROOT = os.path.join(BACKING_ROOT, "workspaces")
 STATE_DIR = os.path.expanduser("~/.jiuwenbox/sandboxes")
 
-# Container layer: the repo's own docker/Dockerfile.lite, a throwaway server container
+# Container layer: the repo's own docker/Dockerfile, a throwaway server container
 # and a host directory bind-mounted into both the container and the sandbox.
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCKER = shutil.which("docker")
@@ -1077,7 +1077,7 @@ def ct_internal_harness():
 
 
 def ct_bwrap(extra=()):
-    """Run bwrap inside a throwaway container built from docker/Dockerfile.lite."""
+    """Run bwrap inside a throwaway container built from docker/Dockerfile."""
     # bwrap is spawned as a child of jiuwenbox's supervisor in the real
     # deployment, never as container PID 1 (where writing the userns uid_map
     # is denied). Mirror that by running it under sh -c.
@@ -1176,7 +1176,7 @@ def ct_plan():
         shlex.join(["docker", "info", "--format", "{{.ServerVersion}}"]),
         shlex.join(["docker", "image", "inspect", img]),
         shlex.join(["docker", "build", "-f",
-                    os.path.join(REPO_DIR, "docker", "Dockerfile.lite"), "-t", img, "."])
+                    os.path.join(REPO_DIR, "docker", "Dockerfile"), "-t", img, "."])
         + "    # only when the image is missing",
         shlex.join(["docker", "run", "--rm", *CT_FLAGS, img, "sh", "-c", bwrap])
         + "    # relaxed LSM/systempaths, no added capability",
@@ -1240,7 +1240,7 @@ def case_container(dry_run=False):
     if rc != 0 or label != CT_SOURCE:
         emit(f"BUILD {CT_IMAGE} source={CT_SOURCE} (missing or stale)")
         rc, cout = docker(
-            "build", "-f", os.path.join(REPO_DIR, "docker", "Dockerfile.lite"),
+            "build", "-f", os.path.join(REPO_DIR, "docker", "Dockerfile"),
             "-t", CT_IMAGE, "--label", f"jiuwenbox.source={CT_SOURCE}",
             ".", timeout=2400, cwd=REPO_DIR,
         )

@@ -115,15 +115,15 @@ sudo ./run_docker.sh
 
 ### Lite 容器镜像
 
-使用 `runtime: lite` 时，推荐使用专用镜像。默认镜像保持不变；
-`docker/Dockerfile.lite` 额外内置 `bubblewrap`，并将 Python 依赖安装在独立
-venv 中，容器内无需手工修复依赖路径即可执行命令。
+使用 `runtime: lite` 时，直接使用 `docker/Dockerfile` 构建的标准镜像即可：该镜像
+已内置 `bubblewrap`，并将 Python 依赖安装到系统环境，容器内无需手工修复依赖路径
+即可执行命令。
 
 从 `jiuwenbox` 目录构建：
 
 ```bash
 cd jiuwenswarm/jiuwenbox
-docker build -f docker/Dockerfile.lite -t jiuwenbox:lite .
+docker build -t jiuwenbox:lite .
 ```
 
 本适配层依赖 !11101 提供的 enclio 引擎。在 !11101 合入 `develop` 前，请在
