@@ -4959,8 +4959,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // goal 为对象时只走上面的快照；Heartbeat 已在上面收口。适配层对没有
         // goal 的失败会带上 goal: null，那条才是普通对话。
         if (goal !== undefined && goal !== null) return;
+        const runtime = failedSessionId ? useChatStore.getState().getRuntime(failedSessionId) : undefined;
+        if (
+          payload.execution_id && runtime?.activeExecutionId &&
+          payload.execution_id !== runtime.activeExecutionId
+        ) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        if (shouldDropDuplicatedEvent('execution.error', payload)) return;
         const errorMsg =
           typeof payload.message === 'string' && payload.message.trim()
             ? payload.message

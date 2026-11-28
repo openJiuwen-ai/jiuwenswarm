@@ -351,6 +351,42 @@ test('MoA status events stay transient, isolate executions and clear after termi
   }
 });
 
+test('duplicate execution.error adds only one conversation error', async (context) => {
+  const c = await mount(context);
+  try {
+    const error = { request_id: 'original', execution_id: 'execution-A', message: 'round failed' };
+    c.receive('execution.error', error);
+    const messages = c.runtime().messages;
+    assert.ok(messages.some(message => message.role === 'system' && message.content.includes(error.message)));
+    c.receive('execution.error', error);
+    assert.equal(c.runtime().messages, messages);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('late execution.error leaves the current conversation running', async (context) => {
+  const c = await mount(context);
+  try {
+    act(() => c.store.setThinking(c.sid, true));
+    const before = c.runtime();
+    assert.equal(before.activeExecutionId, 'execution-A');
+    assert.equal(before.isProcessing, true);
+    assert.ok(before.currentStreamId);
+    c.receive('execution.error', {
+      request_id: 'old-request', execution_id: 'old-execution', message: 'old round failed',
+    });
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().isThinking, true);
+    assert.equal(c.runtime().currentStreamId, before.currentStreamId);
+    assert.equal(c.runtime().activeExecutionId, before.activeExecutionId);
+    assert.equal(c.runtime().messages, before.messages);
+    assert.equal(c.runtime().executionError, before.executionError);
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('MoA terminal-first events stay closed and only a new execution reopens cleared hints', async (context) => {
   const c = await mount(context);
   try {
