@@ -8,7 +8,7 @@ import time
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit, urlunsplit
@@ -143,6 +143,24 @@ def is_newer_distribution_version(candidate: str, current: str) -> bool:
     if candidate_date == 0 or current_date == 0:
         return False
     return candidate_date > current_date
+
+
+def is_newer_runtime_version_label(candidate_label: str, previous_label: str) -> bool:
+    """Order application version stamps, including dated builds of the same release."""
+    from packaging.version import Version
+
+    candidate, _, candidate_day = candidate_label.partition(" · ")
+    previous, _, previous_day = previous_label.partition(" · ")
+    try:
+        candidate_release = Version(strip_build_suffix(candidate))
+        previous_release = Version(strip_build_suffix(previous))
+        if candidate_release != previous_release:
+            return candidate_release > previous_release
+        candidate_build = build_date_suffix(candidate) or int(date.fromisoformat(candidate_day).strftime("%Y%m%d"))
+        previous_build = build_date_suffix(previous) or int(date.fromisoformat(previous_day).strftime("%Y%m%d"))
+    except ValueError:
+        return False
+    return candidate_build > previous_build
 
 
 def release_sort_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
@@ -750,7 +768,7 @@ class PyPIVersionSource(VersionSource):
         try:
             with urlopen(req, timeout=self._timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
-        except (HTTPError, URLError, json.JSONDecodeError):
+        except (URLError, json.JSONDecodeError):
             return self._fetch_simple_html()
 
     def _fetch_simple_html(self) -> Any:
