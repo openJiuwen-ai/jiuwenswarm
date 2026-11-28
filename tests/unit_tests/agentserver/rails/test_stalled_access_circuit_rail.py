@@ -359,3 +359,168 @@ async def test_tool_call_arguments_fallback() -> None:
     await rail.after_tool_call(ctx)
 
     ctx.request_force_finish.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_write_file_content_mentioning_login_data_is_not_a_probe() -> None:
+    # OA.05000090 回归：备份脚本的排除清单里出现 Login Data / Cookies 是正文，
+    # 不是“要读取凭证”。旧实现按全参数扁平文本匹配，连续 3 次写盘即熔断。
+    rail = StalledAccessCircuitRail(auth_threshold=99, probe_threshold=3)
+    result = {"content": "written"}
+    ctx = _ctx(
+        result,
+        {
+            "file_path": r"D:\数据迁移\04_脚本\_源_每日增量备份.txt",
+            "content": (
+                "$排除文件 = @('*.tmp','.env','*.cookie','device-fingerprint.json',"
+                "'Cookies','Cookies-journal','Login Data','Login Data For Account',"
+                "'Local State','Web Data','*.key','*.pem')"
+            ),
+        },
+        tool_name="write_file",
+    )
+    await rail.before_invoke(ctx)
+
+    for _ in range(5):
+        await rail.after_tool_call(ctx)
+        ctx.request_force_finish.assert_not_called()
+        assert ctx.inputs.tool_result is result
+        assert ctx.inputs.tool_msg.content == ""
+
+    assert rail._probe_at == []
+
+
+@pytest.mark.asyncio
+async def test_edit_file_body_mentioning_credentials_is_not_a_probe() -> None:
+    rail = StalledAccessCircuitRail(auth_threshold=99, probe_threshold=1)
+    ctx = _ctx(
+        {"content": "ok"},
+        {
+            "file_path": r"D:\数据迁移\云电脑迁移与数据管理交付文档.md",
+            "old_string": "旧章节",
+            "new_string": "已排除：Cookies、Login Data、Local State、Web Data",
+        },
+        tool_name="edit_file",
+    )
+    await rail.before_invoke(ctx)
+
+    await rail.after_tool_call(ctx)
+
+    ctx.request_force_finish.assert_not_called()
+    assert not str(ctx.inputs.tool_result).startswith("[ERROR]:")
+    assert rail._probe_at == []
+
+
+@pytest.mark.asyncio
+async def test_write_file_to_credential_path_still_counts() -> None:
+    # 写盘类仅按路径取证：真的往凭证库路径写，仍要拦。
+    rail = StalledAccessCircuitRail(auth_threshold=99, probe_threshold=3)
+    ctx = _ctx(
+        {"content": "ok"},
+        {
+            "file_path": (
+                r"C:\Users\x\AppData\Local\Google\Chrome\User Data\Default\Login Data"
+            ),
+            "content": "hello",
+        },
+        tool_name="write_file",
+    )
+    await rail.before_invoke(ctx)
+
+    await rail.after_tool_call(ctx)
+
+    ctx.request_force_finish.assert_not_called()
+    assert str(ctx.inputs.tool_result).startswith("[ERROR]:")
+    assert len(rail._probe_at) == 1
+
+
+@pytest.mark.asyncio
+async def test_login_database_filename_is_not_a_credential_probe() -> None:
+    rail = StalledAccessCircuitRail(auth_threshold=99, probe_threshold=1)
+    ctx = _ctx(
+        {"content": "ok"},
+        {"command": "type D:/notes/Login Database.txt"},
+        tool_name="bash",
+    )
+    await rail.before_invoke(ctx)
+
+    await rail.after_tool_call(ctx)
+
+    ctx.request_force_finish.assert_not_called()
+    assert rail._probe_at == []
+
+
+@pytest.mark.asyncio
+async def test_login_data_txt_filename_is_not_a_credential_probe() -> None:
+    rail = StalledAccessCircuitRail(auth_threshold=99, probe_threshold=1)
+    ctx = _ctx(
+        {"content": "ok"},
+        {"command": "type D:/notes/Login Data.txt"},
+        tool_name="bash",
+    )
+    await rail.before_invoke(ctx)
+
+    await rail.after_tool_call(ctx)
+
+    ctx.request_force_finish.assert_not_called()
+    assert rail._probe_at == []
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    ["-journal", "-wal", "-shm", ".bak"],
+)
+@pytest.mark.asyncio
+async def test_login_data_sidecar_files_still_count(sidecar: str) -> None:
+    # 检视意见：Login Data-journal / -wal / -shm 是同一凭证库的落盘页，.bak 是
+    # 复制件；旧正则按子串命中，右边界不能把它们排除掉。
+    rail = StalledAccessCircuitRail(auth_threshold=99, probe_threshold=3)
+    ctx = _ctx(
+        {"content": "ok"},
+        {
+            "command": (
+                'Copy-Item "$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\'
+                f'Default\\Login Data{sidecar}" .'
+            )
+        },
+        tool_name="bash",
+    )
+    await rail.before_invoke(ctx)
+
+    await rail.after_tool_call(ctx)
+
+    ctx.request_force_finish.assert_not_called()
+    assert str(ctx.inputs.tool_result).startswith("[ERROR]:")
+    assert len(rail._probe_at) == 1
+
+
+@pytest.mark.asyncio
+async def test_auth_force_finish_carries_structured_code() -> None:
+    # 宿主按 payload.code 分流；缺码会落进 unknown / OA.05000090。
+    rail = StalledAccessCircuitRail(auth_threshold=1, probe_threshold=99)
+    ctx = _ctx({"content": "HTTP 401 AUTH_SESSION_TERMINATED"})
+    await rail.before_invoke(ctx)
+
+    await rail.after_tool_call(ctx)
+
+    payload = ctx.request_force_finish.call_args[0][0]
+    assert payload["result_type"] == "error"
+    assert payload["code"] == "CREDENTIAL_GUARD_AUTH_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_probe_force_finish_carries_structured_code() -> None:
+    rail = StalledAccessCircuitRail(auth_threshold=99, probe_threshold=1)
+    ctx = _ctx(
+        {"content": "ok"},
+        {"command": "OfficeAceServiceHost.exe --mode dpapi-unprotect"},
+    )
+    await rail.before_invoke(ctx)
+
+    for _ in range(2):
+        ctx.inputs.tool_result = {"content": "raw"}
+        await rail.after_tool_call(ctx)
+
+    payload = ctx.request_force_finish.call_args[0][0]
+    assert payload["result_type"] == "answer"
+    assert payload["code"] == "CREDENTIAL_GUARD_BLOCKED"
