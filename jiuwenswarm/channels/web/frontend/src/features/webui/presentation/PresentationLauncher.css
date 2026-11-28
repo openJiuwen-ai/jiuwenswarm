@@ -1,0 +1,94 @@
+.webui-presentation-launcher {
+  position: fixed;
+  bottom: 18px;
+  right: 24px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 320px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  -webkit-app-region: no-drag;
+  touch-action: none;
+  cursor: grab;
+}
+.webui-presentation-launcher--align-start {
+  align-items: flex-start;
+}
+.webui-presentation-launcher--dragging,
+.webui-presentation-launcher--dragging .webui-presentation-launcher__button,
+.webui-presentation-launcher--dragging .webui-presentation-launcher__button:disabled {
+  cursor: grabbing;
+  user-select: none;
+}
+.webui-presentation-launcher__pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.webui-presentation-launcher__button {
+  border: 1px solid var(--color-border-default);
+  border-radius: 24px;
+  padding: 10px 18px;
+  background: var(--color-surface-elevated);
+  color: var(--color-text-primary);
+  box-shadow: var(--effect-shadow-sm);
+  cursor: pointer;
+}
+.webui-presentation-launcher__button:hover {
+  background: var(--color-surface-hover);
+}
+.webui-presentation-launcher__button:disabled {
+  opacity: .5;
+  pointer-events: none;
+}
+.webui-presentation-launcher__button:focus-visible {
+  outline: 2px solid var(--color-text-link);
+  outline-offset: 3px;
+}
+.webui-presentation-launcher__close {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--effect-shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.9);
+  transition: opacity var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+.webui-presentation-launcher__close:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-hover);
+}
+.webui-presentation-launcher__close button:focus-visible {
+  outline: 2px solid var(--color-text-link);
+  outline-offset: 2px;
+  border-radius: var(--radius-full);
+}
+.webui-presentation-launcher:not(.webui-presentation-launcher--dragging):hover .webui-presentation-launcher__close,
+.webui-presentation-launcher:not(.webui-presentation-launcher--dragging):focus-within .webui-presentation-launcher__close {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+.webui-presentation-launcher--dragging .webui-presentation-launcher__close {
+  opacity: 0;
+  pointer-events: none;
+}
+@media (hover: none), (pointer: coarse) {
+  .webui-presentation-launcher__close {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scale(1);
+  }
+}

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useWorkspaceStore } from '../../../stores/index.ts';
 import { WebUIHost } from '../react/WebUIHost.tsx';
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/DropdownMenu/DropdownMenu.tsx';
 import { PresentationHostContext, type PresentationDeclaration } from './hostContext.ts';
+import { PresentationLauncher } from './PresentationLauncher.tsx';
+import '../renderer/adapters/webuiApplicationSurface/WebUIApplicationSurface.css';
 import { presentationConversations } from './conversations.ts';
 import { selectConversationModel } from '../../../multi-session/state/modelSelectionActions.ts';
 import { createPresentationReplyReader } from './reply.ts';
@@ -85,7 +86,6 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
   const autoStartAttempts = useRef(new Map<string, PresentationDeclaration>());
   const manualCandidates = useMemo(() => [...available.values()]
     .filter((item) => !item.autoStart), [available]);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [opening, setOpening] = useState(false);
   const starting = useRef(false);
   const runtime = useWebUIRuntime();
@@ -458,29 +458,24 @@ function ConnectedApplicationPresentationHost(props: ApplicationPresentationHost
     void api.update(declaration.key, { state: snapshot }).catch(() => setNotice(t('webuiPresentation.updateFailed')));
   }, [snapshot, t, clearActive, closeSurface]);
 
+  const handleClearNotice = useCallback(() => setNotice(''), []);
+  const handleActivateManual = useCallback((declaration: PresentationDeclaration) => {
+    setNotice('');
+    void port.activate(declaration).catch(() => setNotice(words.current('webuiPresentation.openFailed')));
+  }, [port]);
+
   return (
     <PresentationHostContext.Provider value={port}>
       <WebUIHost slotId={PRESENTATION_SLOT} />
       <PresentationOverlay controller={overlay} />
-      {manualCandidates.length ? <div className="webui-presentation-launcher" data-testid="webui-presentation-launcher">
-        <DropdownMenu open={menuOpen} onOpenChange={(open) => { setMenuOpen(open); if (open) setNotice(''); }}>
-          <DropdownMenuTrigger asChild><button type="button" className="webui-presentation-launcher__button"
-            data-testid="webui-presentation-open" disabled={!props.connected || opening
-              || (!desktopApi && !manualCandidates.some((item) => item.mode === 'overlay'))}>
-            {opening ? t('webuiPresentation.opening') : t('webuiPresentation.choose')}
-          </button></DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {manualCandidates.map((declaration) => <DropdownMenuItem key={declaration.key}
-              disabled={declaration.mode !== 'overlay' && !desktopApi}
-              onSelect={() => {
-                setNotice('');
-                void port.activate(declaration).catch(() => setNotice(t('webuiPresentation.openFailed')));
-              }}>{declaration.title}</DropdownMenuItem>)}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {!desktopApi && manualCandidates.some((item) => item.mode !== 'overlay')
-          ? <span>{t('webuiPresentation.desktopRequired')}</span> : null}
-      </div> : null}
+      <PresentationLauncher
+        connected={props.connected}
+        opening={opening}
+        desktopAvailable={!!desktopApi}
+        candidates={manualCandidates}
+        onActivate={handleActivateManual}
+        onMenuOpen={handleClearNotice}
+      />
       {notice ? <div role="status" className="webui-presentation-notice" data-testid="webui-presentation-notice">{notice}</div> : null}
     </PresentationHostContext.Provider>
   );
