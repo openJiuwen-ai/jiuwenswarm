@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
+
+from jiuwenswarm.common.stage_timer import async_stage
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session import lifecycle as lc
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
@@ -1682,6 +1684,7 @@ def _build_context_messages_from_history(
     return filtered_messages, skipped
 
 
+@async_stage("context_warmup")
 async def warmup_session_context(
     *,
     deep_agent: "DeepAgent",
@@ -1728,7 +1731,7 @@ async def warmup_session_context(
 
         bind_context_checkpoint(context_engine, live_session)
     existing_context = context_engine.get_context(session_id=session_id)
-    if existing_context is not None and not refresh_existing:
+    if existing_context is not None and existing_context.get_messages() and not refresh_existing:
         # 内存上下文已存在（进程未重启 / 已 warmup / rewind 重建过）
         return True
 
@@ -1753,7 +1756,9 @@ async def warmup_session_context(
 
     async with admit_context_recovery(session_id):
         existing_context = context_engine.get_context(session_id=session_id)
-        if existing_context is not None and not refresh_existing:
+        # Initialization may publish an empty SDK context before disk recovery.
+        # Its existence alone does not mean the saved conversation was restored.
+        if existing_context is not None and existing_context.get_messages() and not refresh_existing:
             return True
         # Another owner may have published a checkpoint while this request waited.
         if callable(get_state) and await restore_checkpoint_context(

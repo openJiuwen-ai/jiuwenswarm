@@ -208,6 +208,9 @@ datas += collect_data_files(
     include_py_files=False,
     includes=["cacert.pem"],
 )
+# First-use extraction loads defaults and fallback language stoplists from disk.
+datas += collect_data_files("trafilatura", include_py_files=False)
+datas += collect_data_files("justext", include_py_files=False, includes=["stoplists/*.txt"])
 # Runtime consumers read these sidecars directly from their module directories.
 for _relative in (
     "channels/process_cli/protocol/schema.json",
@@ -308,6 +311,10 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.tools",
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
+    # Management providers are selected by an explicit import_module registry.
+    "jiuwenswarm.server.management",
+    # Attachment exports resolve through __getattr__; Worker startup uses watch.
+    "jiuwenswarm.server.client_attachments",
     "jiuwenswarm.agents.swarm",
     "jiuwenswarm.server.client_attachments",
     # An app template's rail file imports its rail (jiuwenswarm.office.rails) at load time.
@@ -315,7 +322,7 @@ for lazy_package in (
 ):
     lazy_runtime_submodules += collect_submodules(lazy_package)
 
-hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
     "jiuwenswarm.channels.cli.extension",  # Shared extension command in frozen subprocesses.
     "jiuwenswarm.common.extension_cli",
     # Installed Gateway packages import WebUI ops outside the entry point graph.
@@ -366,6 +373,12 @@ excludes = [
     "tkinter",
     "scipy",
     "numpy.tests",
+    # Build-time CFFI helpers must not pull setuptools and its startup rthook
+    # into every Front/Worker/MCP process. Runtime CFFI wheels stay collected.
+    "setuptools",
+    "_distutils_hack",
+    "distutils",
+    "pkg_resources",
     # External CLI SDKs and their native executables are optional runtimes.
     # Frozen Windows builds install verified wheels under the application directory on demand.
     # Other platforms keep their managed optional runtimes in the user data directory.
@@ -438,11 +451,20 @@ _exe_dir = os.path.dirname(sys.executable) if sys.executable else None
 if _exe_dir:
     _scripts_subdir = "Scripts" if sys.platform == "win32" else "bin"
     _ruff_candidates.append(os.path.join(_exe_dir, _scripts_subdir, "ruff" + _ruff_suffix))
+# Inherited site-packages can provide ruff while its executable lives in the
+# base environment's Scripts/bin. Resolve that installed package's own binary.
+try:
+    from ruff import find_ruff_bin as _find_ruff_bin
+    _ruff_candidates.append(_find_ruff_bin())
+except (ImportError, FileNotFoundError):
+    pass
+_ruff_bundled = False
 for _c in _ruff_candidates:
     if _c and os.path.isfile(_c):
         _bundled_binaries.append((_c, "."))
+        _ruff_bundled = True
         break
-if not _bundled_binaries:
+if not _ruff_bundled:
     print("WARNING: ruff binary not found in venv; auto-harness lint will be "
           "unavailable in the frozen exe (install ruff in the build venv)")
 

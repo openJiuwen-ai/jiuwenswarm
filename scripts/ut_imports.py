@@ -26,7 +26,7 @@ def mirrored_tests(path: str) -> set[str]:
         return set()
     source = Path(path.removeprefix(SOURCE_ROOT))
     names = (f'test_{source.name}', f'{source.stem}_test.py')
-    candidates = (str(Path(UNIT_ROOT) / source.parent / name) for name in names)
+    candidates = ((Path(UNIT_ROOT) / source.parent / name).as_posix() for name in names)
     return {candidate for candidate in candidates if is_unit_test(candidate)}
 
 
@@ -37,7 +37,10 @@ def normalize_ut_paths(selected: set[str]) -> list[str]:
         unsafe_path = not path.startswith(f'{UNIT_ROOT}/') or any(ord(char) < 32 for char in path)
         if unsafe_path or not candidate.exists() or not candidate.resolve().is_relative_to(root):
             raise ValueError(f'invalid or missing UT path {path!r}')
-    return sorted(path for path in selected if not any(str(parent) in selected for parent in Path(path).parents))
+    return sorted(
+        path for path in selected
+        if not any(parent.as_posix() in selected for parent in Path(path).parents)
+    )
 
 
 def worker_groups(rules: dict) -> dict[str, list[str]]:
@@ -60,7 +63,10 @@ def worker_groups(rules: dict) -> dict[str, list[str]]:
 
 def include_worker_peers(selected: set[str], groups: dict[str, list[str]]) -> None:
     for files in groups.values():
-        if any(path in selected or any(str(parent) in selected for parent in Path(path).parents) for path in files):
+        if any(
+            path in selected or any(parent.as_posix() in selected for parent in Path(path).parents)
+            for path in files
+        ):
             selected.update(files)
 
 

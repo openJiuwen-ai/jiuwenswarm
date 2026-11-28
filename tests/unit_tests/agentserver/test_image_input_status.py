@@ -189,6 +189,40 @@ def test_steer_forces_path_prompt_without_changing_primary_model_capability(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reader", ["read_file", "visual_question_answering"])
+@pytest.mark.parametrize("language, prefix, hint, question", [
+    ("cn", _CN_CONTEXT_PREFIX, "对 mediaItems 中的每一项", "阅读附带的图片，并据此继续当前任务。"),
+    ("en", _EN_CONTEXT_PREFIX, "For every entry in mediaItems",
+     "Read the attached images and use them to continue the current task."),
+])
+async def test_steer_preparation_uses_runtime_language(
+    monkeypatch, reader, language, prefix, hint, question,
+):
+    from jiuwenswarm.server.runtime.attachments import steer_images
+
+    media_items = [{"path": "C:/tmp/sample.png", "mime_type": "image/png"}]
+    monkeypatch.setattr(steer_images, "resolve_steer_image_references", lambda *_args: media_items)
+    adapter = Adapter.__new__(Adapter)
+    monkeypatch.setattr(adapter, "_select_steer_image_tool", lambda: reader)
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: language)
+    request = _request()
+    request.params["query"] = ""
+    inputs = {"query": ""}
+
+    updated, resolved = await adapter._prepare_steer_image_inputs(request, inputs)
+
+    assert prefix in updated["query"]
+    context = json.loads(updated["query"].split(prefix, 1)[1])
+    assert context["question"] == question
+    assert hint in context["toolHint"]
+    assert f"{reader}(" in context["toolHint"]
+    assert context["mediaPath"] == media_items[0]["path"]
+    assert resolved == media_items
+    assert "_multimodal_image_files" not in updated
+    assert inputs == {"query": ""}
+
+
+@pytest.mark.asyncio
 async def test_existing_core_timeout_stays_unknown_and_recovery_enables_images():
     probe = image_modality_probe
     probe.reset_image_support_cache()

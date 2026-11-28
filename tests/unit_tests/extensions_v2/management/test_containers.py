@@ -1015,30 +1015,32 @@ async def test_pending_standalone_newer_version_takes_over_a_bundle_member(
 ) -> None:
     monkeypatch.setattr(containers, "_retry_timeout", lambda: 5.0)
     manager = await _manager(tmp_path, monkeypatch)
-    store = ExtensionInstallState.for_install_dir(manager.install_dir)
-    await containers.install_sources(
-        manager, store, [_build_bundle_version(tmp_path / "bundle", "1.0.0")], origin="user",
-    )
-    standalone = _write_member(
-        tmp_path / "standalone", "demo.base", "agentserver",
-        requires=[("demo.dep", ">=1.0.0")], version="1.0.1",
-    )
-    await containers.install_sources(manager, store, [standalone], origin="user")
-    assert store.get("demo.base", "1.0.1").status == "pending"
+    try:
+        store = ExtensionInstallState.for_install_dir(manager.install_dir)
+        await containers.install_sources(
+            manager, store, [_build_bundle_version(tmp_path / "bundle", "1.0.0")], origin="user",
+        )
+        standalone = _write_member(
+            tmp_path / "standalone", "demo.base", "agentserver",
+            requires=[("demo.dep", ">=1.0.0")], version="1.0.1",
+        )
+        await containers.install_sources(manager, store, [standalone], origin="user")
+        assert store.get("demo.base", "1.0.1").status == "pending"
+        retry = containers._RETRY_TASKS["single:demo.base@1.0.1"]
 
-    await containers.install_sources(
-        manager, store, [_write_member(tmp_path / "dep", "demo.dep", "agentserver")], origin="user",
-    )
-    claim = None
-    for _ in range(60):
-        await asyncio.sleep(0.1)
+        await containers.install_sources(
+            manager, store, [_write_member(tmp_path / "dep", "demo.dep", "agentserver")], origin="user",
+        )
+        # A new active claim precedes the old member's final projection. Await
+        # the whole retry, including that write, rather than an intermediate state.
+        await asyncio.wait_for(asyncio.shield(retry), timeout=6.0)
         claim = store.active_instance("demo.base")
-        if claim is not None and claim.kind == "standalone":
-            break
-
-    assert claim is not None and claim.kind == "standalone" and claim.version == "1.0.1"
-    member = _member(store, "demo.bundle", "1.0.0", "demo.base")
-    assert member is not None and member.status == "standby" and member.active is False
+        assert claim is not None and claim.kind == "standalone" and claim.version == "1.0.1"
+        member = _member(store, "demo.bundle", "1.0.0", "demo.base")
+        assert member is not None and member.status == "standby" and member.active is False
+        assert [record.version for record in manager.active_packages() if record.package_id == "demo.base"] == ["1.0.1"]
+    finally:
+        await manager.shutdown()
 
 
 @pytest.mark.asyncio

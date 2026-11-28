@@ -12,7 +12,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from openjiuwen.core.sys_operation.cwd import _cwd_state, init_cwd
 
 from jiuwenswarm.agents.harness.common.tools.archive_tools import (
     _format_size,
@@ -22,13 +21,11 @@ from jiuwenswarm.agents.harness.common.tools.archive_tools import (
 
 
 @pytest.fixture(autouse=True)
-def archive_workspace(tmp_path: Path):
-    token = _cwd_state.set(None)
-    try:
-        init_cwd(str(tmp_path), workspace=str(tmp_path))
-        yield
-    finally:
-        _cwd_state.reset(token)
+def archive_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep extraction inside this test's workspace, regardless of prior SDK state."""
+    monkeypatch.setattr(
+        "openjiuwen.core.sys_operation.cwd.get_workspace", lambda: str(tmp_path),
+    )
 
 
 def _create_sample_zip(tmp_path: Path) -> Path:
@@ -241,6 +238,7 @@ async def test_extract_archive_workspace_boundary(tmp_path: Path) -> None:
         })
         assert "[ERROR]: extract_archive failed:" in result
         assert "outside runtime workspace" in result
+        assert not outside_dir.exists()
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from e2a.wire_codec import parse_agent_server_wire_unary
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
@@ -79,6 +81,29 @@ async def test_management_methods_return_wire_result(host, method):
         method, method.split(".")[1]
     )
     assert getattr(host._group_service, name).call_args.kwargs["user_id"] == "owner"
+
+
+@pytest.mark.asyncio
+async def test_member_remove_routes_to_service_and_colleague_canceller(host):
+    canceller = AsyncMock()
+    host._jiuwenmate_web = SimpleNamespace(cancel_swarmchat_member=canceller)
+    ws = SimpleNamespace(send=AsyncMock())
+
+    handled = await dispatch_group_request(
+        host, ws,
+        request("group.member.remove", group_id="group-one", member_name="writer"),
+        asyncio.Lock(),
+    )
+
+    assert handled
+    host._group_service.remove_member.assert_awaited_once_with(
+        "group-one", {"group_id": "group-one", "member_name": "writer"},
+        user_id="owner", channel_id="web", request_id="request",
+        colleague_canceller=canceller,
+    )
+    response = parse_agent_server_wire_unary(json.loads(ws.send.await_args.args[0]))
+    assert response.ok
+    assert response.payload["event_type"] == "group.member.removed"
 
 
 @pytest.mark.asyncio

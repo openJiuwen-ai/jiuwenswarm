@@ -73,7 +73,10 @@ from jiuwenswarm.server.runtime.session.session_history import (
     resolve_final_record_timestamp,
 )
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
-from jiuwenswarm.server.utils.stream_utils import normalize_occupancy_rate, parse_stream_chunk
+from jiuwenswarm.server.utils.stream_utils import (
+    decode_stream_chunk as parse_stream_chunk,
+    normalize_occupancy_rate,
+)
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.extensions_v2.event_types.context_usage import (
@@ -6324,7 +6327,9 @@ async def _consume_stream_with_query(
             # control events stay because _is_leader_output returns True.
             # NPC Team sessions need every member's final speech, so they skip
             # the teammate filter entirely.
-            parsed = await run_stream_parser(parse_stream_chunk, chunk)
+            parsed = await run_stream_parser(
+                parse_stream_chunk, chunk, projection_parent_session_id=session_id,
+            )
             if getattr(chunk, "type", None) in ("context.usage", "llm_call_end"):
                 context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
                 leader_usage.observe(

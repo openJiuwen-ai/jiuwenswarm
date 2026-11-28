@@ -17,6 +17,11 @@ from jiuwenswarm.server.runtime.mcp import registry as registry_mod
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
+from jiuwenswarm.server.management import authorization as owner_authorization
+from jiuwenswarm.server.management import commands as owner_commands
+from jiuwenswarm.server.handlers import mcp as owner_mcp
+from jiuwenswarm.server.worker import execution_host as owner_execution_host
+
 
 class FakeWebSocket:
     def __init__(self):
@@ -159,12 +164,12 @@ async def test_internal_jiuwenbox_bootstrap_persists_enabled(
 
     monkeypatch.setattr(agent_ws_server_module.sys, "platform", "darwin" if outcome == "darwin" else "linux")
     monkeypatch.setattr(
-        agent_ws_server_module,
+        owner_execution_host,
         "get_sandbox_startup_mode_explicit",
         lambda: "external" if outcome == "external" else "internal",
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        owner_execution_host,
         "get_sandbox_endpoint",
         lambda: {
             "url": "http://sandbox.invalid:8321",
@@ -173,17 +178,17 @@ async def test_internal_jiuwenbox_bootstrap_persists_enabled(
         },
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        owner_execution_host,
         "resolve_sandbox_policy_path",
         lambda _path: policy_path,
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        owner_execution_host,
         "update_sandbox_endpoint",
         lambda *args, **kwargs: endpoint_updates.append((args, kwargs)),
     )
     monkeypatch.setattr(
-        agent_ws_server_module,
+        owner_execution_host,
         "update_sandbox_runtime",
         persist_runtime,
     )
@@ -975,7 +980,8 @@ async def test_handle_command_model_add_model(server, fake_ws):
 @pytest.mark.asyncio
 async def test_handle_command_mcp_list(server, fake_ws, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.get_mcp_servers",
+        owner_mcp,
+        "get_mcp_servers",
         lambda: [{"name": "demo", "transport": "stdio", "enabled": True, "env": {"TOKEN": "abc"}}],
     )
     request = AgentRequest(
@@ -1002,10 +1008,11 @@ async def test_handle_command_mcp_list(server, fake_ws, monkeypatch):
 @pytest.mark.asyncio
 async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (payload, True),
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     # Mock pre-check so it does not attempt a real MCP connection.
     async def _pre_check_ok(_payload):
@@ -1064,10 +1071,11 @@ async def test_handle_command_mcp_add_probe_fails_rolls_back(server, fake_ws, mo
     """add with a failing live-probe must roll back to "registered" and NOT
     reload — an unreachable MCP must never be persisted as "connected"."""
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (payload, True),
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     async def _pre_check_ok(_payload):
         return True, "pre-check ok"
@@ -1128,7 +1136,8 @@ async def test_handle_command_mcp_add_unchanged_skips_probe(server, fake_ws, mon
     "connecting" or run the live probe — the record keeps "connected" and no
     reload/probe runs."""
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.get_mcp_server_config",
+        owner_mcp,
+        "get_mcp_server_config",
         # old_item carries internal fields (server_id_scope) that
         # _normalize_mcp_payload never emits — the diff must strip them,
         # else a state.json MCP always looks "changed" and gets probed.
@@ -1144,8 +1153,8 @@ async def test_handle_command_mcp_add_unchanged_skips_probe(server, fake_ws, mon
         upsert_calls.append((payload.get("name"), state))
         return payload, False
 
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.upsert_mcp_server", _upsert)
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "upsert_mcp_server", _upsert)
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     # Bypass the real HTTP pre-check so the unchanged-re-add path is reached.
     async def _pre_check_ok(_payload):
@@ -1194,19 +1203,22 @@ async def test_handle_command_mcp_update_config_yaml_skips_probe(server, fake_ws
     (and its state.json-only rollback) must be skipped — else a probe failure
     rolls back to nothing and leaves the broken config.yaml entry in place."""
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.get_mcp_server_config",
+        owner_mcp,
+        "get_mcp_server_config",
         lambda name: {"name": name, "enabled": True, "transport": "sse", "url": "http://old:9000/sse"},
     )
     # Pretend the MCP is legacy stock living in config.yaml.
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.get_config_yaml_mcp_servers",
+        owner_mcp,
+        "get_config_yaml_mcp_servers",
         lambda: [{"name": "demo", "enabled": True, "transport": "sse", "url": "http://old:9000/sse"}],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (payload, False),
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     async def _pre_check_ok(_payload):
         return True, "pre-check ok"
@@ -1253,7 +1265,7 @@ async def test_handle_command_mcp_enable_not_found(server, fake_ws, monkeypatch)
     def _raise_not_found(_name, _enabled):
         raise KeyError("MCP server 'demo' not found")
 
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.set_mcp_server_enabled", _raise_not_found)
+    monkeypatch.setattr(owner_mcp, "set_mcp_server_enabled", _raise_not_found)
     request = AgentRequest(
         request_id="req-mcp-enable",
         channel_id="tui",
@@ -1274,10 +1286,11 @@ async def test_handle_command_mcp_enable_not_found(server, fake_ws, monkeypatch)
 @pytest.mark.asyncio
 async def test_handle_command_mcp_remove(server, fake_ws, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.remove_mcp_server",
+        owner_mcp,
+        "remove_mcp_server",
         lambda name: {"name": name, "enabled": True, "transport": "sse", "url": "http://127.0.0.1:9000/sse"},
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     async def _reload(_config, _env):
         return None
@@ -1308,14 +1321,16 @@ async def test_handle_command_mcp_remove(server, fake_ws, monkeypatch):
 @pytest.mark.asyncio
 async def test_handle_command_mcp_update(server, fake_ws, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.get_mcp_server_config",
+        owner_mcp,
+        "get_mcp_server_config",
         lambda name: {"name": name, "enabled": True, "transport": "sse", "url": "http://127.0.0.1:9000/sse"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (payload, False),
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     # update branch also runs the live-connect probe before flipping to
     # connected — mock it as success so reload runs and "updated" is returned.
@@ -1361,10 +1376,11 @@ async def test_handle_command_mcp_add_http_auth_rejected(server, fake_ws, monkey
     """HTTP add with rejected auth (401) must not persist config.yaml."""
     upsert_calls = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     async def _pre_check_fail(_payload):
         return False, "github (streamable-http) pre-check failed: auth rejected (HTTP 401)"
@@ -1412,10 +1428,11 @@ async def test_handle_command_mcp_add_http_timeout(server, fake_ws, monkeypatch)
     """HTTP add against a non-responding server must not persist config.yaml."""
     upsert_calls = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     async def _pre_check_timeout(_payload):
         return False, "stuck (streamable-http) pre-check failed: timed out after 10s (server not responding): TimeoutException"
@@ -1448,10 +1465,11 @@ async def test_handle_command_mcp_add_http_passed(server, fake_ws, monkeypatch):
     """HTTP add that passes pre-check persists config and triggers reload."""
     upsert_calls = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     async def _pre_check_ok(_payload):
         return True, "github (streamable-http) pre-check passed (http 200)"
@@ -1502,10 +1520,11 @@ async def test_handle_command_mcp_add_stdio_command_not_found(server, fake_ws, m
     """stdio add with a non-existent command must be rejected at config time."""
     upsert_calls = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     # Do NOT mock _pre_check_mcp_server — exercise the real static check
     # (shutil.which returns None for a clearly-bogus command).
@@ -1536,7 +1555,8 @@ async def test_handle_command_mcp_add_stdio_command_not_found(server, fake_ws, m
 async def test_handle_command_mcp_update_http_auth_rejected(server, fake_ws, monkeypatch):
     """HTTP update with rejected auth (401) must not overwrite config.yaml."""
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.get_mcp_server_config",
+        owner_mcp,
+        "get_mcp_server_config",
         lambda name: {
             "name": name,
             "enabled": True,
@@ -1547,10 +1567,11 @@ async def test_handle_command_mcp_update_http_auth_rejected(server, fake_ws, mon
     )
     upsert_calls = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.mcp.upsert_mcp_server",
+        owner_mcp,
+        "upsert_mcp_server",
         lambda payload, **kw: (upsert_calls.append(payload), (payload, False))[1],
     )
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": []}})
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": []}})
 
     async def _pre_check_fail(_payload):
         return False, "github (streamable-http) pre-check failed: auth rejected (HTTP 401)"
@@ -1605,10 +1626,10 @@ async def test_handle_command_mcp_minimal_flow_add_list_disable(server, fake_ws,
                 return dict(item)
         raise KeyError(f"MCP server '{name}' not found")
 
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.upsert_mcp_server", _upsert)
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_mcp_servers", _get_servers)
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.set_mcp_server_enabled", _set_enabled)
-    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp.get_config", lambda: {"mcp": {"servers": _get_servers()}})
+    monkeypatch.setattr(owner_mcp, "upsert_mcp_server", _upsert)
+    monkeypatch.setattr(owner_mcp, "get_mcp_servers", _get_servers)
+    monkeypatch.setattr(owner_mcp, "set_mcp_server_enabled", _set_enabled)
+    monkeypatch.setattr(owner_mcp, "get_config", lambda: {"mcp": {"servers": _get_servers()}})
 
     # This flow test exercises add→list→disable, not real connectivity. Mock
     # the HTTP pre-check to pass so a mock SSE endpoint (502) doesn't abort add.
@@ -1800,3 +1821,7 @@ async def test_handle_permissions_config_reports_reload_schedule_failure(
     with pytest.raises(RuntimeError, match="scheduler unavailable"):
         await server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock())
     assert fake_ws.sent == []
+
+
+
+

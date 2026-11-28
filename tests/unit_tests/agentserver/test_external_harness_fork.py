@@ -83,7 +83,9 @@ async def test_claude_code_copy_resumes_from_a_fork_of_the_cli_session(
 
     assert await external_harness_helpers.fork_external_harness_session("source", "target") is True
 
-    assert calls == [("claude-source", Path("/work/source"), (tmp_path / "target-work").resolve())]
+    assert calls == [
+        ("claude-source", Path("/work/source").resolve(), (tmp_path / "target-work").resolve())
+    ]
     target = metadata["target"]
     assert target["session_runtime_binding"] == {
         "kind": "external_harness",

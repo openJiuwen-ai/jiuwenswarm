@@ -1,6 +1,7 @@
 """Input steered into a running External Harness turn."""
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +24,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_input import SessionInputRejectedError
 from jiuwenswarm.server.runtime.agent_adapter import external_harness_helpers
+from jiuwenswarm.server.runtime.agent_adapter.sdk_execution import SDKExecutionDriver
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -377,7 +379,7 @@ async def test_steered_images_reach_the_provider_and_the_input_boundary(
     assert sent.kwargs == {"mode": DeliveryMode.STEER}
     prompt = harness_input_text(sent.args[0])
     assert prompt.startswith(f"<prompt>{text}</prompt>\n\n")
-    assert str(steer_uploads / "screen.png") in prompt
+    assert json.dumps(str(steer_uploads / "screen.png"), ensure_ascii=False) in prompt
     assert '"mime_type": "image/png"' in prompt
     boundary = adapter._external_harness_boundaries.get_nowait()
     assert boundary["content"] == text
@@ -437,6 +439,8 @@ async def test_session_input_delivery_steers_an_external_harness_session(monkeyp
         _external_harness_binding={"kind": "external_harness"},
         _instance=None,
     )
+    driver = SDKExecutionDriver(adapter, create_session=AsyncMock())
+    adapter._get_execution_driver = lambda: driver
 
     steered = await JiuWenSwarmDeepAdapter.deliver_active_session_input(
         adapter, _request("r", "x", input_mode="steer"), {"query": "x"},

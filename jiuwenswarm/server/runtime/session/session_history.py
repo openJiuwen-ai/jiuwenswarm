@@ -1412,6 +1412,7 @@ def _write_item(
     item: dict[str, Any],
     *,
     subagent_id: str | None = None,
+    require_write: bool = False,
 ) -> None:
     with FILE_LOCK:
         if subagent_id:
@@ -1421,6 +1422,8 @@ def _write_item(
                 create=True,
             )
             if error is not None or target_path is None:
+                if require_write:
+                    raise ValueError(error or "invalid subagent history target")
                 logger.warning(
                     "skip subagent history write: session_id=%s subagent_id=%s error=%s",
                     session_id,
@@ -1519,7 +1522,7 @@ def _ensure_worker_started() -> None:
                         from jiuwenswarm.server.runtime.session import lifecycle as lc
                         with lc.resource_lock("session", sid):
                             lc.write_guard(sid, generation)
-                            _write_item(sid, item, subagent_id=subagent_id)
+                            _write_item(sid, item, subagent_id=subagent_id, require_write=receipt is not None)
                     context.run(write)
                 except Exception as exc:  # noqa: BLE001
                     _settle_history_receipt(receipt, error=exc)
@@ -1818,6 +1821,7 @@ def append_history_record(
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
     subagent_id: str | None = None,
+    wait_for_write: bool = False,
 ) -> None:
     """Queue a canonical record using the existing asynchronous writer."""
     prepared = prepare_history_record(
@@ -1829,7 +1833,12 @@ def append_history_record(
         return
     # §2.3：会话历史落盘前查配额；满额拒绝本条追加（与 origin/dev-stable 对齐）。
     _precheck_workspace_quota_for_history_append(prepared.record)
-    _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
+    if wait_for_write:
+        receipt: Future[None] = Future()
+        _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id, receipt=receipt)
+        receipt.result()
+    else:
+        _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
     _update_history_record_metadata(prepared)
 
 

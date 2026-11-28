@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """枚举内未接 handler 的方法不得落进聊天执行链路。"""
 
@@ -138,9 +138,14 @@ def test_method_not_found_response_keeps_request_identity() -> None:
 
 
 def _function_bodies(name: str) -> list[str]:
-    tree = ast.parse(INTERFACE.read_text(encoding="utf-8"))
+    source = INTERFACE
+    if name == "_process_message_stream":
+        source = INTERFACE.with_name("stream_execution.py")
+        name = "run"
+    text = source.read_text(encoding="utf-8").replace("facade.", "self.")
+    tree = ast.parse(text)
     return [
-        ast.get_source_segment(INTERFACE.read_text(encoding="utf-8"), node) or ""
+        ast.get_source_segment(text, node) or ""
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == name

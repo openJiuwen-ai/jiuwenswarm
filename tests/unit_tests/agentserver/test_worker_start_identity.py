@@ -17,7 +17,9 @@ import psutil
 import pytest
 
 from jiuwenswarm.server.lifecycle import Readiness
-from jiuwenswarm.server.supervisor import identity
+from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
+from jiuwenswarm.server.ipc.startup import startup_acceptance
+from jiuwenswarm.server.supervisor import identity, identity_probe
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor.resident_lifecycle import worker_process
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
@@ -58,7 +60,7 @@ def _view(tmp_path, *, cached_boot_time: float, raw_start: float = RAW_START):
 def _hello_from(process) -> dict:
     return {
         "kind": "hello",
-        "protocol": 2,
+        "protocol": PROTOCOL_VERSION,
         "pid": PID,
         "process_created": process.create_time(),
         "process_started": identity.process_start_marker(process),
@@ -266,8 +268,9 @@ async def test_front_attach_accepts_worker_with_older_boot_time_cache(boot_time_
     hello = _hello_from(_view(tmp_path, cached_boot_time=BOOT_TIME - 1.0))
     front_view = _view(tmp_path, cached_boot_time=BOOT_TIME)
     peer = SimpleNamespace(recv=AsyncMock(return_value=hello), send=AsyncMock(), close=AsyncMock())
-    monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr(identity_probe, "probe_identity", AsyncMock(return_value=("a" * 64, {})))
     monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=peer))
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _path: True)
     _patch_lookup(monkeypatch, front_view)
     front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True)
     monkeypatch.setattr(front, "_start_side_tasks", Mock())
@@ -276,5 +279,6 @@ async def test_front_attach_accepts_worker_with_older_boot_time_cache(boot_time_
 
     assert front._worker_pid == PID
     assert front._worker_create_time == front_view.create_time()
+    peer.send.assert_awaited_once_with(startup_acceptance(hello))
     front._reap_validated_worker(deadline=time.monotonic() + .1)
     front_view.kill.assert_not_called()

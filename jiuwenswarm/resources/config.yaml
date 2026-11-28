@@ -5,6 +5,22 @@ config_version: ""
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
+# 当前 profile 的有界共享模型预热。默认开启；显式 false 保持关闭。
+# 不创建 Session、不发送模型请求；已开启时配置变化会重新准备，关闭会停止后续预热。
+# 命中仅表示共享模型资源已准备，真冷启动与 EXECUTION_MIN_READY 仍独立计量。
+runtime_prewarm:
+  enabled: true
+  mode: agent  # agent / code，一次只准备一个 profile
+  channel_id: web  # web / tui / default
+  idle_delay_seconds: 1
+  max_attempts: 2
+  retry_delay_seconds: 5
+  timeout_seconds: 10
+  # CPU 与 RSS 增量按整个进程观测；超预算后本配置不再后台重试。
+  # 同步导入无法抢占，已创建资源仍由 Runtime/Kernel 关闭。
+  max_cpu_seconds: 5
+  max_rss_delta_mb: 256
+
 # Agent 模式与集群模式（Leader / Teammate）是否启用渐进式工具暴露（tool_search + deferred 工具）
 # true：只向模型暴露 direct 工具和 tool_search，其他工具按需搜索；集群成员的
 #       团队协作工具（send_message / create_task / spawn_* 等）始终 direct；

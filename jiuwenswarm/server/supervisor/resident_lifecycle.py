@@ -21,6 +21,7 @@ from jiuwenswarm.common.process_identity import (
 )
 from jiuwenswarm.server.ipc.stream import StreamConnection
 from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope
+from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
 
 
 class WorkerShutdownIncomplete(RuntimeError):
@@ -61,7 +62,7 @@ def worker_process(
     """Establish ownership from the OS as well as the peer's HELLO fields."""
     if not isinstance(hello, dict) or hello.get("kind") != "hello":
         raise RuntimeError("Worker lifecycle refused an unknown IPC protocol")
-    if type(hello.get("protocol")) is not int or hello.get("protocol") not in (1, 2):
+    if type(hello.get("protocol")) is not int or hello.get("protocol") not in (1, 2, PROTOCOL_VERSION):
         raise RuntimeError("Worker lifecycle refused an invalid IPC protocol version")
     legacy = hello.get("deployment_scope") is None
     if legacy and not allow_legacy:
@@ -154,6 +155,10 @@ async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: 
     outcome = None
     error = None
     try:
+        if hello.get("protocol") == PROTOCOL_VERSION:
+            from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+            await asyncio.wait_for(connection.send(startup_acceptance(hello)), max(.001, grace - time.monotonic()))
         await asyncio.wait_for(connection.send({"kind": "shutdown"}), max(.001, grace - time.monotonic()))
         while time.monotonic() < grace:
             frame = await asyncio.wait_for(connection.recv(), max(.001, grace - time.monotonic()))

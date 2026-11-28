@@ -22,16 +22,33 @@ from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
 from jiuwenswarm.server.supervisor.worker_process import default_socket_path
 
 SOURCE = Path(__file__).resolve().parents[3]
+
+
+def test_legacy_workspace_export_uses_the_current_profile_root(tmp_path, monkeypatch):
+    from jiuwenswarm.server.agent_ws_server import get_domain_data_dir
+
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(paths, "_workspace_base_dir", None)
+    assert get_domain_data_dir() == tmp_path / "profile"
 LEGACY_SHIM = """import sys
 if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):
     from jiuwenswarm.server.worker import stub
     original = stub._serve_one
     class LegacyConnection:
-        def __init__(self, connection): self.connection = connection
+        def __init__(self, connection):
+            self.connection, self.hello, self.accepted = connection, None, False
         def __getattr__(self, name): return getattr(self.connection, name)
+        async def recv(self):
+            if self.hello is not None and not self.accepted:
+                from jiuwenswarm.server.ipc.startup import startup_acceptance
+                self.accepted = True
+                return startup_acceptance(self.hello)
+            return await self.connection.recv()
         async def send(self, message):
             message = dict(message)
             if message.get('kind') == 'hello':
+                # The simulated v1 peer has no startup-permission handshake.
+                self.hello = dict(message)
                 message['protocol'] = 1
                 for key in ['data_scope', 'deployment_scope', 'process_created', 'process_started', 'code_identity', 'shutdown_ack']:
                     message.pop(key, None)

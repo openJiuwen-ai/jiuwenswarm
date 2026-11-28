@@ -13,16 +13,23 @@ async def run_history_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> A
     """
     from jiuwenswarm.server.runtime.session.session_history import append_history_record
 
-    if fn is append_history_record and not args:
-        from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
-        from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
+    async def operation():
+        if fn is append_history_record and not args:
+            from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
+            from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
 
-        handled, receipt = await try_append_platform_history(kwargs)
-        if handled:
-            if receipt is not None and receipt.status == "rejected":
-                raise SessionHistoryError("APPEND_REJECTED")
-            return None
-    task = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
+            # Queue ownership is a persistence option, not part of the event's
+            # canonical record. The platform event already confirms its commit.
+            record = dict(kwargs)
+            record.pop("wait_for_write", None)
+            handled, receipt = await try_append_platform_history(record)
+            if handled:
+                if receipt is not None and receipt.status == "rejected":
+                    raise SessionHistoryError("APPEND_REJECTED")
+                return None
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    task = asyncio.create_task(operation())
     cancelled = None
     while True:
         try:
@@ -46,8 +53,19 @@ def stream_chunk_writes_history(chunk: Any) -> bool:
     )
 
 
-async def run_stream_parser(parser: Callable[..., Any], chunk: Any, **kwargs: Any) -> Any:
-    """Only persistence-bearing chunks need a thread; tokens stay on the loop."""
-    if stream_chunk_writes_history(chunk):
-        return await run_history_io(parser, chunk, **kwargs)
-    return parser(chunk, **kwargs)
+async def run_stream_parser(
+    parser: Callable[..., Any], chunk: Any, *, projection_owner: Any = None,
+    projection_parent_session_id: str | None = None, **kwargs: Any,
+) -> Any:
+    """Parse on the loop, then explicitly commit neutral subagent events.
+
+    A parser is a pure SDK adapter. The consumer owns projection and commits;
+    ordinary tokens never dispatch a thread, and silent transcripts still pass
+    through the accepted-write cancellation barrier.
+    """
+    parsed = parser(chunk, **kwargs)
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import project_stream_event
+
+    return await project_stream_event(
+        parsed, owner=projection_owner, parent_session_id=projection_parent_session_id,
+    )

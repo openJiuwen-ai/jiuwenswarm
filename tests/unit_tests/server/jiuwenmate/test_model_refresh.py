@@ -13,7 +13,11 @@ from tests.unit_tests.server.test_gateway_adapter import _request
 
 
 @pytest.mark.asyncio
-async def test_model_save_returns_before_persistent_refresh_completes():
+async def test_model_save_returns_before_persistent_refresh_completes(monkeypatch):
+    from jiuwenswarm.server.runtime import memory_portal
+
+    portal = SimpleNamespace(configure=AsyncMock())
+    monkeypatch.setattr(memory_portal, "get_memory_portal_service", lambda: portal)
     started, release = asyncio.Event(), asyncio.Event()
     adapter = JiuwenMateWebAdapter()
 
@@ -34,6 +38,8 @@ async def test_model_save_returns_before_persistent_refresh_completes():
         await asyncio.wait_for(started.wait(), 1)
         assert task.done(), "model-save acknowledgement still waits for Persistent republishing"
         assert task.result() is True
+        portal.configure.assert_awaited_once()
+        server._agent_manager.reload_agents_config.assert_awaited_once()
         assert adapter.model_refresh_status()["status"] == "pending"
     finally:
         release.set()

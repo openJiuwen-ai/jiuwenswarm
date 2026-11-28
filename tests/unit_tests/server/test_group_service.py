@@ -998,7 +998,12 @@ async def test_file_rename_failure_preserves_files_and_metadata(service, tmp_pat
         target.write_text("existing", encoding="utf-8")
     if failure == "symlink":
         link = root / "linked.md"
-        link.symlink_to(source)
+        try:
+            link.symlink_to(source)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows account cannot create symbolic links")
+            raise
         source = link
     _publish_file(group, source)
     before = gs.read_group(group["group_id"]).get("file_overrides")
@@ -1096,7 +1101,12 @@ async def test_file_delete_does_not_follow_symlinks_out_of_workspace(service, tm
     target.write_text("keep", encoding="utf-8")
     link = gs.group_files.team_home(group["team_name"]) / "outputs" / "link.txt"
     link.parent.mkdir(parents=True)
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows account cannot create symbolic links")
+        raise
     _publish_file(group, link, name="link.txt")
     result = await service.file_delete(group["group_id"], {"path": str(link)}, user_id="owner", channel_id="web")
     assert result["file_removed"] is False
@@ -1372,6 +1382,22 @@ async def test_remove_member_offline_idempotent_conflict_and_former_members(serv
     public = service.get(group_id, user_id="owner", channel_id="web")
     assert public["members"] == []
     assert {m["member_name"] for m in public["former_members"]} == {"writer", "lab"}
+
+
+@pytest.mark.asyncio
+async def test_legacy_group_metadata_has_member_removal_defaults(service):
+    from jiuwenswarm.server.runtime.group_metadata import read_group as read_metadata
+
+    group_id = (await create(service))["group_id"]
+    state = gs.read_group(group_id)
+    state.pop("remove_receipts", None)
+    state.pop("former_members", None)
+    gs._save(state)
+
+    metadata = read_metadata(group_id, path=gs.group_path(group_id))
+    assert metadata["remove_receipts"] == {}
+    assert metadata["former_members"] == {}
+    assert gs.read_group(group_id) == metadata
 
 
 @pytest.mark.asyncio

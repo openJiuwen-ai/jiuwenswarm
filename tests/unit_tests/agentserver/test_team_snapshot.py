@@ -19,6 +19,14 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
+_SNAPSHOT_VIA_WS = True
+
+
+@pytest.fixture(params=[False, True], ids=["handler", "ws"], autouse=True)
+def _snapshot_entrypoint(request, monkeypatch):
+    """Run the same snapshot contracts through both management entry points."""
+    monkeypatch.setitem(globals(), "_SNAPSHOT_VIA_WS", request.param)
+
 
 class _FakeWS:
     def __init__(self) -> None:
@@ -74,10 +82,11 @@ async def _invoke(
     active_team_name: str | None = "team-sess-1",
     metadata_team_name: str | None = None,
     requested_team_name: str | None = None,
-    via_ws: bool = False,
+    via_ws: bool | None = None,
 ):
     from e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.server import agent_ws_server
+    from jiuwenswarm.server.management import teams as teams_owner
 
     ws = _FakeWS()
     lock = asyncio.Lock()
@@ -114,6 +123,13 @@ async def _invoke(
             side_effect=_db_members,
         ),
         mock.patch.object(
+            teams_owner,
+            "get_session_metadata",
+            return_value=(
+                {"team_name": metadata_team_name} if metadata_team_name else {}
+            ),
+        ),
+        mock.patch.object(
             agent_ws_server,
             "get_session_metadata",
             return_value=(
@@ -124,12 +140,15 @@ async def _invoke(
         from jiuwenswarm.server.context import build_ws_request_context
         from jiuwenswarm.server.handlers.team import handle_team_snapshot
 
-        if via_ws:
+        entrypoint_via_ws = _SNAPSHOT_VIA_WS if via_ws is None else via_ws
+        if entrypoint_via_ws:
             # Frontend WebClient always dispatches through the WS copy, so the
             # regression must be covered on this entry point too.
             from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
-            await AgentWebSocketServer._handle_team_snapshot(object(), ws, request, lock)
+            await AgentWebSocketServer._handle_team_snapshot(
+                AgentWebSocketServer.__new__(AgentWebSocketServer), ws, request, lock
+            )
         else:
             await handle_team_snapshot(build_ws_request_context(object(), ws, request, lock))
 

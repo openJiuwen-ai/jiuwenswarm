@@ -1,3 +1,4 @@
+requires_sdk: false
 id: swarm_connector_hub
 name: swarm_connector_hub
 version: 0.1.0

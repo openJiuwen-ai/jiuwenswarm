@@ -6,7 +6,28 @@ import sys
 
 import pytest
 
-from scripts.ut_imports import import_test_hits
+from scripts.ut_imports import import_test_hits, include_worker_peers, normalize_ut_paths
+
+
+def test_directory_selection_removes_redundant_child_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    directory = 'tests/unit_tests/group'
+    child = f'{directory}/test_leaf.py'
+    Path(directory).mkdir(parents=True)
+    Path(child).touch()
+
+    assert normalize_ut_paths({directory, child}) == [directory]
+
+
+def test_directory_selection_includes_ordered_worker_peers():
+    directory = 'tests/unit_tests/group'
+    child = f'{directory}/test_leaf.py'
+    peer = 'tests/unit_tests/other/test_peer.py'
+    selected = {directory}
+
+    include_worker_peers(selected, {'ordered': [child, peer]})
+
+    assert selected == {directory, child, peer}
 
 
 def test_import_selection_follows_at_most_two_edges(tmp_path, monkeypatch):

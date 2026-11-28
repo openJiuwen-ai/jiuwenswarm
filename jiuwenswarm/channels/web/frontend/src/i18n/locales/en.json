@@ -1243,7 +1243,8 @@
         "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
-      "test": "Test"
+      "test": "Test",
+      "modelsLoadFailedDraftAvailable": "Existing model configurations could not be loaded. Your entries are retained. Retry before saving."
     },
     "agent": {
       "skills": "Skills",

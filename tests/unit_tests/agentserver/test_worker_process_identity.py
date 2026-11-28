@@ -11,6 +11,8 @@ import psutil
 import pytest
 
 from jiuwenswarm.common import process_identity as identity
+from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
+from jiuwenswarm.server.ipc.startup import startup_acceptance
 from jiuwenswarm.server.ipc.stream import StreamConnection
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import resident_lifecycle
@@ -61,45 +63,53 @@ def test_normal_creation_time_is_preserved(monkeypatch):
     assert identity.read_process_identity(123, process=process) == 123.5
 
 
-@pytest.mark.parametrize("protocol", [1, 2])
+@pytest.mark.parametrize("protocol", [1, 2, PROTOCOL_VERSION])
 def test_hello_birth_fields_are_optional_only_for_protocol_one(restricted_process, protocol):
     hello = {"protocol": protocol, "process_created": None, "process_start_ticks": None}
     if protocol == 1:
         assert identity.validate_process_identity(123, hello) == "proc_start_ticks:4242"
     else:
-        with pytest.raises(RuntimeError, match="protocol 2 HELLO requires a process identity"):
+        with pytest.raises(RuntimeError, match=f"protocol {protocol} HELLO requires a process identity"):
             identity.validate_process_identity(123, hello)
+
+
+@pytest.mark.parametrize("fields", [{}, {"process_created": None, "process_start_ticks": None}, {"process_started": 12.5}])
+def test_current_protocol_requires_explicit_birth_identity(restricted_process, fields):
+    """The startup-permission protocol retains the newer identity requirement."""
+    with pytest.raises(RuntimeError, match="HELLO requires a process identity"):
+        identity.validate_process_identity(123, {"protocol": PROTOCOL_VERSION, **fields})
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["resident", "front_loopback"])
-async def test_protocol_two_without_birth_fields_is_refused_by_supervisor(
+async def test_current_protocol_without_birth_fields_is_refused_by_supervisor(
     monkeypatch, restricted_process, transport,
 ):
     from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope
 
-    hello = {"kind": "hello", "protocol": 2, "generation": 7, "pid": 123,
+    hello = {"kind": "hello", "protocol": PROTOCOL_VERSION, "generation": 7, "pid": 123,
              "deployment_scope": deployment_scope(), "data_scope": data_scope(),
              "code_identity": "a" * 64, "stub": False, "instance": "worker"}
     if transport == "resident":
-        with pytest.raises(RuntimeError, match="protocol 2 HELLO requires a process identity"):
+        with pytest.raises(RuntimeError, match=f"protocol {PROTOCOL_VERSION} HELLO requires a process identity"):
             resident_lifecycle.worker_process(hello, "worker")
         return
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
     front = RuntimeSupervisor(Readiness(), stub=False)
     front._launch_generation = 7
-    peer = SimpleNamespace(recv=AsyncMock(return_value=hello), close=AsyncMock())
+    peer = SimpleNamespace(recv=AsyncMock(return_value=hello), close=AsyncMock(), send=AsyncMock())
 
     async def connect():
         front._conn = peer
         return "a" * 64
 
     monkeypatch.setattr(front, "_connect_attached", connect)
-    with pytest.raises(RuntimeError, match="protocol 2 HELLO requires a process identity"):
+    with pytest.raises(RuntimeError, match=f"protocol {PROTOCOL_VERSION} HELLO requires a process identity"):
         await front._bring_up()
     assert front.worker_pid is None and front._validated_conn is None
     peer.close.assert_awaited_once()
+    peer.send.assert_not_awaited()
 
 
 @pytest.mark.parametrize("error", [psutil.AccessDenied(123), PermissionError("/proc/stat")])
@@ -186,7 +196,17 @@ def test_hello_rejects_reused_or_malformed_process_identity(restricted_process, 
 async def test_worker_and_stub_send_hello_when_creation_time_denied(monkeypatch, restricted_process, stub):
     from jiuwenswarm.server.worker import service, stub as stub_module
 
-    peer = SimpleNamespace(send=AsyncMock(), recv=AsyncMock(return_value={"kind": "shutdown"}))
+    peer = SimpleNamespace(send=AsyncMock())
+    accepted = False
+
+    async def receive():
+        nonlocal accepted
+        if not accepted:
+            accepted = True
+            return startup_acceptance(peer.send.call_args_list[0].args[0])
+        return {"kind": "shutdown"}
+
+    peer.recv = AsyncMock(side_effect=receive)
     if stub:
         monkeypatch.setattr(stub_module, "arm_stall_dump", lambda: None)
         assert await stub_module._serve_one(peer, generation=7, ready_delay=0, exit_on_request=False,
@@ -222,10 +242,10 @@ async def test_attached_supervisor_validates_ticks_or_cleans_failed_hello(
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     front = RuntimeSupervisor(Readiness(), stub=False)
     front._launch_generation = 7
-    hello = {"kind": "hello", "protocol": 2, "generation": 7, "pid": 123,
+    hello = {"kind": "hello", "protocol": PROTOCOL_VERSION, "generation": 7, "pid": 123,
         "data_scope": data_scope(), "deployment_scope": deployment_scope(), "code_identity": "a" * 64,
         "stub": False, "instance": "worker", "process_created": None, "process_start_ticks": 4242}
-    peer = SimpleNamespace(recv=AsyncMock(return_value=hello), close=AsyncMock())
+    peer = SimpleNamespace(recv=AsyncMock(return_value=hello), close=AsyncMock(), send=AsyncMock())
 
     async def connect():
         front._conn = peer
@@ -238,11 +258,13 @@ async def test_attached_supervisor_validates_ticks_or_cleans_failed_hello(
         await front._bring_up()
         assert front.worker_pid == 123 and front._worker_create_time == "proc_start_ticks:4242"
         assert front._validated_conn is peer
+        peer.send.assert_awaited_once_with(startup_acceptance(hello))
     else:
         with pytest.raises(RuntimeError, match="PID identity changed" if ticks else "HELLO pid=123.*identity"):
             await front._bring_up()
         assert front.worker_pid is None and front._validated_conn is None
         peer.close.assert_awaited_once()
+        peer.send.assert_not_awaited()
 
 
 def test_resident_validation_and_reconnect_use_ticks(monkeypatch, restricted_process):
