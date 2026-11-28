@@ -279,6 +279,7 @@ generated: true
 | [B_20261126_1221_team-file-card-duplicate](jiuwenswarm/channels/web/frontend/B_20261126_1221_team-file-card-duplicate.md) | B | 团队模式 chat.file 二次投递使文件卡片重复渲染为两张 | chen hui | 无独立 D：事件时序契约缺陷修复，无独立 D；依据前端 team-leader 消息按 teamStream.requestId 关联的既有契约与各事件处理器的去重守卫约定。 |
 | [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261127_1515_restore-chat-error-indicator](jiuwenswarm/channels/web/frontend/B_20261127_1515_restore-chat-error-indicator.md) | B | 恢复失败轮次的会话侧栏错误标记 | lizhiyuan | 无独立 D：复用现有 chat.error 事件和侧栏失败状态，修复历史恢复遗漏。 |
+| [B_20261128_1027_skill-graph-disabled-state](jiuwenswarm/channels/web/frontend/B_20261128_1027_skill-graph-disabled-state.md) | B | 技能图谱开关关闭时的页面误报 | lin-xiaoyu | 无独立 D：按现有编排开关和技能检索状态契约修复 Web 消费方。 |
 | [B_20261127_1547_webui-slot-capacity](extensions/B_20261127_1547_webui-slot-capacity.md) | B | WebUI 槽位容量与投递回滚修复 | kusanagima | 无独立 D：基于现有 WebUI 槽位和投递契约的缺陷修复，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
