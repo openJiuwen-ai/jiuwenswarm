@@ -70,6 +70,28 @@ def test_junction_link_is_idempotent(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="junction fallback is Windows-only")
+def test_junction_creation_handles_special_chars_in_data_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 数据根可能含 '&'/空格；不能进入 cmd 命令行被当作分隔符
+    weird_root = tmp_path / "user & data root"
+    profile_agent = weird_root / "profile" / "agent"
+    profile_agent.mkdir(parents=True)
+    (profile_agent / "marker.txt").write_text("ok", encoding="utf-8")
+    link = weird_root / "agent"
+
+    monkeypatch.setattr(Path, "symlink_to", _denied_symlink)
+    try:
+        paths._ensure_compat_symlink(link, Path("profile") / "agent")
+        assert paths._is_migration_link(link)
+        assert link.resolve() == profile_agent.resolve()
+        assert (link / "marker.txt").read_text(encoding="utf-8") == "ok"
+    finally:
+        if paths._is_migration_link(link):
+            paths._remove_compat_link(link)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junction fallback is Windows-only")
 def test_junction_pointing_elsewhere_is_replaced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -87,6 +109,13 @@ def test_junction_pointing_elsewhere_is_replaced(
     finally:
         if paths._is_migration_link(link):
             paths._remove_compat_link(link)
+
+
+def test_remove_compat_link_is_idempotent(tmp_path: Path) -> None:
+    # 并发/异常路径下重复删除不应抛 FileNotFoundError
+    missing = tmp_path / "agent"
+    paths._remove_compat_link(missing)
+    paths._remove_compat_link(missing)
 
 
 def test_real_path_is_never_overwritten_and_warns(

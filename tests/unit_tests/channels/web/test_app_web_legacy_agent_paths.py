@@ -14,7 +14,7 @@ import pytest
 
 from jiuwenswarm.channels.web.app_web import (
     _SpaStaticHandler,
-    _canonicalize_legacy_agent_path,
+    _canonicalize_legacy_path,
 )
 
 
@@ -25,15 +25,24 @@ from jiuwenswarm.channels.web.app_web import (
         ("agent\\workspace\\todo\\s1", "profile/agent/workspace/todo/s1"),
         ("agent", "profile/agent"),
         ("./agent/.logs/ws-dev.log", "profile/agent/.logs/ws-dev.log"),
-        # 非 agent 前缀、绝对路径原样保留
+        # 其余迁移过的老根目录同样改写
+        ("workspace/report.md", "profile/report.md"),
+        ("application_plugins/plugin.json", "profile/application_plugins/plugin.json"),
+        (".agent_teams/t1/team.json", "profile/.agent_teams/t1/team.json"),
+        (".agent_history/h1", "profile/.agent_history/h1"),
+        ("config/runtime_state/task.json", "profile/runtime_state/task.json"),
+        ("logs/logs/core.log", "logs/core/core.log"),
+        # 非老前缀、绝对路径、含 .. 的路径原样保留
         ("profile/agent/workspace", "profile/agent/workspace"),
-        ("workspace/report.md", "workspace/report.md"),
+        ("logs/agent/a.log", "logs/agent/a.log"),
+        ("agent/../logs/agent/x.log", "agent/../logs/agent/x.log"),
+        ("../agent/sessions", "../agent/sessions"),
         (r"D:\data\agent\sessions", r"D:\data\agent\sessions"),
         ("/var/log/agent", "/var/log/agent"),
     ],
 )
-def test_canonicalize_legacy_agent_path(raw: str, expected: str) -> None:
-    assert _canonicalize_legacy_agent_path(raw) == expected
+def test_canonicalize_legacy_path(raw: str, expected: str) -> None:
+    assert _canonicalize_legacy_path(raw) == expected
 
 
 @pytest.fixture()
@@ -122,3 +131,41 @@ def test_legacy_agent_path_cannot_escape_with_dotdot(_web_server: int) -> None:
         f"/file-api/file-content?path={quote('agent/../../secret.txt')}",
     )
     assert status == 403
+
+
+def test_real_legacy_agent_dir_is_not_silently_rewritten(
+    _web_server: int, tmp_path: Path
+) -> None:
+    """迁移未完成/新旧版本并存：<root>/agent 是真实目录时保持 develop 原行为。
+
+    此时 profile/agent 未必有完整数据，改写过去会静默读到另一棵树；兼容链
+    也不会遮蔽真实目录，因此按原路径解析（不在白名单根下 → 403，与 develop
+    一致），而不是悄悄给出 profile 里的内容。
+    """
+    legacy_file = tmp_path / "agent" / "workspace" / "legacy.txt"
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_text("from legacy tree", encoding="utf-8")
+
+    status, body = _get(
+        _web_server,
+        f"/file-api/list-files?dir={quote('agent/workspace')}",
+    )
+    assert status == 403
+    assert "legacy.txt" not in body
+
+    # 老根是真实目录时整棵老树都不改写：profile 树中的内容不能借老路径泄漏出来
+    status, body = _get(
+        _web_server,
+        f"/file-api/file-content?path={quote('agent/workspace/agent-data.json')}",
+    )
+    assert status == 403
+    assert '{"agents": []}' not in body
+
+
+def test_dotdot_path_is_not_rewritten(_web_server: int) -> None:
+    # 含 .. 的老前缀路径按原样解析：不能改写进另一棵树造成落点变化
+    status, _ = _get(
+        _web_server,
+        f"/file-api/file-content?path={quote('agent/../logs/agent/no.log')}",
+    )
+    assert status == 404

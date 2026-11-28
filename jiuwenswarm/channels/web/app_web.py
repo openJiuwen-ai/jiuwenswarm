@@ -152,28 +152,76 @@ def _get_logs_dir() -> Path:
     return _get_agent_root_dir() / ".logs"
 
 
-_LEGACY_AGENT_DIR = "agent"
-_PROFILE_AGENT_DIRS = ("profile", "agent")
+_LEGACY_PATH_REWRITES = (
+    # (迁移前老布局前缀, 迁移后新布局前缀)，与 common.paths._LEGACY_COMPAT_LINKS
+    # 及 _LOG_COMPAT_LINKS 对齐。老位置仍是真实目录时不改写，见
+    # _resolve_project_path 的存在性判断。
+    ("workspace", "profile"),
+    ("agent", "profile/agent"),
+    ("application_plugins", "profile/application_plugins"),
+    (".agent_teams", "profile/.agent_teams"),
+    (".agent_history", "profile/.agent_history"),
+    ("config/runtime_state", "profile/runtime_state"),
+    ("logs/logs", "logs/core"),
+)
 
 
-def _canonicalize_legacy_agent_path(rel_path: str) -> str:
-    """把 profile 迁移前的老路径 ``agent/...`` 重写到 ``profile/agent/...``。
-
-    迁移后业务数据落在 ``<数据根>/profile/agent``，老位置 ``<数据根>/agent``
-    只靠兼容链（软链/junction）指向新数据。Windows 普通用户未开开发者模式时
-    软链创建会失败，而当前版本的会话文件/工作区/日志面板仍按 ``agent/...``
-    请求文件 API——不能依赖兼容链才能工作。这里在服务端统一规范化，兼容链
-    只服务回滚后的老版本。
-
-    绝对路径（``C:\\...``、UNC、``/...``）和其余相对路径原样返回。
-    """
+def _rel_parts(rel_path: str) -> list[str] | None:
+    """相对路径切段；绝对路径、含 ``..`` 的路径返回 ``None``（不改写）。"""
     normalized = rel_path.replace("\\", "/")
     if normalized.startswith("/") or (len(normalized) > 1 and normalized[1] == ":"):
-        return rel_path
+        return None
     parts = [part for part in normalized.split("/") if part not in ("", ".")]
-    if not parts or parts[0] != _LEGACY_AGENT_DIR:
+    if not parts or ".." in parts:
+        return None
+    return parts
+
+
+def _match_legacy_prefix(parts: list[str]) -> tuple[list[str], list[str], list[str]] | None:
+    """返回 ``(老前缀段, 新前缀段, 剩余段)``；不匹配任何老布局根则返回 None。"""
+    for old_prefix, new_prefix in _LEGACY_PATH_REWRITES:
+        old_parts = old_prefix.split("/")
+        if parts[: len(old_parts)] == old_parts:
+            return old_parts, new_prefix.split("/"), parts[len(old_parts) :]
+    return None
+
+
+def _canonicalize_legacy_path(rel_path: str) -> str:
+    """把 profile 迁移前的老布局路径重写到迁移后的新位置。
+
+    迁移后业务数据落在 ``<数据根>/profile/...``，老位置 ``<数据根>/agent``
+    等只靠兼容链（软链/junction）指向新数据。Windows 普通用户未开开发者模式
+    时软链创建会失败，而当前版本的会话文件/工作区/日志面板仍按 ``agent/...``
+    等老路径请求文件 API——不能依赖兼容链才能工作。这里在服务端统一规范化，
+    兼容链只服务回滚后的老版本。
+
+    绝对路径（``C:\\...``、UNC、``/...``）、含 ``..`` 的路径和其余相对路径
+    原样返回：``..`` 交给调用方按原路径解析，避免改写后落点变化。
+    """
+    parts = _rel_parts(rel_path)
+    if parts is None:
         return rel_path
-    return "/".join((*_PROFILE_AGENT_DIRS, *parts[1:]))
+    matched = _match_legacy_prefix(parts)
+    if matched is None:
+        return rel_path
+    _, new_parts, rest = matched
+    return "/".join((*new_parts, *rest))
+
+
+def _legacy_root_exists(project_root: Path, rel_path: str) -> bool:
+    """老布局根（``agent``、``workspace`` 等）在数据根上是否是真实存在的路径。
+
+    兼容链正常时它也返回 True（老路径可用，无需改写）；迁移未完成或新旧
+    版本并存时老位置是真实目录，此时必须按老路径解析，不能改写进另一棵树。
+    """
+    parts = _rel_parts(rel_path)
+    if parts is None:
+        return False
+    matched = _match_legacy_prefix(parts)
+    if matched is None:
+        return False
+    old_parts, _, _ = matched
+    return project_root.joinpath(*old_parts).exists()
 
 
 def _get_ssl_verify() -> bool:
@@ -1790,8 +1838,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         """
         if "\x00" in rel_path:
             raise _BadRequestError("invalid_path")
-        # 老布局路径 agent/... → profile/agent/...：不依赖兼容链是否建成功。
-        canonical = _canonicalize_legacy_agent_path(rel_path)
+        # 老布局路径 → 新布局：不依赖兼容链是否建成功。老布局根仍是真实
+        # 目录/文件时（迁移未完成或新旧版本并存）保持原路径，避免读错树。
+        canonical = _canonicalize_legacy_path(rel_path)
+        if canonical != rel_path and _legacy_root_exists(self.project_root, rel_path):
+            canonical = rel_path
         try:
             return (self.project_root / canonical).resolve()
         except (OSError, ValueError) as exc:

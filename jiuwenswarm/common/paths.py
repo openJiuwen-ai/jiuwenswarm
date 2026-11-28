@@ -1451,9 +1451,15 @@ def _warn_compat_link_once(link: Path, reason: str) -> None:
 
 
 def _link_matches(link: Path, desired: Path) -> bool:
-    """兼容链（软链/junction）是否已解析到期望目标。"""
+    """兼容链（软链/junction）是否已解析到期望目标。
+
+    路径拼写可能不同（8.3 短名、subst 盘符、UNC 大小写），仅比较字符串形态
+    会把同一目录误判为失效并每次启动重建，故再比较一次 inode。
+    """
     try:
-        return link.resolve() == desired.resolve()
+        if link.resolve() == desired.resolve():
+            return True
+        return link.samefile(desired)
     except OSError:
         return False
 
@@ -1463,9 +1469,14 @@ def _remove_compat_link(link: Path) -> None:
     try:
         link.unlink()
         return
+    except FileNotFoundError:
+        return
     except (IsADirectoryError, PermissionError):
         pass
-    link.rmdir()
+    try:
+        link.rmdir()
+    except FileNotFoundError:
+        return
 
 
 def _create_windows_junction(link: Path, target: Path) -> bool:
@@ -1478,33 +1489,42 @@ def _create_windows_junction(link: Path, target: Path) -> bool:
     """
     if os.name != "nt":
         return False
-    abs_link = link if link.is_absolute() else Path.cwd() / link
     abs_target = (link.parent / target).resolve()
     if not abs_target.is_dir():
+        return False
+    # 在 link 父目录下用相对名调用 mklink：数据根路径（可能含 & ^ 或空格）
+    # 不进入命令行，避免被 cmd 解释为分隔符；/d 关闭 AutoRun，/J 建目录联接。
+    try:
+        target_rel = os.path.relpath(abs_target, start=link.parent)
+    except ValueError:
         return False
     try:
         completed = subprocess.run(
             [
                 os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
                 "/c",
                 "mklink",
                 "/J",
-                str(abs_link),
-                str(abs_target),
+                link.name,
+                target_rel,
             ],
+            cwd=str(link.parent),
             capture_output=True,
-            text=True,
-            timeout=20,
+            timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return False
     if completed.returncode != 0:
-        logger.debug(
-            "[Compat] mklink /J failed at %s: %s",
-            link,
-            (completed.stderr or completed.stdout or "").strip(),
+        output = b"".join(
+            part for part in (completed.stderr, completed.stdout) if part
         )
+        try:
+            detail = output.decode("oem", "replace")
+        except LookupError:
+            detail = output.decode("utf-8", "replace")
+        logger.debug("[Compat] mklink /J failed at %s: %s", link, detail.strip())
         return False
     return link.is_dir()
 
@@ -1575,6 +1595,11 @@ def _ensure_compat_symlink(link: Path, target: Path) -> None:
             staged.replace(link)
         except OSError:
             logger.warning("[Compat] failed to swap in compatibility link: %s", link)
+            # 换入失败别把临时链留在数据根里（下次启动也会清理，但期间可见）
+            try:
+                _remove_compat_link(staged)
+            except OSError:
+                pass
         return
     if link.exists():
         # 老位置是真实目录/文件：软链会遮蔽真实数据，绝不覆盖
