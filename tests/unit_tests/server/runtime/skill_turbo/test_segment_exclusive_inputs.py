@@ -59,3 +59,81 @@ async def test_unused_escaping_historical_source_does_not_override_explicit_sour
     ledger.data['facts']['manifest_path'] = str(tmp_path.parent / 'outside.json')
     inputs, _ = await assemble_segment_inputs(ctx, exclusive_spec(), {'page_files': ['one.pptx']}, ledger)
     assert 'manifest_path' not in inputs and len(inputs['page_files']) == 1
+
+
+@pytest.mark.parametrize('key,value,schema', [
+    ('retry_count', 0, {'type': 'integer', 'minimum': 0}),
+    ('use_watermark', False, {'type': 'boolean'}),
+    ('suffix', '', {'type': 'string'}),
+])
+@pytest.mark.parametrize('source', ['ledger', 'upstream', 'explicit'])
+async def test_valid_falsy_exclusive_source_preserves_value_and_provenance(
+    storage, tmp_path, key, value, schema, source,
+):
+    ledger, ctx = await setup(storage, tmp_path)
+    spec = make_spec(properties={key: schema, 'alternative': {'type': 'string'}})
+    spec = spec.model_copy(update={'input_schema': {
+        **spec.input_schema, 'oneOf': [{'required': [key]}, {'required': ['alternative']}],
+    }})
+    facts = {key: value, 'alternative': 'unused'}
+    provenance = {key: {'verified': True, 'produced_by': 'prep'}}
+    upstream = None
+    if source == 'upstream':
+        upstream = {'facts': facts, 'facts_provenance': provenance}
+    else:
+        ledger.data['facts'].update(facts)
+        ledger.data['facts_provenance'].update(provenance)
+    before = copy.deepcopy(ledger.data)
+    before_upstream = copy.deepcopy(upstream)
+    inputs, warnings = await assemble_segment_inputs(
+        ctx, spec, {key: value} if source == 'explicit' else {}, ledger, upstream,
+    )
+    assert inputs[key] == value and type(inputs[key]) is type(value)
+    assert 'alternative' not in inputs and warnings == []
+    assert ledger.data == before and upstream == before_upstream
+
+
+@pytest.mark.parametrize('case', ['missing', 'null', 'unverified', 'defaults'])
+async def test_exclusive_source_still_requires_nonnull_verified_fact(storage, tmp_path, case):
+    ledger, ctx = await setup(storage, tmp_path)
+    spec = make_spec(properties={'use_watermark': {'type': 'boolean'}, 'alternative': {'type': 'boolean'}})
+    spec = spec.model_copy(update={'input_schema': {
+        **spec.input_schema, 'oneOf': [{'required': ['use_watermark']}, {'required': ['alternative']}],
+    }})
+    ledger.data['facts']['alternative'] = True
+    ledger.data['facts_provenance']['alternative'] = {'verified': True, 'produced_by': 'prep'}
+    if case in {'null', 'unverified'}:
+        ledger.data['facts']['use_watermark'] = None if case == 'null' else False
+        ledger.data['facts_provenance']['use_watermark'] = {'verified': case != 'unverified'}
+    if case == 'defaults':
+        spec = spec.model_copy(update={'defaults': {'use_watermark': False}})
+    with pytest.raises(SegmentInputError, match='exclusive_source_missing_or_unverified') as caught:
+        await assemble_segment_inputs(ctx, spec, {}, ledger)
+    assert caught.value.status == 'blocked'
+
+
+@pytest.mark.parametrize('value,schema', [
+    (0, {'type': 'integer', 'minimum': 1}),
+    ('', {'type': 'string', 'minLength': 1}),
+    (False, {'type': 'integer'}),
+])
+async def test_inherited_falsy_exclusive_source_still_obeys_schema(storage, tmp_path, value, schema):
+    ledger, ctx = await setup(storage, tmp_path)
+    spec = make_spec(properties={'setting': schema, 'alternative': {'type': 'string'}})
+    spec = spec.model_copy(update={'input_schema': {
+        **spec.input_schema, 'oneOf': [{'required': ['setting']}, {'required': ['alternative']}],
+    }})
+    ledger.data['facts']['setting'] = value
+    ledger.data['facts_provenance']['setting'] = {'verified': True, 'produced_by': 'prep'}
+    with pytest.raises(SegmentInputError, match='schema_invalid') as caught:
+        await assemble_segment_inputs(ctx, spec, {}, ledger)
+    assert caught.value.status == 'invalid_args'
+
+
+async def test_inherited_empty_exclusive_path_still_fails_path_validation(storage, tmp_path):
+    ledger, ctx = await setup(storage, tmp_path)
+    ledger.data['facts']['manifest_path'] = ''
+    ledger.data['facts_provenance']['manifest_path'] = {'verified': True, 'produced_by': 'generate'}
+    with pytest.raises(SegmentInputError, match='path_invalid') as caught:
+        await assemble_segment_inputs(ctx, exclusive_spec(), {}, ledger)
+    assert caught.value.status == 'invalid_args'
