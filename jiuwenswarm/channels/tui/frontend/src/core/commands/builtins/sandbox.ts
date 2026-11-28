@@ -18,8 +18,10 @@ type SandboxEffectiveFiles = {
 
 type SandboxMount = {
   source?: string;
+  host_path?: string;
   target?: string;
   readonly?: boolean;
+  options?: string[];
 };
 
 type SandboxResponse = {
@@ -27,7 +29,7 @@ type SandboxResponse = {
   enabled?: boolean;
   executor?: string;
   mounts?: SandboxMount[];
-  runtime?: SandboxRuntime;
+  runtime?: SandboxRuntime | string;
   excluded_commands?: string[];
   files?: { allow?: SandboxFileEntry[]; deny?: SandboxFileEntry[] };
   effective_files?: SandboxEffectiveFiles;
@@ -36,7 +38,8 @@ type SandboxResponse = {
   jiuwenbox_stopped?: boolean;
 };
 
-type SandboxProviderType = "yuanrong" | "jiuwenbox" | "unknown";
+type ReadOnlySandboxProvider = "yuanrong" | "adx-environment";
+type SandboxProviderType = ReadOnlySandboxProvider | "jiuwenbox" | "unknown";
 
 let cachedProviderType: SandboxProviderType = "unknown";
 let sandboxCommandRef: SlashCommand | null = null;
@@ -66,14 +69,14 @@ function formatFileEntry(entry: SandboxFileEntry, defaultAccess?: string): strin
 }
 
 function formatMount(mount: SandboxMount): string {
-  const source = String(mount.source ?? "").trim();
+  const source = String(mount.source ?? mount.host_path ?? "").trim();
   const target = String(mount.target ?? source).trim();
-  const access = mount.readonly ? "ro" : "rw";
+  const access = (mount.readonly ?? mount.options?.includes("ro")) ? "ro" : "rw";
   if (!source) return "";
   return `${source} -> ${target} (${access})`;
 }
 
-function showYuanrongRuntime(
+function showReadOnlyRuntime(
   ctx: Parameters<SlashCommand["action"]>[0],
   payload: SandboxResponse,
 ): void {
@@ -84,7 +87,9 @@ function showYuanrongRuntime(
     .join(", ");
   const items = [
     { label: "enabled", value: formatBool(payload.enabled) },
-    { label: "executor", value: String(payload.executor ?? "(unset)") },
+    payload.type === "adx-environment"
+      ? { label: "runtime", value: typeof payload.runtime === "string" ? payload.runtime : "(unset)" }
+      : { label: "executor", value: String(payload.executor ?? "(unset)") },
     { label: "mounts", value: mountText || "(empty)" },
   ];
   ctx.addItem(
@@ -98,10 +103,10 @@ function showYuanrongRuntime(
 
 function showRuntime(
   ctx: Parameters<SlashCommand["action"]>[0],
-  runtime: SandboxRuntime | undefined,
+  runtime: SandboxResponse["runtime"],
   effective?: SandboxEffectiveFiles,
 ): void {
-  const rt = runtime ?? {};
+  const rt = typeof runtime === "string" ? {} : (runtime ?? {});
   const excludes = rt.excluded_commands ?? [];
   const allowWrite = effective?.allow_write ?? rt.files?.allow ?? [];
   const denyWrite = effective?.deny_write ?? rt.files?.deny ?? [];
@@ -149,16 +154,18 @@ function jiuwenboxUsageText(): string {
   return lines.map((line, i) => (i === 0 ? line : `  ${line}`)).join("\n");
 }
 
-function yuanrongUsageText(): string {
-  return "sandbox.type=yuanrong: only /sandbox (view config: enabled, executor, mounts); no subcommands";
+function isReadOnlySandbox(type: string | undefined): type is ReadOnlySandboxProvider {
+  return type === "yuanrong" || type === "adx-environment";
 }
 
 function applySandboxCommandPresentation(type: SandboxProviderType): void {
   cachedProviderType = type;
   const cmd = sandboxCommandRef;
   if (!cmd) return;
-  if (type === "yuanrong") {
-    cmd.description = "View YuanRong sandbox config (enabled / executor / mounts)";
+  if (isReadOnlySandbox(type)) {
+    cmd.description = type === "adx-environment"
+      ? "View ADX sandbox config (enabled / runtime / mounts)"
+      : "View YuanRong sandbox config (enabled / executor / mounts)";
     cmd.usage = "/sandbox";
     cmd.example = "/sandbox";
     cmd.takesArgs = false;
@@ -172,12 +179,12 @@ function applySandboxCommandPresentation(type: SandboxProviderType): void {
 }
 
 function providerTypeFromPayload(payload: SandboxResponse): SandboxProviderType {
-  return payload.type === "yuanrong" ? "yuanrong" : "jiuwenbox";
+  return isReadOnlySandbox(payload.type) ? payload.type : "jiuwenbox";
 }
 
 /**
  * Probe sandbox.type once WS is connected so inline `/sandbox` hints hide
- * jiuwenbox subcommands when type=yuanrong.
+ * jiuwenbox subcommands for read-only sandbox providers.
  */
 export async function refreshSandboxCommandPresentation(
   ctx: Pick<CommandContext, "request">,
@@ -201,8 +208,7 @@ export function createSandboxCommand(): SlashCommand {
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
     completion: async () => {
-      // YuanRong has no subcommands — never suggest enable/disable/files/….
-      if (cachedProviderType === "yuanrong") {
+      if (isReadOnlySandbox(cachedProviderType)) {
         return [];
       }
       return ["enable", "disable", "exclude", "files", "help", "status"];
@@ -218,23 +224,18 @@ export function createSandboxCommand(): SlashCommand {
           await refreshSandboxCommandPresentation(ctx);
         }
 
-        if (cachedProviderType === "yuanrong") {
-          // Bare /sandbox only — no status/help/enable/… tokens.
-          if (raw) {
-            ctx.addItem(addError(ctx.sessionId, yuanrongUsageText()));
-            return;
-          }
-          const payload = await ctx.request<SandboxResponse>("command.sandbox", { sub: "status" });
-          applySandboxCommandPresentation(providerTypeFromPayload(payload));
-          showYuanrongRuntime(ctx, payload);
+        if (raw && isReadOnlySandbox(cachedProviderType)) {
+          ctx.addItem(
+            addError(ctx.sessionId, `sandbox.type=${cachedProviderType}: use /sandbox to view config`),
+          );
           return;
         }
 
         if (!sub || sub === "status" || sub === "show") {
           const payload = await ctx.request<SandboxResponse>("command.sandbox", { sub: "status" });
           applySandboxCommandPresentation(providerTypeFromPayload(payload));
-          if (payload.type === "yuanrong") {
-            showYuanrongRuntime(ctx, payload);
+          if (isReadOnlySandbox(payload.type)) {
+            showReadOnlyRuntime(ctx, payload);
             return;
           }
           showRuntime(ctx, payload.runtime, payload.effective_files);

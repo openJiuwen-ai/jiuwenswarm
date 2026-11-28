@@ -53,7 +53,7 @@ Commands (Required):
   restart   Restart specified modules
 
 Modules (Optional, default: jiuwenswarm gateway web):
-  jiuwenswarm    Install jiuwenswarm on all hosts + register function on yr master
+  jiuwenswarm    Install jiuwenswarm on all hosts
   gateway        jiuwenswarm gateway service (process-mode)
   web            jiuwenswarm web static server (serves frontend dist on WEB_STATIC_PORT, /ws proxies to gateway WEB_PORT)
 
@@ -61,13 +61,13 @@ Options:
   --hosts HOSTS      Comma-separated IP list for cluster hosts (default: local machine IP)
                      Single machine: --hosts 192.168.1.1
                      Multi-machine:  --hosts 192.168.1.1,192.168.1.2,192.168.1.3
-                     First IP is yr master node, others are agent nodes
+                     First IP is the master node, others are worker nodes
                      If not specified, defaults to local machine IP
                      Can also be set in .env.custom via CLUSTER_HOSTS
   -h, --help         Display this help message and exit
 
 Prerequisites:
-  yuanrong must be already deployed on all hosts (use yuanrong_deploy.sh up --hosts ...)
+  ADX must already be deployed on all hosts
 
 Examples:
   ./$(basename "$0") up --hosts 192.168.1.1                          # Deploy all (jiuwenswarm + gateway + web)

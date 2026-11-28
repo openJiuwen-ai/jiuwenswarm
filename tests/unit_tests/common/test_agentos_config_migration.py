@@ -52,8 +52,8 @@ def test_agentos_runtime_preserves_yuanrong_config(
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
     deployment_template = (
-        PACKAGE_ROOT.parent / "deploy" / "yuanrong" / "conf"
-        / "gateway-config-yuanrong.template.yaml"
+        PACKAGE_ROOT.parent / "deploy" / "adx" / "conf"
+        / "gateway-config.template.yaml"
     )
     deployed = YAML().load(deployment_template.read_text(encoding="utf-8"))
     deployed["gateway"]["cron"]["store_backend"] = "etcd"

@@ -1148,6 +1148,7 @@ async def test_suggestion_reaches_the_pages_open_on_its_session_only(product) ->
     channel.on_message(lambda _msg: None)
     on_session, elsewhere = _Browser(), _Browser()
     for browser, session_id in ((on_session, SESSION), (elsewhere, "web_other_session")):
+        await channel.register_ws(browser, None)
         await getattr(channel, "_handle_raw_message")(browser, json.dumps({
             "type": "req", "id": f"open-{session_id}", "method": "chat.send",
             "params": {"session_id": session_id, "content": "你好"},
