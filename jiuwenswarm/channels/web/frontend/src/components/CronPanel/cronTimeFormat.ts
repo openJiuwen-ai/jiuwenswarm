@@ -34,7 +34,7 @@ function formatWithTimeZone(ms: number, timeZone: string, locale: string | undef
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
   }).format(new Date(ms));
   return `${text} (${timeZone})`;
 }

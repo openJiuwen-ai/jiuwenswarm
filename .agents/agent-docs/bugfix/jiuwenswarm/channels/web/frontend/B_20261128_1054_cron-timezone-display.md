@@ -43,6 +43,7 @@ design_note: 仅修正前端时间展示口径，复用 cron 接口返回的绝�
 - 抽出纯函数 `formatCronRunTime` / `formatCronPreviewTime`（`CronPanel/cronTimeFormat.ts`），统一处理秒/毫秒、ISO 字符串、空值与非法值；
 - 传入 `job.timezone` 与 `i18n.language`，用 `Intl.DateTimeFormat` 按任务时区格式化，并在末尾追加 `(IANA 时区名)`；
 - 「未来执行计划」与「执行记录」共用同一函数，保持两处口径一致；
+- 采用 `hourCycle: 'h23'` 而非 `hour12: false`，避免部分引擎在午夜输出 `24:00:00`，与同目录 `scheduleConvert.ts` 的既有口径一致；
 - 时区或 locale 非法时回退到原有本地时区渲染且不追加错误标签，避免新增崩溃路径。
 
 ## 拒绝的方案
@@ -54,12 +55,12 @@ design_note: 仅修正前端时间展示口径，复用 cron 接口返回的绝�
 
 ## 回归证据与适用范围
 
-新增 `tests/cronTimeFormat.test.mjs`，覆盖：任务时区 + 时区名、秒/毫秒一致、空值/0/非法值返回 null、未知时区不抛错且不追加错误标签、非法时间原样返回。
+新增 `tests/cronTimeFormat.test.mjs`，覆盖：任务时区 + 时区名、秒/毫秒一致、空值/0/非法值返回 null、未知时区不抛错且不追加错误标签、午夜 `00:00:00` 不被渲染为 `24:00:00`（zh-CN 与 en-US）、非法时间原样返回。
 
 ```text
 cd jiuwenswarm/channels/web/frontend
 npm run test:cron-time-format
-5 passed
+6 passed
 ```
 
 在本地 dev 页面用真实任务（`America/Los_Angeles`、每天 03:00、浏览器 `Asia/Shanghai`）验证：

@@ -47,6 +47,16 @@ test('falls back without a zone label when the zone is unknown', () => {
   assert.doesNotMatch(text, /Not\/AZone/);
 });
 
+test('renders midnight as 00:00:00 and never 24:00:00', () => {
+  const midnight = '2026-11-28T00:00:00+08:00';
+  for (const locale of ['zh-CN', 'en-US']) {
+    const text = formatCronRunTime(midnight, { timeZone: 'Asia/Shanghai', locale });
+    assert.match(text, /00:00:00/);
+    assert.doesNotMatch(text, /24:00:00/);
+    assert.match(text, /\(Asia\/Shanghai\)$/);
+  }
+});
+
 test('preview keeps an unparsable value verbatim', () => {
   assert.equal(formatCronPreviewTime('not-a-date', NY), 'not-a-date');
   assert.match(formatCronPreviewTime('2026-11-28T03:30:00-05:00', NY), /\(America\/New_York\)$/);
