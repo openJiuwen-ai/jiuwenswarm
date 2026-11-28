@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -601,6 +602,60 @@ async def test_handle_command_model_add_model(server, fake_ws):
             "ok": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_model_switch_model_writes_tip_not_os_environ(
+    server, fake_ws, monkeypatch
+):
+    """switch_model → 业务键只进 Track B tip，绝不驻留 os.environ（printenv 泄露面）。"""
+    from jiuwenswarm.common.local_env_config import (
+        read_env,
+        reset_local_env_state_for_tests,
+    )
+
+    reset_local_env_state_for_tests()
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setattr(
+        server.get_agent_manager(),
+        "reload_agents_config",
+        lambda *args, **kwargs: None,
+    )
+    request = AgentRequest(
+        request_id="req-switch",
+        channel_id="cli",
+        req_method=ReqMethod.COMMAND_MODEL,
+        params={
+            "action": "switch_model",
+            "model": "switched-model",
+            "env_updates": {"MODEL_NAME": "switched-model", "API_KEY": "sk-new"},
+        },
+    )
+
+    try:
+        await server.handle_command_model_for_test(fake_ws, request, asyncio.Lock())
+
+        assert fake_ws.sent == [
+            {
+                "response_id": "req-switch",
+                "payload": {
+                    "current": "switched-model",
+                    "requested": "switched-model",
+                    "type": "switched",
+                    "applied": True,
+                },
+                "ok": True,
+            }
+        ]
+        # 驻留面（子进程 printenv 可见）不出现业务键
+        assert "MODEL_NAME" not in os.environ
+        assert "API_KEY" not in os.environ
+        # Track B tip 持有新值，进程内读取链照常工作
+        assert read_env("MODEL_NAME", "unknown") == "switched-model"
+        assert read_env("API_KEY", "") == "sk-new"
+    finally:
+        reset_local_env_state_for_tests()
 
 
 @pytest.mark.asyncio

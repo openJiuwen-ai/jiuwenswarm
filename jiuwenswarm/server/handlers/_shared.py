@@ -19,6 +19,7 @@ from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import (
@@ -572,8 +573,10 @@ def _sync_chat_request_metadata(
     )
     if not explicit_model_provided:
         # 未显式携带 → 回退到进程 MODEL_NAME，仅供 agent 实例选择兜底用；
-        # 写盘与否由 explicit_model_provided 守卫决定（False → 不写，避免腐蚀磁盘）
-        model_name = os.getenv("MODEL_NAME", "") or None
+        # Track B tip 是单一事实源（switch_model 写 tip 不驻留 os.environ），
+        # read_env 保持 tip 优先、os.environ 兜底。写盘与否由
+        # explicit_model_provided 守卫决定（False → 不写，避免腐蚀磁盘）
+        model_name = read_env("MODEL_NAME", "") or None
     else:
         model_name = raw_model_name.strip()
 

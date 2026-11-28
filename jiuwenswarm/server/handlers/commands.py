@@ -26,6 +26,7 @@ from jiuwenswarm.common.config import (
     upsert_mcp_server_in_config,
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.common.local_env_config import read_env, set_os_environ
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentResponse
@@ -1014,9 +1015,11 @@ async def handle_command_model(ctx: RequestContext) -> None:
                     },
                 )
             else:
+                # 业务键写 Track B tip（set_os_environ 自带 Track A 键拒绝），绝不驻留
+                # os.environ——否则 bash 子进程 printenv 即泄露（且 value 未脱敏）。
                 for k, v in env_updates.items():
-                    os.environ[k] = v
-                logger.info("[command.model] os.environ 已更新, MODEL_NAME=%s", os.getenv("MODEL_NAME", "unknown"))
+                    set_os_environ(k, v)
+                logger.info("[command.model] tip 已更新, MODEL_NAME=%s", read_env("MODEL_NAME", "unknown"))
 
                 try:
                     from jiuwenswarm.agents.harness.common.memory.config import (
@@ -1040,20 +1043,20 @@ async def handle_command_model(ctx: RequestContext) -> None:
                     channel_id=request.channel_id,
                     ok=True,
                     payload={
-                        "current": os.getenv("MODEL_NAME", "unknown"),
+                        "current": read_env("MODEL_NAME", "unknown"),
                         "requested": target,
                         "type": "switched",
                         "applied": True,
                     },
                 )
-                logger.info("[command.model] 切换完成: current=%s", os.getenv("MODEL_NAME", "unknown"))
+                logger.info("[command.model] 切换完成: current=%s", read_env("MODEL_NAME", "unknown"))
 
         else:
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={"current": os.getenv("MODEL_NAME", "unknown"), "available": ["default-model"]},
+                payload={"current": read_env("MODEL_NAME", "unknown"), "available": ["default-model"]},
             )
 
     except Exception as e:  # noqa: BLE001

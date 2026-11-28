@@ -2843,9 +2843,14 @@ def get_env_file() -> Path:
 
 
 def reset_free_search_runtime_flags() -> None:
-    """Start each process with free-search engines disabled unless reopened via config UI."""
-    os.environ["FREE_SEARCH_DDG_ENABLED"] = "false"
-    os.environ["FREE_SEARCH_BING_ENABLED"] = "false"
+    """No-op: free-search engine defaults live in the Track B tip.
+
+    历史上这里把两个开关写进 ``os.environ``，但唯一读者（``web_search/free.py``）
+    经 ``read_env_if_set`` 只读 tip/overlay——写 ``os.environ`` 从不生效，反而把
+    黑名单业务键驻留进进程环境（子进程 ``printenv`` 可见）。默认关闭由 sync
+    下发的 ``FREE_SEARCH_*='false'`` 与 config UI 的 ``set_os_environ`` 承担。
+    """
+    logger.debug("reset_free_search_runtime_flags: no-op (free-search flags live in Track B tip)")
 
 
 def get_config_file() -> Path:

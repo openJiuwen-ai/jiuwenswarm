@@ -261,7 +261,45 @@ class TestRuntimePythonDir:
 
 
 class TestWindowsPathHardeningNonWindows:
-    def test_returns_none_on_non_windows(self) -> None:
+    def test_returns_filtered_env_on_non_windows(self) -> None:
         if os.name == "nt":
             pytest.skip("Non-Windows-only")
-        assert _build_subprocess_env(None) is None
+        # POSIX 不再 return None（继承父环境 = 全量泄露），改为显式传过滤后的 env。
+        merged = _build_subprocess_env(None)
+        assert merged is not None
+        assert "MODEL_NAME" not in merged
+
+
+class TestBuildSubprocessEnvTrackBFilter:
+    """bash/exec 子进程出口：驻留的 Track B 业务键一律剔除（printenv 泄露兜底）。"""
+
+    def test_filters_resident_track_b_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MODEL_NAME", "your-model-name")
+        monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
+        monkeypatch.setenv("EMAIL_TOKEN", "tok")
+        merged = _build_subprocess_env(None)
+        assert "MODEL_NAME" not in merged
+        assert "FREE_SEARCH_DDG_ENABLED" not in merged
+        assert "EMAIL_TOKEN" not in merged
+
+    def test_keeps_track_a_and_non_blacklisted_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", os.environ.get("PATH", "/usr/bin"))
+        monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", "https://hub.example.com")
+        merged = _build_subprocess_env(None)
+        assert "PATH" in merged
+        assert merged["TEAM_SKILLS_HUB_BASE_URL"] == "https://hub.example.com"
+
+    def test_extra_env_explicit_pass_is_kept(self) -> None:
+        # extra_env 是工具调用显式传入（skill 凭证注入）的合法出口，不在此过滤。
+        merged = _build_subprocess_env({"BOCHA_API_KEY": "sk-skill"})
+        assert merged["BOCHA_API_KEY"] == "sk-skill"
+
+    def test_extra_env_wins_over_filtered_ambient(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MODEL_NAME", "ambient")
+        merged = _build_subprocess_env({"MODEL_NAME": "explicit"})
+        assert merged["MODEL_NAME"] == "explicit"
+
+    def test_product_legacy_alias_filtered(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("JIUWENCLAW_DISABLED_SKILLS", "search_skill")
+        merged = _build_subprocess_env(None)
+        assert "JIUWENCLAW_DISABLED_SKILLS" not in merged
