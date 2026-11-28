@@ -119,6 +119,27 @@ class McpRegistryError(ValueError):
         self.code = code
 
 
+# NAME_MAX (255 bytes) minus the longest suffix we append: "<name>.json"
+# for credential files. Other uses are bare path components.
+_CUSTOM_MCP_NAME_MAX_BYTES = 255 - len(".json")
+_INVALID_NAME_CHARS = frozenset("/\\:\0")
+
+
+def _validate_custom_name(name: str) -> str:
+    """Normalize a custom MCP name and reject names unsafe as a path component."""
+    n = str(name or "").strip()
+    if not n:
+        raise ValueError("mcp name is required")
+    try:
+        encoded = n.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("mcp name must be valid UTF-8") from exc
+    if len(encoded) > _CUSTOM_MCP_NAME_MAX_BYTES:
+        raise ValueError(f"mcp name must be at most {_CUSTOM_MCP_NAME_MAX_BYTES} bytes")
+    if n in {".", ".."} or any(char in n for char in _INVALID_NAME_CHARS):
+        raise ValueError("mcp name contains invalid path characters")
+    return n
+
 
 _MCP_ROOT = "mcp"
 _PACKAGES_SUBDIR = "mcp_builtins"
@@ -1499,11 +1520,9 @@ def register_custom_mcp(name: str, config: dict[str, Any]) -> dict[str, Any]:
     transport/command/args/env or url/headers directly. The entry is written
     enabled with a ``mcp:<name>`` server_id_scope.
     """
-    n = str(name or "").strip()
-    if not n:
-        raise ValueError("mcp name is required")
-    # Reject names colliding with builtin marketplace dirs — 
-    # connect_mcp dispatches by dir existence, so builtins shadow customs. 
+    n = _validate_custom_name(name)
+    # Reject names colliding with builtin marketplace dirs —
+    # connect_mcp dispatches by dir existence, so builtins shadow customs.
     # Custom-vs-custom dupes are intentionally overwritten by upsert.
     if _resolve_package(n) is not None:
         raise McpRegistryError(
