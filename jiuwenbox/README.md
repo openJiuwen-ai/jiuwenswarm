@@ -20,6 +20,9 @@ isolation policy in-process by spawning `bubblewrap` directly for each sandbox
 - Python and JavaScript execution support when the corresponding runtimes exist
 - Audit logging and persisted sandbox lifecycle state
 - Inference Privacy Proxy for LLM API request routing with automatic API key injection
+- Optional `lite` runtime that executes each command in a fresh, isolated
+  process and reclaims it when the command finishes (no long-lived per-sandbox
+  daemon)
 
 ## Architecture
 
@@ -27,9 +30,12 @@ isolation policy in-process by spawning `bubblewrap` directly for each sandbox
   - FastAPI app that manages sandbox lifecycle, policy loading, audit logs, and
     API routing.
 - `server/runtime`
-  - In-process runtime adapter that translates each sandbox policy into a
-    `bubblewrap` command line and spawns it directly from the server (one
-    long-lived daemon per sandbox plus per-call background commands).
+  - In-process runtime adapter that translates each sandbox policy into an
+    isolation command and spawns it directly from the server. Two backends are
+    available: the default `process` runtime keeps one long-lived `bubblewrap`
+    daemon per sandbox plus per-call background commands; the optional `lite`
+    runtime uses a fresh one-shot process per command and reclaims it when the
+    command finishes.
 - `server/proxy_manager`
   - Manages inference privacy proxies for LLM API routing with API key injection.
 - `server/policy_reader`
@@ -55,6 +61,8 @@ isolation policy in-process by spawning `bubblewrap` directly for each sandbox
   mode uses uplink egress
 - Kernel support for Landlock and seccomp when those features are enabled
 - `nodejs` if JavaScript execution is needed
+- For the `lite` runtime: `bubblewrap`, a host Python interpreter, and libseccomp;
+  user-namespace support in the kernel (see [Lite runtime](#lite-runtime))
 
 On Ubuntu:
 
@@ -113,6 +121,74 @@ Run with the default policy:
 
 ```bash
 sudo ./run_docker.sh
+```
+
+### Lite container image
+
+For `runtime: lite`, use the standard image built by `docker/Dockerfile`: it
+already includes the `bubblewrap` toolchain and installs Python dependencies
+system-wide, so Lite commands work inside the container without manual
+dependency-path fixes.
+
+Build it from the `jiuwenbox` directory:
+
+```bash
+cd jiuwenswarm/jiuwenbox
+docker build -t jiuwenbox:lite .
+```
+
+This adapter requires the enclio engine from !11101. Until !11101 is merged
+into `develop`, build the image from a working tree that also contains enclio
+(for example a local test branch that merges !11101); otherwise the image
+starts but Lite commands fail at import time.
+
+Prepare a policy with `runtime: lite` at the top level (see
+[Enabling it](#enabling-it)), then run over HTTP:
+
+```bash
+docker run --rm \
+  --name jiuwenbox-lite \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  --security-opt systempaths=unconfined \
+  -v /absolute/path/to/code-agent-lite.yaml:/app/configs/code-agent-lite.yaml:ro \
+  -e JIUWENBOX_POLICY_PATH=/app/configs/code-agent-lite.yaml \
+  -p 8321:8321 \
+  jiuwenbox:lite
+```
+
+The three `--security-opt` flags only relax the container's seccomp, AppArmor
+and system-path checks so that the nested isolation can start. Do **not** add
+`--privileged`, `--cap-add SYS_ADMIN`, or `--cap-add NET_ADMIN`; the lite
+runtime does not need them.
+
+For a same-container UDS deployment, mount a socket directory and override
+`JIUWENBOX_LISTEN`:
+
+```bash
+mkdir -p /tmp/jiuwenbox-sock
+
+docker run --rm \
+  --name jiuwenbox-lite \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  --security-opt systempaths=unconfined \
+  -v /tmp/jiuwenbox-sock:/run/jiuwenbox \
+  -v /absolute/path/to/code-agent-lite.yaml:/app/configs/code-agent-lite.yaml:ro \
+  -e JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
+  -e JIUWENBOX_POLICY_PATH=/app/configs/code-agent-lite.yaml \
+  jiuwenbox:lite
+```
+
+For two-container HTTP, attach both containers to the same user-defined bridge
+network and point the client at `http://jiuwenbox-lite:8321`. Only the
+jiuwenbox container needs the three `--security-opt` flags above.
+
+Verify the endpoint:
+
+```bash
+curl http://127.0.0.1:8321/health
+jiuwenbox --base-url http://127.0.0.1:8321 sandbox ls
 ```
 
 ### Unix Domain Socket Deployment
@@ -301,6 +377,7 @@ not enabled.
 | --- | --- | --- |
 | `version` | `1` | Policy schema version. Only `1` is supported today. |
 | `name` | `"default"` | Human-readable name shown by the policy API. |
+| `runtime` | `process` | Execution backend: `process` (default, long-lived daemon per sandbox) or `lite` (fresh one-shot process per command). See [Lite runtime](#lite-runtime). |
 | `environment` | `{}` | Environment variables injected into every process inside the sandbox. |
 
 #### `filesystem_policy`
@@ -560,6 +637,88 @@ network:
     blocked_ports:
       - 22
 ```
+
+## Lite runtime
+
+The default `process` runtime keeps one long-lived daemon per sandbox and runs
+background commands as additional child processes. The optional `lite` runtime
+takes a different approach: every command runs in a fresh isolated process that
+is reclaimed when the command finishes. A sandbox still has a stable id, a
+persistent workspace, and the same management API, but there is no resident
+process between calls. This suits workloads where each tool call is independent
+and you prefer a smaller, shorter-lived process footprint.
+
+### Enabling it
+
+Add `runtime: lite` to the **top level of the effective policy file** — the file
+you pass via `JIUWENBOX_POLICY_PATH`, or the one resolved from
+`sandbox.policy_file` when jiuwenswarm spawns the server. There is no CLI flag or
+environment variable for this switch.
+
+```yaml
+version: 1
+name: code-agent-lite
+runtime: lite
+filesystem_policy:
+  directories:
+    - path: "/srv/workspaces/project"
+      permissions: 0o700
+network:
+  mode: isolated
+  egress:
+    default: deny
+    allowed_domains:
+      - "api.example.com"
+```
+
+The sandbox id must still be supplied through the normal create/exec API; the
+policy field only selects the backend. An explicit `sandbox_runtime` value on a
+create request takes precedence over the policy field. Accepted values are
+`bwrap` (the default `process` runtime), `conch`, and `lite`.
+
+### Behavior worth knowing
+
+- One-shot execution: each `exec` builds a fresh isolation process; there is no
+  warm pool and no daemon to keep alive between calls.
+- Persistent files: the sandbox workspace is created on the host and reused
+  across commands, so file changes made by one command are visible to the next.
+  Files outside the authorized policy are not visible inside the sandbox.
+- Network: `network.mode` is passed through unchanged. `isolated` uses the
+  policy's egress allow-list; `host` shares the host network namespace, in which
+  case in-sandbox egress/ingress rules are not installed (as with the default
+  runtime). Use `isolated` when you need egress restrictions.
+- Capabilities and LSM: the lite runtime does not ask for extra Linux
+  capabilities. In container deployments you may need to relax seccomp,
+  AppArmor, and system-path restrictions so that the nested isolation can start;
+  see [Lite container image](#lite-container-image) for the exact container-side
+  setup.
+- State: sandboxes created with this backend are recorded with `runtime=lite`
+  and no daemon pid. Existing sandboxes keep the backend chosen at creation
+  time; changing the policy affects newly created sandboxes only.
+
+### Host configuration
+
+| Env var | Default | Description |
+| --- | --- | --- |
+| `JIUWENBOX_LITE_BWRAP` | `bwrap` on `PATH`, else `/usr/bin/bwrap` | Path to the `bubblewrap` binary. |
+| `JIUWENBOX_LITE_SANDBOX_PYTHON` | `/usr/bin/python3` | Python interpreter made available inside the sandbox. |
+| `JIUWENBOX_LITE_BACKING_ROOT` | `/tmp/jiuwenbox-lite-runs-<uid>` | Host directory holding per-run backing data, including per-sandbox workspaces; must be writable by the server. |
+
+### Verifying the setup
+
+With a policy that sets `runtime: lite` loaded by the server, create a sandbox
+and run a command through the normal API or CLI:
+
+```bash
+jiuwenbox sandbox create          # inspect the returned id
+jiuwenbox sandbox exec "<id>" -- /bin/pwd
+```
+
+The status file under `~/.jiuwenbox/sandboxes/` should show `"runtime": "lite"`
+and no pid. For container deployments, start from
+[Lite container image](#lite-container-image) instead of the default image. For
+the full case matrix (lite adapter, HTTP layer, and container topologies), see
+`tests/manual/lite_e2e_matrix.py` in the source tree.
 
 ## Enabling jiuwenbox from jiuwenswarm's config file
 

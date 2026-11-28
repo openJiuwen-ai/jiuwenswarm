@@ -20,15 +20,18 @@ agent 工具和代码片段。
 - 在运行时存在时支持 Python 和 JavaScript 代码执行
 - 审计日志和持久化的沙箱生命周期状态
 - 推理隐私代理，用于 LLM API 请求路由和自动 API 密钥注入
+- 可选的 `lite` 运行时：每条命令在全新的隔离进程中执行，命令结束后回收，
+  不为每个沙箱保留常驻 daemon
 
 ## 架构
 
 - `server`
   - FastAPI 应用，负责沙箱生命周期管理、policy 加载、审计日志和 API 路由。
 - `server/runtime`
-  - 进程内运行时适配层，将沙箱 policy 翻译成 `bubblewrap` 命令行后由
-    server 进程直接 spawn（每个沙箱一个长寿命 daemon，再加上按需的
-    后台命令）。
+  - 进程内运行时适配层，将沙箱 policy 翻译成隔离命令后由 server 进程
+    直接 spawn。提供两种后端：默认的 `process` 运行时为每个沙箱保留一个
+    长寿命 `bubblewrap` daemon，再加上按需的后台命令；可选的 `lite`
+    运行时为每条命令启动一个一次性进程，命令结束后即回收。
 - `server/proxy_manager`
   - 管理推理隐私代理，用于 LLM API 路由和 API 密钥注入。
 - `server/policy_reader`
@@ -50,6 +53,8 @@ agent 工具和代码片段。
 - `isolated` 模式启用 uplink 出网时，宿主机需开启 IPv4 转发（`net.ipv4.ip_forward=1`），进程需具备 `NET_ADMIN` capability
 - 启用 Landlock 和 seccomp 时需要内核支持对应能力
 - 如果需要执行 JavaScript，则需要 `nodejs`
+- 使用 `lite` 运行时需要 `bubblewrap`、宿主机 Python 解释器和 libseccomp，
+  并需要内核支持 user namespace（见 [Lite 运行时](#lite-运行时)）
 
 Ubuntu 安装示例：
 
@@ -106,6 +111,70 @@ sudo ./build_docker.sh
 
 ```bash
 sudo ./run_docker.sh
+```
+
+### Lite 容器镜像
+
+使用 `runtime: lite` 时，直接使用 `docker/Dockerfile` 构建的标准镜像即可：该镜像
+已内置 `bubblewrap`，并将 Python 依赖安装到系统环境，容器内无需手工修复依赖路径
+即可执行命令。
+
+从 `jiuwenbox` 目录构建：
+
+```bash
+cd jiuwenswarm/jiuwenbox
+docker build -t jiuwenbox:lite .
+```
+
+本适配层依赖 !11101 提供的 enclio 引擎。在 !11101 合入 `develop` 前，请在
+同时包含该引擎的工作区（例如本地合并了 !11101 的测试分支）构建镜像；否则
+镜像可以启动，但 Lite 命令会在 import 阶段失败。
+
+准备一份顶层带 `runtime: lite` 的 policy（见 [启用方式](#启用方式)），然后以
+HTTP 方式运行：
+
+```bash
+docker run --rm \
+  --name jiuwenbox-lite \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  --security-opt systempaths=unconfined \
+  -v /absolute/path/to/code-agent-lite.yaml:/app/configs/code-agent-lite.yaml:ro \
+  -e JIUWENBOX_POLICY_PATH=/app/configs/code-agent-lite.yaml \
+  -p 8321:8321 \
+  jiuwenbox:lite
+```
+
+三个 `--security-opt` 参数只用于放宽容器的 seccomp、AppArmor 与系统路径检查，
+使嵌套隔离可以启动。**不要**添加 `--privileged`、`--cap-add SYS_ADMIN` 或
+`--cap-add NET_ADMIN`；lite 运行时不需要这些权限。
+
+同容器 UDS 部署时，挂出 socket 目录并覆盖 `JIUWENBOX_LISTEN`：
+
+```bash
+mkdir -p /tmp/jiuwenbox-sock
+
+docker run --rm \
+  --name jiuwenbox-lite \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  --security-opt systempaths=unconfined \
+  -v /tmp/jiuwenbox-sock:/run/jiuwenbox \
+  -v /absolute/path/to/code-agent-lite.yaml:/app/configs/code-agent-lite.yaml:ro \
+  -e JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
+  -e JIUWENBOX_POLICY_PATH=/app/configs/code-agent-lite.yaml \
+  jiuwenbox:lite
+```
+
+两容器 HTTP 部署时，把 jiuwenbox 与调用方接入同一个自定义 bridge 网络，调用方
+访问 `http://jiuwenbox-lite:8321`。只有 jiuwenbox 容器需要上面三个
+`--security-opt` 参数。
+
+检查服务可用：
+
+```bash
+curl http://127.0.0.1:8321/health
+jiuwenbox --base-url http://127.0.0.1:8321 sandbox ls
 ```
 
 ### 通过 Unix Domain Socket 部署
@@ -282,6 +351,7 @@ ls /tmp/jiuwenbox-logs
 | --- | --- | --- |
 | `version` | `1` | Policy schema 版本，当前仅支持 `1`。 |
 | `name` | `"default"` | 可读名称，供 policy API 展示。 |
+| `runtime` | `process` | 执行后端：`process`（默认，每个沙箱保留常驻 daemon）或 `lite`（每条命令一次性进程）。见 [Lite 运行时](#lite-运行时)。 |
 | `environment` | `{}` | 注入到沙箱内每个进程的环境变量键值对。 |
 
 #### `filesystem_policy`
@@ -526,6 +596,78 @@ network:
     blocked_ports:
       - 22
 ```
+
+## Lite 运行时
+
+默认的 `process` 运行时为每个沙箱保留一个长寿命 daemon，后台命令作为额外
+子进程运行。可选的 `lite` 运行时采用不同方式：每条命令都在全新的隔离进程
+中执行，命令结束后回收。沙箱仍有稳定的 id、持久的工作目录和相同的管理
+API，但调用之间不保留常驻进程。适合每次工具调用彼此独立、希望进程占用
+更小、生命周期更短的场景。
+
+### 启用方式
+
+在**实际生效的 policy 文件顶层**添加 `runtime: lite`——即通过
+`JIUWENBOX_POLICY_PATH` 传入的文件，或 jiuwenswarm 拉起服务时由
+`sandbox.policy_file` 解析出的文件。该开关没有对应的 CLI 参数或环境变量。
+
+```yaml
+version: 1
+name: code-agent-lite
+runtime: lite
+filesystem_policy:
+  directories:
+    - path: "/srv/workspaces/project"
+      permissions: 0o700
+network:
+  mode: isolated
+  egress:
+    default: deny
+    allowed_domains:
+      - "api.example.com"
+```
+
+沙箱 id 仍通过常规 create/exec API 提供，policy 字段只负责选择后端。create
+请求中显式传入的 `sandbox_runtime` 优先于 policy 字段。可接受的值为
+`bwrap`（默认 `process` 运行时）、`conch` 和 `lite`。
+
+### 行为差异
+
+- 一次性执行：每次 `exec` 都新建一个隔离进程，没有预热池，也没有需要
+  维持存活的 daemon。
+- 文件持久：沙箱工作目录在宿主机上创建并跨命令复用，因此一条命令写入的
+  文件对下一条命令可见；policy 未授权的路径在沙箱内不可见。
+- 网络：`network.mode` 原样透传。`isolated` 使用 policy 的出网允许列表；
+  `host` 与宿主机共享网络命名空间，此时不再在沙箱内安装出入站规则（与默认
+  运行时一致）。需要出网限制时应使用 `isolated`。
+- capability 与 LSM：`lite` 运行时不申请额外 Linux capability。在容器部署
+  中可能需要放宽 seccomp、AppArmor 和系统路径限制，嵌套隔离才能启动；
+  容器侧配置见 [Lite 容器镜像](#lite-容器镜像)。
+- 状态：使用该后端创建的沙箱在状态文件中记录为 `runtime=lite`，且不带
+  daemon pid。已有沙箱保持创建时选定的后端；修改 policy 只影响新建的沙箱。
+
+### 宿主机配置
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `JIUWENBOX_LITE_BWRAP` | `PATH` 中的 `bwrap`，否则 `/usr/bin/bwrap` | `bubblewrap` 可执行文件路径。 |
+| `JIUWENBOX_LITE_SANDBOX_PYTHON` | `/usr/bin/python3` | 沙箱内可用的 Python 解释器。 |
+| `JIUWENBOX_LITE_BACKING_ROOT` | `/tmp/jiuwenbox-lite-runs-<uid>` | 存放每次运行后端数据（含沙箱工作目录）的宿主机目录，服务进程需可写。 |
+
+### 验证方式
+
+服务加载了设置 `runtime: lite` 的 policy 后，通过常规 API 或 CLI 创建沙箱
+并执行命令：
+
+```bash
+jiuwenbox sandbox create          # 查看返回的 id
+jiuwenbox sandbox exec "<id>" -- /bin/pwd
+```
+
+`~/.jiuwenbox/sandboxes/` 下的状态文件应显示 `"runtime": "lite"` 且没有 pid。
+容器部署请从 [Lite 容器镜像](#lite-容器镜像) 开始，而不是使用默认镜像。完整
+用例矩阵（lite 适配层、HTTP 层、容器三拓扑）见源码树中的
+`tests/manual/lite_e2e_matrix.py`。
 
 ## 在 jiuwenswarm 中通过配置文件启用 jiuwenbox
 
