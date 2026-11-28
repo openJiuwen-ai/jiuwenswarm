@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -24,7 +24,7 @@ overrides = [
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
-    { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
+    { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=15146004031aa4b8328b944491d6c3b8473bcfea" },
     { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
 ]
 
@@ -84,10 +84,23 @@ wheels = [
 ]
 
 [[package]]
+name = "ag-ui-protocol"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/57/92/d88fdc7f4648dc38d3d54c595066bb3e63a4c091884ffb2f98272c33eef8/ag_ui_protocol-1.0.0.tar.gz", hash = "sha256:cfebecef2e7bc942cc8a52d908a4ea86a98f631d2ffdc6ec5812bb843eac74fb", size = 30759, upload-time = "2026-09-17T18:31:19.448Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/b0/850be4576e6443dc575daa54188d8136ae2b2eca3f19e098e7a088fc9ebc/ag_ui_protocol-1.0.0-py3-none-any.whl", hash = "sha256:0058eaf0522201089d444e430fc35180bc8ad0222cae39e8568b313e8105d9e6", size = 36842, upload-time = "2026-09-17T18:31:18.471Z" },
+]
+
+[[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=e4eb71beb91778752910c5f2fa4dffea0b80b601#e4eb71beb91778752910c5f2fa4dffea0b80b601" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=6db56c9b6cdd82a3f2d0b02838c67e73d36fb226#6db56c9b6cdd82a3f2d0b02838c67e73d36fb226" }
 dependencies = [
+    { name = "ag-ui-protocol" },
     { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "charset-normalizer" },
@@ -4230,7 +4243,7 @@ dependencies = [
 [[package]]
 name = "openjiuwen-e2a"
 version = "0.3.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38#10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" }
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=15146004031aa4b8328b944491d6c3b8473bcfea#15146004031aa4b8328b944491d6c3b8473bcfea" }
 
 [[package]]
 name = "openjiuwen-runtime-foundation"
@@ -7668,8 +7681,8 @@ requires-dist = [
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", specifier = "==0.1.0" },
     { name = "a4p", marker = "extra == 'harmony'", specifier = "==0.1.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=e4eb71beb91778752910c5f2fa4dffea0b80b601" },
-    { name = "agent-gateway", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=e4eb71beb91778752910c5f2fa4dffea0b80b601" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=6db56c9b6cdd82a3f2d0b02838c67e73d36fb226" },
+    { name = "agent-gateway", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=6db56c9b6cdd82a3f2d0b02838c67e73d36fb226" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7731,8 +7744,8 @@ requires-dist = [
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=61421984467d4b8f3ccdf82043fe356218754eb1" },
     { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=c0e29a0fa0e1026934589b68564ac67c38a4c4e3" },
-    { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
-    { name = "openjiuwen-e2a", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
+    { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=15146004031aa4b8328b944491d6c3b8473bcfea" },
+    { name = "openjiuwen-e2a", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=15146004031aa4b8328b944491d6c3b8473bcfea" },
     { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
     { name = "openjiuwen-security", specifier = "==0.0.1b2" },
     { name = "opentelemetry-api", specifier = ">=1.45.1,<2" },

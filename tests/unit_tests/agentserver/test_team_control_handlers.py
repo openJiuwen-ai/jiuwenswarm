@@ -85,6 +85,52 @@ def test_request_identity_reads_routing_triple():
     assert handlers.request_identity(req) == OWNER
 
 
+def test_request_identity_reads_agent_id_from_routing():
+    # agent_id is carried in metadata.routing (WEB_ROUTING_ID_FIELDS, issue
+    # #124), never as a top-level metadata key. request_identity must read it
+    # via web_routing_identity, the same path as user_id/group_id/bot_id.
+    req = AgentRequest(
+        request_id="req-aid",
+        channel_id="web",
+        session_id=None,
+        req_method=ReqMethod.TEAM_GET,
+        params={},
+        metadata=apply_routing_metadata(
+            {}, {"user_id": "u1", "group_id": "g1", "bot_id": "b1", "agent_id": "agent-1"},
+        ),
+    )
+    ident = handlers.request_identity(req)
+    assert ident.agent_id == "agent-1"
+    assert ident.user_id == "u1"
+    assert ident.group_id == "g1"
+    assert ident.bot_id == "b1"
+
+
+def test_request_identity_ignores_top_level_agent_id():
+    # A top-level metadata.agent_id (outside routing) must NOT be picked up:
+    # gateway forwards agent_id only via routing, so a top-level value is
+    # untrusted and must not reach OwnerIdentity (issue #124).
+    #
+    # Note: user_id/group_id/bot_id retain historical top-level metadata/params
+    # fallbacks (pre-existing behavior, not changed by issue #124); only
+    # agent_id is restricted to routing-only (the new field added by #124).
+    req = AgentRequest(
+        request_id="req-top",
+        channel_id="web",
+        session_id=None,
+        req_method=ReqMethod.TEAM_GET,
+        params={},
+        metadata={"agent_id": "evil-1", "user_id": "u1"},
+    )
+    ident = handlers.request_identity(req)
+    # agent_id: routing-only (issue #124) — top-level value ignored.
+    assert ident.agent_id == ""
+    # user_id: historical fallback to top-level metadata still applies
+    # (not in scope for issue #124; documented here to make the trust-boundary
+    # asymmetry explicit rather than implicit).
+    assert ident.user_id == "u1"
+
+
 @pytest.mark.asyncio
 async def test_team_get_by_session_for_owner(store, entity):
     ok, payload = await _call(handlers.handle_team_get, _request(ReqMethod.TEAM_GET, OWNER, {}, session_id="sess-1"))

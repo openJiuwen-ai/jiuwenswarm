@@ -40,6 +40,9 @@ _TENANT_BOT_ID_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
 _TENANT_USER_ID_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
     "tenant_user_id", default=""
 )
+_TENANT_AGENT_ID_CV: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "tenant_agent_id", default=""
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,7 @@ class _TenantContextTokens:
     group_id: contextvars.Token
     bot_id: contextvars.Token
     user_id: contextvars.Token
+    agent_id: contextvars.Token
 
 
 class TenantContext:
@@ -97,6 +101,11 @@ class TenantContext:
         return _TENANT_USER_ID_CV.get() or ""
 
     @classmethod
+    def current_agent_id(cls) -> str:
+        """Bound plaintext ``agent_id`` (issue #124); empty when unbound."""
+        return _TENANT_AGENT_ID_CV.get() or ""
+
+    @classmethod
     def current_triple(cls) -> tuple[str, str, str]:
         """Return bound plaintext ``(group_id, bot_id, user_id)`` (may be empty)."""
         return (cls.current_group_id(), cls.current_bot_id(), cls.current_user_id())
@@ -109,8 +118,9 @@ class TenantContext:
         group_id: str | None = None,
         bot_id: str | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> "TenantContext":
-        """Bind ``tenant_key``, optional plaintext triple, and (enterprise) paths."""
+        """Bind ``tenant_key``, optional plaintext triple + ``agent_id``, and (enterprise) paths."""
         from jiuwenswarm.common.utils import (
             get_agent_root_dir,
             get_agent_workspace_dir,
@@ -125,6 +135,7 @@ class TenantContext:
         gid = str(group_id or "").strip()
         bid = str(bot_id or "").strip()
         uid = str(user_id or "").strip()
+        aid = str(agent_id or "").strip()
 
         if is_enterprise():
             tenant_root = get_multi_tenant_user_workspace_dir(key)
@@ -143,6 +154,7 @@ class TenantContext:
                 group_id=_TENANT_GROUP_ID_CV.set(gid),
                 bot_id=_TENANT_BOT_ID_CV.set(bid),
                 user_id=_TENANT_USER_ID_CV.set(uid),
+                agent_id=_TENANT_AGENT_ID_CV.set(aid),
             )
         else:
             # Personal: bind key + optional identity; path CVs stay unbound
@@ -155,6 +167,7 @@ class TenantContext:
                 group_id=_TENANT_GROUP_ID_CV.set(gid),
                 bot_id=_TENANT_BOT_ID_CV.set(bid),
                 user_id=_TENANT_USER_ID_CV.set(uid),
+                agent_id=_TENANT_AGENT_ID_CV.set(aid),
             )
         return cls(tokens)
 
@@ -167,6 +180,7 @@ class TenantContext:
         _TENANT_GROUP_ID_CV.reset(self._tokens.group_id)
         _TENANT_BOT_ID_CV.reset(self._tokens.bot_id)
         _TENANT_USER_ID_CV.reset(self._tokens.user_id)
+        _TENANT_AGENT_ID_CV.reset(self._tokens.agent_id)
 
     @classmethod
     @contextmanager
@@ -177,9 +191,11 @@ class TenantContext:
         group_id: str | None = None,
         bot_id: str | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> Iterator["TenantContext"]:
         ctx = cls.bind(
-            tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+            tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id,
+            agent_id=agent_id,
         )
         try:
             yield ctx
@@ -196,3 +212,4 @@ class TenantContext:
         _TENANT_GROUP_ID_CV.set("")
         _TENANT_BOT_ID_CV.set("")
         _TENANT_USER_ID_CV.set("")
+        _TENANT_AGENT_ID_CV.set("")
