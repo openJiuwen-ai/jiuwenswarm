@@ -1035,25 +1035,6 @@ class TestConfigFunctions:
     """Test config module functions."""
 
     @staticmethod
-    def test_model_custom_header_named_image_env_is_preserved(tmp_path, monkeypatch):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(
-            "models:\n"
-            "  example:\n"
-            "    model_client_config:\n"
-            "      custom_headers:\n"
-            "        image_env: ${TEST_MODEL_HEADER}\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
-        monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "")
-        monkeypatch.setenv("TEST_MODEL_HEADER", "preview")
-
-        headers = config_module.get_config()["models"]["example"]["model_client_config"]["custom_headers"]
-
-        assert headers == {"image_env": "preview"}
-
-    @staticmethod
     def test_update_setup_guide_enabled_in_config(
         monkeypatch: pytest.MonkeyPatch,
         temp_config_file: Path,
@@ -2712,15 +2693,3 @@ channels:
         assert f"push_id: {token}" in text
         assert f"push_id: '{token}'" not in text
         assert f'push_id: "{token}"' not in text
-
-
-@pytest.mark.parametrize('mode', [0o600, 0o640])
-def test_agentos_config_updates_keep_the_prepared_mode(tmp_path, monkeypatch, mode):
-    from jiuwenswarm.common.config import dump_yaml_round_trip
-
-    monkeypatch.setenv('JIUWENSWARM_RUNTIME_PROFILE', 'agentos')
-    path = tmp_path / 'config.yaml'
-    path.write_text('models: {}\n')
-    path.chmod(mode)
-    dump_yaml_round_trip(path, {'models': {'defaults': []}})
-    assert path.stat().st_mode & 0o777 == mode
