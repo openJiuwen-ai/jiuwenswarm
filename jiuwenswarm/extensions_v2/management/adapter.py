@@ -17,6 +17,7 @@ from openjiuwen.core.extension.bundle import bundle_version_dir, is_bundle_docum
 from openjiuwen.core.extension.data.json_values import valid_package_id
 from openjiuwen.core.extension.errors import OperationError
 from openjiuwen.core.extension.management import QueryResult
+from openjiuwen.core.extension.package_manager import PackageManager
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -87,6 +88,7 @@ class _Request:
     refresh: bool = False
     enable: bool | None = None
     version: str = ""
+    inspect: bool = False
 
 
 class PackageManagementAdapter(GatewayAdapter):
@@ -132,9 +134,10 @@ class PackageManagementAdapter(GatewayAdapter):
         except Exception:  # noqa: BLE001 - keep management failures at the request boundary
             logger.exception("[ExtensionsV2] management request failed: %s", method)
             return await _failed_request(request, manager, parsed.package_id, "V2 package management failed")
-        if method in (ReqMethod.EXTENSIONS_V2_INSTALL.value, ReqMethod.EXTENSIONS_V2_IMPORT.value) or (
+        should_notify = method in (ReqMethod.EXTENSIONS_V2_INSTALL.value, ReqMethod.EXTENSIONS_V2_IMPORT.value) or (
             method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value and parsed.enable is True
-        ):
+        )
+        if should_notify and not parsed.inspect:
             # The package result is already committed; a notification-side failure
             # (config or state-store read) must not turn it into an error response.
             try:
@@ -289,6 +292,9 @@ async def _dispatch(
         if method == ReqMethod.EXTENSIONS_V2_FILE_LIST.value:
             return {"tree": list_package_files(entry.root)}
         return read_package_file(entry.root, parsed.path)
+    if method == ReqMethod.EXTENSIONS_V2_IMPORT.value and parsed.inspect:
+        package_id = await asyncio.to_thread(_inspect_import_package, parsed.paths[0])
+        return {"package_id": package_id}
     if method in (ReqMethod.EXTENSIONS_V2_INSTALL.value, ReqMethod.EXTENSIONS_V2_IMPORT.value):
         install_dir = resolve_install_dir()
         store = ExtensionInstallState.for_install_dir(install_dir)
@@ -673,6 +679,15 @@ def _installed_packages(
     ]
 
 
+def _inspect_import_package(path: Path) -> str | None:
+    try:
+        with PackageManager(path.parent).open_source(path) as opened:
+            return opened.manifest.package_id
+    except ExtensionFailure:
+        # The regular import still owns validation and error reporting.
+        return None
+
+
 def _parse_request(method: object, params: object) -> _Request:
     if not isinstance(method, str) or method not in PackageManagementAdapter.methods:
         raise ValueError("unsupported V2 package management method")
@@ -680,9 +695,10 @@ def _parse_request(method: object, params: object) -> _Request:
         raise ValueError("params must be an object")
 
     if method == ReqMethod.EXTENSIONS_V2_IMPORT.value:
-        if set(params) != {"path"}:
+        inspect = params.get("inspect", False)
+        if set(params) - {"path", "inspect"} or "path" not in params or not isinstance(inspect, bool):
             raise ValueError("import requires one absolute ZIP path")
-        return _Request(paths=tuple(_zip_paths([params["path"]])))
+        return _Request(paths=tuple(_zip_paths([params["path"]])), inspect=inspect)
 
     if method == ReqMethod.EXTENSIONS_V2_INSTALL.value:
         if set(params) == {"paths"}:

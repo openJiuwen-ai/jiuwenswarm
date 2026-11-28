@@ -453,6 +453,7 @@ generated: true
 | [B_20261126_2208_application-menu-slot-flicker](bugfix/jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [B_20261127_1547_webui-slot-capacity](bugfix/extensions/B_20261127_1547_webui-slot-capacity.md) | B | WebUI 槽位容量与投递回滚修复 | kusanagima | 无独立 D：基于现有 WebUI 槽位和投递契约的缺陷修复，无独立设计文档。 |
 | [B_20261128_0955_local-app-delete-safeguards](bugfix/jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
+| [B_20261128_1406_system-plugin-zip-confirmation](bugfix/jiuwenswarm/extensions_v2/B_20261128_1406_system-plugin-zip-confirmation.md) | B | 上传系统插件 ZIP 时缺少多插件开启提醒 | lizhiyuan | 无独立 D：沿用插件广场已有的启用状态判断与确认弹窗，在上传入口补齐同一交互。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -663,6 +664,7 @@ generated: true
 | [F_20261119_1624_beta3-extensions-develop-port](features/F_20261119_1624_beta3-extensions-develop-port.md) | F | beta3 扩展能力线性迁入 develop | lizhiyuan | 无独立 D：按用户明确确认的逐笔迁移、保留 develop 行为和 Gateway 跨仓边界执行；本次没有另立设计，原扩展契约沿用模块内规约。 |
 | [B_20261126_2208_application-menu-slot-flicker](bugfix/jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [B_20261127_1615_team-leader-context-usage](bugfix/jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
+| [B_20261128_1406_system-plugin-zip-confirmation](bugfix/jiuwenswarm/extensions_v2/B_20261128_1406_system-plugin-zip-confirmation.md) | B | 上传系统插件 ZIP 时缺少多插件开启提醒 | lizhiyuan | 无独立 D：沿用插件广场已有的启用状态判断与确认弹窗，在上传入口补齐同一交互。 |
 
 <a id="module-jiuwenswarm-extensions_v2-webui"></a>
 
