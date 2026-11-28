@@ -33,17 +33,20 @@ from openjiuwen.core.single_agent.rail.base import (
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
     filter_todos_for_execution,
     get_todo_generation_token,
+    is_persistent_todo,
     remember_turn_user_query,
     snapshot_includes_persistent_todos,
-    is_persistent_todo,
 )
 from jiuwenswarm.common.todo_generation import todo_item_generation_token
-from jiuwenswarm.common.todo_snapshot import versioned_todo_output
-from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
+from jiuwenswarm.common.todo_snapshot import (
+    overlay_serial_todo_statuses,
+    versioned_todo_output,
+)
 from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
@@ -1760,7 +1763,7 @@ class TaskExecutionRail(DeepAgentRail):
                     "[SKILL_COMPLETE_BLOCKED] todo.json 中仍有未完成任务，"
                     "请先用 todo_modify 将全部已完成项标为 completed。"
                 )
-                ctx.extra["_skip_tool"] = True
+                mark_skipped(ctx)
                 ctx.inputs.tool_result = msg
                 ctx.inputs.tool_msg = ToolMessage(
                     content=msg, tool_call_id=tool_call_id,
@@ -1809,7 +1812,7 @@ class TaskExecutionRail(DeepAgentRail):
         tc = ctx.inputs.tool_call
         tool_call_id = str(getattr(tc, "id", "") or "")
         msg = _todo_close_nudge_message(self._started_in_progress_tasks())
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
         ctx.inputs.tool_result = msg
         ctx.inputs.tool_msg = ToolMessage(
             content=msg, tool_call_id=tool_call_id,

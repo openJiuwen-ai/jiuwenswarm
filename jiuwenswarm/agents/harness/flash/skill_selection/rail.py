@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import asyncio
-import logging
 import hashlib
-import time
+import json
+import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -15,16 +15,18 @@ from uuid import uuid4
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
+
 from .catalog import CatalogChanged, directory_id
 from .config import SelectionSettings
-from .execution import SelectionBusy, SelectionTimedOut
 from .diagnostics import emit, selection_trace
-from .query import retrieval_text
+from .execution import SelectionBusy, SelectionTimedOut
 from .explicit import explicit_request, explicit_task_text, resolve_names
-from .tool import SkillSearchInput, SkillSearchTool, SYSTEM_GUIDANCE
 from .presentation import candidate_view
 from .prompt import without_catalog
+from .query import retrieval_text
 from .request_state import RequestState, SearchCacheKey
+from .tool import SYSTEM_GUIDANCE, SkillSearchInput, SkillSearchTool
 
 logger = logging.getLogger(__name__)
 
@@ -520,7 +522,7 @@ class SkillSelectionRail(DeepAgentRail):
         logger.info('[SkillSelection] explicit_tool_blocked requested=%r',
                     args.get('skill_name') if isinstance(args, dict) else None)
         call = getattr(ctx.inputs, 'tool_call', None)
-        ctx.extra['_skip_tool'] = True
+        mark_skipped(ctx)
         ctx.inputs.tool_result = message
         ctx.inputs.tool_msg = ToolMessage(content=message, tool_call_id=getattr(call, 'id', ''))
 

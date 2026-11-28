@@ -25,6 +25,7 @@ import pytest
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
 from jiuwenswarm.agents.harness.common.rails import deepresearch_execution_rail as rail
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 
 def _fake_session(delivery_index=None, states=None, aliases=None):
@@ -91,7 +92,7 @@ def test_second_turn_same_topic_returns_already_delivered_without_rerun(monkeypa
     # 不得写共享 ctx.extra["_skip_tool"]：AbilityManager 在
     # _railed_execute_single_tool_call 方法体入口按名 pop，短路调用走不到 pop，
     # 标记会残留在共享 extra 里被同轮并行 tool call 误消费。
-    assert "_skip_tool" not in ctx.extra
+    assert not was_skipped(ctx)
     # Issue 3：tool_msg 必须设为精简完成文案，含真实 file_name 且不含内部 state/conversation_id
     assert ctx.inputs.tool_msg is not None
     assert "ai_chip_report" in ctx.inputs.tool_msg.content

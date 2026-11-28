@@ -29,7 +29,13 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     is_todo_close_nudge,
 )
 from jiuwenswarm.agents.harness.common.rails.todo_close_gate import TodoCloseGate
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 from jiuwenswarm.agents.harness.common.tools.todo_resume import is_persistent_todo
+from jiuwenswarm.agents.harness.flash.prompt.content.todo import (
+    _TODO_DISCIPLINE_CN,
+    _TODO_DISCIPLINE_EN,
+    _TODO_SECTION_PRIORITY,
+)
 from jiuwenswarm.agents.harness.flash.tools.flash_todo import (
     _UNIFIED_TODO_NAME,
     UnifiedTodoTool,
@@ -43,12 +49,6 @@ from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
     RefusalScrubGate,
     is_canned_refusal_text,
-)
-
-from jiuwenswarm.agents.harness.flash.prompt.content.todo import (
-    _TODO_DISCIPLINE_CN,
-    _TODO_DISCIPLINE_EN,
-    _TODO_SECTION_PRIORITY,
 )
 
 logger = logging.getLogger(__name__)
@@ -329,7 +329,7 @@ class FlashTodoRail(DeepAgentRail):
             "这次只提醒一次。上一轮正文未送达用户，下一轮应完整回复，不能引用它。\n"
             + remaining
         )
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
         ctx.inputs.tool_result = msg
         ctx.inputs.tool_msg = ToolMessage(
             content=msg, tool_call_id=str(getattr(ctx.inputs.tool_call, "id", "") or "")

@@ -11,6 +11,7 @@ from flash_sdk import sdk_tools
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
 from openjiuwen.harness.security.models import PermissionConfirmResponse
 
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
     FlashPermissionRail,
 )
@@ -142,7 +143,7 @@ async def test_cold_warm_hot_update_keeps_actual_permission_instance(
             "web_flash", {"search": {"query": "fixture"}}, call_id=f"turn-{iteration}"
         )
         await rail.before_tool_call(ctx)
-        assert ctx.extra.get("_skip_tool")
+        assert was_skipped(ctx)
     adapter._agent_permissions_body = {
         **adapter._agent_permissions_body,
         "tools": {"web_flash": "allow", "web_search": "allow"},
@@ -150,7 +151,7 @@ async def test_cold_warm_hot_update_keeps_actual_permission_instance(
     adapter._update_permission_rail({}, session_id="a")
     ctx = tool_context("web_flash", {"search": {"query": "fixture"}})
     await rail.before_tool_call(ctx)
-    assert not ctx.extra.get("_skip_tool")
+    assert not was_skipped(ctx)
     assert id(adapter._permission_rail) == identity
 
 
@@ -192,7 +193,7 @@ async def test_missing_published_key_never_calls_backend(permission_adapter):
     get_permission_manager().remove_config(rail.permission_key)
     ctx = tool_context("web_flash", {"search": {"query": "fixture"}})
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool")
+    assert was_skipped(ctx)
 
 
 @pytest.mark.asyncio
@@ -285,7 +286,7 @@ async def test_native_deepagent_cold_and_reload_register_flash_rail_once(
             await agent._react_agent.agent_callback_manager.execute(
                 AgentCallbackEvent.BEFORE_TOOL_CALL, ctx
             )
-            assert ctx.extra.get("_skip_tool")
+            assert was_skipped(ctx)
             assert observed.count(f"sdk-turn-{iteration}") == 1
         assert adapter._permission_rail is permission
     finally:

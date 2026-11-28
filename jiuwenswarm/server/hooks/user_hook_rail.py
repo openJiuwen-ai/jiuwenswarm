@@ -9,7 +9,8 @@ import logging
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
-from jiuwenswarm.common.hooks_config import HooksConfig, HookEvent
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
+from jiuwenswarm.common.hooks_config import HookEvent, HooksConfig
 from jiuwenswarm.server.hooks.executor import HookExecutor
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class UserHookRail(DeepAgentRail):
 
         for r in results:
             if r.outcome == "blocking":
-                ctx.extra["_skip_tool"] = True
+                mark_skipped(ctx)
                 ctx.extra["_hook_feedback"] = r.error
                 logger.info(
                     "UserHookRail: PreToolUse BLOCKED tool=%s reason=%s",

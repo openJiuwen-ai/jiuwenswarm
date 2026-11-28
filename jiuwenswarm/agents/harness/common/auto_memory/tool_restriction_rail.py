@@ -6,7 +6,7 @@ Similar to Claude Code's canUseTool mechanism:
 - Allows Read/Grep/Glob tools (unrestricted)
 - Allows Bash read-only commands (ls, cat, git status, etc.)
 - Allows Write/Edit only in memory_dir
-- Denies other tools by setting ctx.extra["_skip_tool"] = True
+- Denies other tools by setting mark_skipped(ctx)
 
 This enables cache sharing: the subagent inherits parent's tools,
 but runtime restriction prevents unauthorized tool use.
@@ -20,7 +20,9 @@ import shlex
 from pathlib import Path
 from typing import Any, Dict
 
-from openjiuwen.core.single_agent.rail.base import AgentRail, AgentCallbackContext
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail
+
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +87,7 @@ class AutoMemoryToolRestrictionRail(AgentRail):
 
     This Rail implements the canUseTool-like mechanism for jiuwenswarm:
     - Checks tool_name and tool_args before each tool execution
-    - Sets ctx.extra["_skip_tool"] = True to deny unauthorized tool calls
+    - Sets mark_skipped(ctx) to deny unauthorized tool calls
     - Sets ctx.inputs.tool_result with denial message
 
     This enables API cache sharing because:
@@ -125,7 +127,7 @@ class AutoMemoryToolRestrictionRail(AgentRail):
         This is the core canUseTool-like check:
         1. Get tool_name and tool_args from ctx.inputs
         2. Check against allowed patterns
-        3. Set ctx.extra["_skip_tool"] = True if denied
+        3. Set mark_skipped(ctx) if denied
 
         Args:
             ctx: AgentCallbackContext containing tool call information.
@@ -298,7 +300,7 @@ class AutoMemoryToolRestrictionRail(AgentRail):
         """Deny the tool execution by setting _skip_tool.
 
         This is the key mechanism for runtime tool restriction:
-        - Set ctx.extra["_skip_tool"] = True to skip execution
+        - Set mark_skipped(ctx) to skip execution
         - Set ctx.inputs.tool_result with denial message
         - Set ctx.inputs.tool_msg with tool denial message
 
@@ -308,7 +310,7 @@ class AutoMemoryToolRestrictionRail(AgentRail):
             tool_args: Arguments of the denied tool.
         """
         # Set the skip flag
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
 
         # Build the denial message
         denial_msg = (

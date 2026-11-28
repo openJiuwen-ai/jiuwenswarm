@@ -9,6 +9,7 @@ import pytest
 from jiuwenswarm.agents.harness.common.auto_memory.tool_restriction_rail import (
     AutoMemoryToolRestrictionRail,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 
 @pytest.fixture
@@ -83,11 +84,11 @@ async def test_rail_skips_substring_lookalike_but_lets_read_only_pipeline_throug
         extra={},
     )
     await rail.before_tool_call(denied)
-    assert denied.extra.get("_skip_tool") is True
+    assert was_skipped(denied) is True
 
     allowed = SimpleNamespace(
         inputs=SimpleNamespace(tool_name="bash", tool_args={"command": "cat a | grep b"}, tool_result=None),
         extra={},
     )
     await rail.before_tool_call(allowed)
-    assert "_skip_tool" not in allowed.extra
+    assert not was_skipped(allowed)

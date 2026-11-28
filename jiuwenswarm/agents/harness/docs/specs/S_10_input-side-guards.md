@@ -7,9 +7,9 @@
 | 类型 | spec |
 | 编号 / slug | S_10 / input-side-guards |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/path_whitespace_fix.py`（纯函数库）；`.../rails/read_file_validation.py`（纯函数库）；`.../rails/workspace_quota_rail.py`（`WorkspaceQuotaRail` + `check_workspace_command_tool`）。宿主：`.../rails/stream_event_rail.py`（`JiuSwarmStreamEventRail`，挂载点 :47-56 import、:1226-1232 路径修复、:1233-1236 读拦截、:1447-1448 after 归一、:546-593 辅助方法）。装配：`agents/swarm/providers/builtin_rails.py`（`swarm.workspace_quota` :86-91）、`agents/swarm/config_specs.py`（:99 / :149 rail 名单）、`server/runtime/agent_adapter/interface.py`（:1411-1416 附件物化前配额检查） |
-| 关联模块（agent-core 仓，跨仓契约） | `openjiuwen.core.single_agent.rail.base`（`AgentRail` / `AgentCallbackContext` / `ToolCallInputs`；`ctx.extra["_skip_tool"]` 跳过执行约定）、`openjiuwen.core.foundation.llm.ToolMessage`、`openjiuwen.core.sys_operation.cwd.get_cwd`（相对路径基准）、`openjiuwen.core.runner.callback`（钩子链按 priority **降序**执行——`framework.py:459` / `chain.py:67`） |
+| 关联模块（agent-core 仓，跨仓契约） | `openjiuwen.core.single_agent.rail.base`（`AgentRail` / `AgentCallbackContext` / `ToolCallInputs`；`ctx.mark_tool_skipped()` / `tool_call_skipped(ctx)` 跳过执行约定，旧 `extra["_skip_tool"]` 由跨仓兼容 shim 兜底，见 [[B_10]]）、`openjiuwen.core.foundation.llm.ToolMessage`、`openjiuwen.core.sys_operation.cwd.get_cwd`（相对路径基准）、`openjiuwen.core.runner.callback`（钩子链按 priority **降序**执行——`framework.py:459` / `chain.py:67`） |
 | 配额本体（common 域，跨域契约） | `jiuwenswarm/common/workspace/quota.py` —— 归 **common 域 S_07**（`jiuwenswarm/common/docs/specs/S_07_workspace-safety-and-quota.md`），本 spec 只登记薄挂载 |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -40,10 +40,10 @@
 - **N3（恰一匹配才修）**：逐段下行——已存在段直接通过；缺失段以 `_squash`（去**全部**空白字符，`str.split` 覆盖全角空格）为 key 在 `os.listdir(current)` 中找 squash 相等的名字，`len(matches) != 1` → None。**歧义与零匹配同等放弃**；非空白差异（数字、扩展名不同）天然不命中。
 - **N4（修参不可变 + 类型保持）**：`fix_whitespace_path_arguments` 返回**新** dict（浅拷贝 + 新 list），原入参不变异；JSON string 入参解析失败返 None，无 fixes 返 None。宿主 `_fix_whitespace_path_args` 写回 `tool_call.arguments` 时**保持到达时类型**：str → `json.dumps(ensure_ascii=False)`，dict → dict。
 - **N5（通知明示不重试）**：`build_whitespace_fix_notice` 双语（cn / en），文案同时含原路径与纠正路径，并要求"后续直接使用该路径，不要重试原路径"。
-- **N6（before 拦截注入）**：`handle_read_file_before_tool_call` 对非文本扩展名（图片 13 种 + 压缩 / 媒体 / 可执行 / 字体等 30 种）在执行前拒绝：`ctx.extra["_skip_tool"] = True` + `_write_read_file_tool_result` 写 `tool_result`（字符串）与 `tool_msg`（存在则改 content、缺 `tool_call_id` 则补齐；不存在则新建 `ToolMessage`）。
+- **N6（before 拦截注入）**：`handle_read_file_before_tool_call` 对非文本扩展名（图片 13 种 + 压缩 / 媒体 / 可执行 / 字体等 30 种）在执行前拒绝：`mark_skipped(ctx)` + `_write_read_file_tool_result` 写 `tool_result`（字符串）与 `tool_msg`（存在则改 content、缺 `tool_call_id` 则补齐；不存在则新建 `ToolMessage`）。
 - **N7（二进制启发式双轨）**：`_looks_like_binary_payload`——特征词表（11 个 marker，lower 后包含匹配）**只对 ≤500 字符**的短文本生效（错误消息样）；任意长度看 `\x00` 与前 4096 字符控制字符（`ord < 9`、`== 11`、`== 12`、`14–31`；\t \n \r 除外）占比 `> 0.05`。**长文本不按词表判**——真实文件内容可合法含 "binary file" 字样（如读到的源码本身）。
 - **N8（parallel_read 聚合放行）**：结果解包出 `{parallel_read: 真值, files: list}` → `validate_read_file_result` 直接 `(True, None)`——单文件失败已隔离在 `files[i].error`，聚合文本不再整体套启发式。
-- **N9（after 归一幂等）**：`normalize_read_file_tool_outcome` 只对 read 类 7 工具名生效；结果已是 `[READ_FILE_ERROR]` 前缀（lstrip 后 startswith）→ return；`success is False`（dict 或 ToolOutput duck-type 解包）优先透传工具自带 error 文案；空结果 / 二进制误读改写为带前缀的引导文案（图片 → `visual_question_answering`）。**只改写结果，不置 `_skip_tool`**（after 阶段工具已执行完）。
+- **N9（after 归一幂等）**：`normalize_read_file_tool_outcome` 只对 read 类 7 工具名生效；结果已是 `[READ_FILE_ERROR]` 前缀（lstrip 后 startswith）→ return；`success is False`（dict 或 ToolOutput duck-type 解包）优先透传工具自带 error 文案；空结果 / 二进制误读改写为带前缀的引导文案（图片 → `visual_question_answering`）。**只改写结果，不置否决标记**（after 阶段工具已执行完）。
 - **N10（命令工具满额拒绝）**：`WorkspaceQuotaRail.before_tool_call` 只拦 `_COMMAND_TOOLS`（bash / exec_command / mcp_exec_command / execute_bash / run_command / shell / powershell）及 `名_` 前缀变体（strip + lower 归一）；quota 状态 `block` → 捕获 `WorkspaceQuotaExceeded` 后 `_deny`：`_skip_tool` + `tool_result` 为 **dict** `{success: False, error, code: WORKSPACE_QUOTA_EXCEEDED}`（attr / dict 两种 inputs 形态都写）+ `tool_msg` 为字符串。
 - **N11（du / walk 卸线程池 + 附件同入口）**：`check_workspace_command_tool` 内含 `resolve_effective_quota`（近限同步 du，可能阻塞数秒），rail 侧经 `asyncio.to_thread` 卸载，避免卡 Agent 事件循环；`interface.py` 企业附件物化前**同步**调用同一入口（下载体积未知：已 block 直接拒绝，否则放行后由写文件门禁兜底）。
 - **N12（开关 fail-open + 写侧不查）**：开关是 env `WORKSPACE_QUOTA_ENABLED`（真值 1/true/yes/on，默认**关**），非 config.yaml——关时 rail `before_tool_call` 直接 return、`check_workspace_command_tool` 返回 `allowed=True`；写文件工具不在此查（走 fs.write_file 的写侧门禁，common 域 S_07）。

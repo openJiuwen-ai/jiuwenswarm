@@ -14,6 +14,7 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     TODO_CLOSE_NUDGE_ID_PREFIX,
 )
 from jiuwenswarm.agents.harness.common.rails.todo_close_gate import TodoCloseGate
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.agents.harness.flash.rails import flash_todo_rail
 from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import (
     MODEL_REFUSAL_BODY,
@@ -262,11 +263,18 @@ async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
 @pytest.mark.parametrize("mode", ["legacy", "versioned"])
 async def test_refusal_publishes_committed_snapshot_without_rereading(mode):
     from unittest.mock import AsyncMock
+
     from openjiuwen.harness.tools.todo_store import TodoResult, decode_snapshot
-    from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire, parse_agent_server_wire_chunk
+
+    from jiuwenswarm.common.e2a.wire_codec import (
+        encode_agent_chunk_for_wire,
+        parse_agent_server_wire_chunk,
+    )
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.todo_snapshot import TODO_SNAPSHOT_MODE
-    from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
+    from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import (
+        _parse_stream_chunk,
+    )
 
     rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS, "script": TodoStatus.PENDING})
     snapshot = decode_snapshot({"plan_id": "P", "revision": 5, "todos": [
@@ -397,7 +405,7 @@ async def test_nudge_tool_is_skipped_with_flash_tool_wording() -> None:
 
     await rail.before_tool_call(nudge_ctx)
 
-    assert nudge_ctx.extra["_skip_tool"] is True
+    assert was_skipped(nudge_ctx) is True
     msg = nudge_ctx.inputs.tool_result
     assert "[TODO_CLOSE_REQUIRED]" in msg
     assert "id=deliver" in msg
@@ -633,7 +641,7 @@ async def test_pending_only_work_gets_one_continuation_then_incomplete_notice() 
     assert rail._close_gate.used is True
     nudge = _todo_ctx(session, "", call_id=first.inputs.response.tool_calls[0].id)
     await rail.before_tool_call(nudge)
-    assert nudge.extra["_skip_tool"] is True
+    assert was_skipped(nudge) is True
     assert "id=pages status=pending" in nudge.inputs.tool_result
     assert "实际调用工具执行" in nudge.inputs.tool_result
     assert "保留真实状态" in nudge.inputs.tool_result

@@ -80,7 +80,7 @@ DeepResearch 主研究 SDK 与 runner 日志由 [[S_24]] 维护，包含日志�
 | 双同步顺序 | 迭代末"先 super() plan→disk、再 disk→plan"的固定顺序，反序 = 历史 bug [[S_09]] |
 | squash 恰一匹配 | 路径空白修复只对 args 中**恰好一个**可修复匹配就地改写，零匹配与多匹配歧义同判放弃 [[S_10]] |
 | 二进制启发式双轨 | 读侧二进制判定 = 词表 11 marker（仅 ≤500 字符）+ 控制字符占比（前 4096 字符 >5%），双轨各有命中面 [[S_10]] |
-| `_skip_tool` 协作 | before 钩子间的跨 rail 停摆信号：quota(95) 拒绝先置位，stream(80) 据此跳过 in_progress 事件；after 侧只改写结果**不**置位 [[S_10]] |
+| `skip_tool` 协作 | before 钩子间的跨 rail 停摆信号：quota(95) 拒绝先调 `mark_skipped(ctx)` 置位，stream(80) 据此跳过 in_progress 事件；after 侧只改写结果**不**置位。标记经 `common/skip_tool_compat` 兼容新旧 agent-core（新 core 落 per-call marker，旧 core 回落 `extra["_skip_tool"]`），见 [[B_10]] [[S_10]] |
 | 汇聚点 | `DeepAgent.create_subagent`（四参数签名）——TaskTool / SessionSpawnExecutor 创建侧的唯一入口（AgentTool 创建侧偏离汇聚点，见 [[S_14]] N7）；观测埋点 / 授权 wiring / perf patch 都 patch 它 [[S_11]] |
 | 三模式互斥 | SubagentRail 按 runtime（subagent_spawn / wait / list）> async session（sessions_spawn / list / cancel）> sync task_tool 选一；`synchronous_subagent_types` 在 runtime 模式下保留指定类型走同步 [[S_14]] |
 | 委托边界 | `run_subagent_with_timeout` 的五道闸 + 结果三态 + 实例级永久退役；三条通道的挂载差异（SessionSpawnExecutor 裸 invoke 无边界）见 [[S_14]] 通道表 |
@@ -246,8 +246,10 @@ agents/harness/
     判等不可改 `==`，注册前必查 `Runner.resource_mgr.get_tool` [[S_09]]。
 19. **squash 恰一匹配与修参不可变**：路径修复只在恰好一个匹配时就地改写（零匹配与
     歧义同判放弃），且不改变参数的不可变类型（tuple 不变 list）[[S_10]]。
-20. **`_skip_tool` 是 before 钩子间的停摆契约**：quota(95) 先于 stream(80) 执行，
-    拒绝时先置 `_skip_tool`，后续 rail 据此跳过事件；after 侧归一只改写结果**不**置位 [[S_10]]。
+20. **skip 标记是 before 钩子间的停摆契约**：quota(95) 先于 stream(80) 执行，
+    拒绝时先调 `mark_skipped(ctx)` 置位，后续 rail 用 `was_skipped(ctx)` 据此跳过事件；
+    after 侧归一只改写结果**不**置位。标记不再直接写共享 `extra`——新 core 落在
+    per-call `AgentCallbackContext`，跨版本兼容见 `common/skip_tool_compat` [[B_10]] [[S_10]]。
 21. **`create_subagent` 是创建侧唯一汇聚点**：TaskTool / SessionSpawnExecutor 经它创建
     （观测埋点 / 授权 wiring / perf patch 都 patch 它）；AgentTool 创建侧直接
     `create_deep_agent` 的偏离以执行侧走 `invoke_subagent_with_trace` 补偿；新增通道禁止

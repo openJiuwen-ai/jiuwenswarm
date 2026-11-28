@@ -10,6 +10,7 @@ from typing import Any
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail
 
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 from jiuwenswarm.common.workspace.quota import (
     WORKSPACE_QUOTA_EXCEEDED,
     QuotaGateDecision,
@@ -91,7 +92,7 @@ class WorkspaceQuotaRail(AgentRail):
 
     @staticmethod
     def _deny(ctx: AgentCallbackContext, tool_name: str, tool_args: dict[str, Any]) -> None:
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
         msg = (
             f"{WORKSPACE_QUOTA_EXCEEDED}: workspace quota exceeded; "
             f"tool '{tool_name}' rejected. Clean up or request expansion."

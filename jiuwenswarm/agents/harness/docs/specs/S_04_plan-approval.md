@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_04 |
 | 状态 | 当前实现的真实描述（含未装配遗留机制的登记） |
-| 修订日期 | 2026-11-02 |
+| 修订日期 | 2026-11-28 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_plan_approval_interrupt_rail.py`（p78 现行审批门，357 行）<br>`jiuwenswarm/agents/harness/code/prompt/plan_approval.py`（常量、Web 三动作描述符、意图分类，368 行）<br>`jiuwenswarm/agents/harness/code/rails/code_agent_mode_rail.py`（批准后的模式恢复 / 正文压缩 / 延迟收尾消费面，325 行）<br>`jiuwenswarm/agents/harness/work/rails/work_agent_mode_rail.py`（76 行）+ `work/prompt/work_plan_prompts.py` 的 `WORK_PLAN_ALLOWED_TOOLS`（work profile plan 白名单）<br>`jiuwenswarm/agents/harness/code/rails/code_plan_approval_rail.py`（p76 文本审批，**未装配遗留**，226 行） |
 | 装配点 | 三处，均返回同一个 `PlanApprovalInterruptRail()` 实例类：① `server/runtime/agent_adapter/interface_deep.py` `_build_work_plan_approval_rail()`（~10580，`_RailBuildInfo("_work_plan_approval_rail")` ~10800，deep 与 work profile 共用）；② `server/runtime/agent_adapter/interface_code.py` `_build_plan_approval_rail()`（~1339），并在 `_get_current_agent_rails`（~1353-1369）纳入热重载覆盖；③ `agents/swarm/providers/code_rails.py` `build_team_plan_approval`（~375，`_is_team_plan_leader` 门控，team.plan leader 复用） |
 | 消费点 | `server/runtime/agent_adapter/interface.py`（~2256-2285 Web 动作 → confirm 载荷映射；~97/253 reminder 原文还原）<br>`agents/harness/common/rails/interrupt/interrupt_helpers.py`（~1078 ask_user 载荷增强）<br>`server/handlers/_shared.py`（~645 进 plan 轮记录 original_query）<br>`server/handlers/_default.py`（~201 消费 `PLAN_MODE_EXITED_EVENT_TYPE`） |
@@ -32,7 +32,7 @@
 `PlanApprovalInterruptRail(ConfirmInterruptRail)`，`priority = 78`，`tool_names=["exit_plan_mode"]`——先于通用确认门 `CodeConfirmInterruptRail(80)` 抢占、后于 `AgentModeRail(85)`（plan 约束仍激活）。首次 `resolve_interrupt`（`user_input is None`）读计划文件构造审批消息并 `interrupt(InterruptRequest(..., auto_confirm_key="exit_plan_mode"))`；`init()` 绑定 `self._agent` 供读计划文件，`uninit()` 释放。
 
 **N2 模式恢复发生在批准后的 resumed 调用内，而非下一轮**
-批准 → 中断恢复 → `ExitPlanModeTool.invoke()` 真正执行并在体内调 `restore_mode_after_plan_exit()`。这是对齐 Claude Code 的关键设计：不依赖"下一条用户消息"来恢复模式（p76 文本机制的做法，见 N15）。拒绝 → 工具体被 `_skip_tool` 拦截、模型收到反馈错误、留在 plan 继续修订。
+批准 → 中断恢复 → `ExitPlanModeTool.invoke()` 真正执行并在体内调 `restore_mode_after_plan_exit()`。这是对齐 Claude Code 的关键设计：不依赖"下一条用户消息"来恢复模式（p76 文本机制的做法，见 N15）。拒绝 → 工具体被 `skip_tool` 标记拦截、模型收到反馈错误、留在 plan 继续修订。
 
 **N3 Web「执行」= 批准 + 本轮收尾 + 前端补发**
 `plan_execute` 取值映射为 `{approved: True, plan_execute: True}`——`plan_execute` 是 ConfirmPayload 的**额外键**（N6）。rail 在决策非 RejectResult 后置 `ctx.extra[PLAN_EXECUTE_CTX_KEY] = True`；`CodeAgentModeRail.after_tool_call` Segment 4 检测到该标记即 `ctx.request_force_finish({"output": "", "result_type": "answer"})` 结束本轮。**真正的执行由前端紧接着补发的一条普通非 plan 消息开启全新一轮**——若同轮继续，本轮与前端补发轮会并发。
@@ -135,7 +135,7 @@ Web revise：`reject` + `custom_input` → `approved=False, feedback=修改意�
 | 键 | 置者 | 读者 | 含义 |
 |---|---|---|---|
 | `PLAN_EXECUTE_CTX_KEY`（`_plan_execute_deferred`） | p78 rail（N7 后置） | CodeAgentModeRail Segment 4 | Web 执行：本轮收尾 |
-| `_plan_rejected` | p78 rail | CodeAgentModeRail（贯穿 `_skip_tool` pop） | 拒绝：跳过注销/恢复/压缩 |
+| `_plan_rejected` | p78 rail | CodeAgentModeRail（贯穿否决标记消费） | 拒绝：跳过注销/恢复/压缩 |
 | `_plan_skipped` | p78 rail | （暂无） | 跳过伴生标记 |
 
 **Web 三动作描述符**：`{"kind": "execute", "value": "plan_execute", "requires_input": "no"} / {"kind": "skip", "value": "plan_skip", "requires_input": "empty"} / {"kind": "revise", "value": "reject", "requires_input": "yes"}` + 按语言的 label（cn：执行/跳过/下一步；en：Execute/Skip/Next）。`requires_input` 语义：no=无需输入框，empty=框空时才显示该按钮，yes=必须带输入。

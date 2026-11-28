@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
+
 _SKIP_TOOL_TOOL_MESSAGE_PATCHED = False
 
 
@@ -22,7 +24,7 @@ def apply_skip_tool_tool_message_patch() -> None:
     _orig = AbilityManager._railed_execute_single_tool_call  # pylint: disable=protected-access
 
     async def _patched_railed_execute_single_tool_call(self, ctx, tool_call, session, tag=None):
-        if ctx.extra.get("_skip_tool") and isinstance(ctx.inputs, ToolCallInputs):
+        if was_skipped(ctx) and isinstance(ctx.inputs, ToolCallInputs):
             if ctx.inputs.tool_msg is None:
                 tc = ctx.inputs.tool_call or tool_call
                 tool_call_id = getattr(tc, "id", "") if tc is not None else ""

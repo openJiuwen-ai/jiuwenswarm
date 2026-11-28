@@ -23,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.multimodal_image_state import (
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 
 class _FakeSession:
@@ -76,7 +77,7 @@ async def test_before_tool_call_rejects_blacklisted_unsafe_image() -> None:
 
     await rail.before_tool_call(ctx)
 
-    assert ctx.extra["_skip_tool"] is True
+    assert was_skipped(ctx) is True
     assert ctx.inputs.tool_msg.content.startswith("[READ_FILE_ERROR]")
     assert "image_url unsafe" in ctx.inputs.tool_msg.content
     assert "不能再次读取同一张图" in ctx.inputs.tool_msg.content
@@ -97,7 +98,7 @@ async def test_before_tool_call_allows_unrelated_unprovided_image() -> None:
 
     await rail.before_tool_call(ctx)
 
-    assert not ctx.extra.get("_skip_tool")
+    assert not was_skipped(ctx)
     assert getattr(ctx.inputs, "tool_msg", None) is None
 
 

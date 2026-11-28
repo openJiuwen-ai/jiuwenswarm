@@ -14,6 +14,7 @@ from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import PLAN_EXECUTE_CTX_KEY
 from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import CodeAgentModeRail
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 
 def _exit_plan_mode_ctx(*, exception: object = None, tool_result: object = "done"):
@@ -64,7 +65,7 @@ async def test_before_tool_call_blocks_switch_mode_exit_in_plan_mode() -> None:
         await rail.before_tool_call(ctx)
 
     parent.assert_not_awaited()
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
 
 
 @pytest.mark.asyncio
@@ -89,7 +90,7 @@ async def test_before_tool_call_blocks_non_git_write_in_plan_mode() -> None:
         await rail.before_tool_call(ctx)
 
     parent.assert_awaited_once()
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
 
 
 @pytest.mark.asyncio

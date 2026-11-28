@@ -19,6 +19,7 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     TODO_CLOSE_NUDGE_TOOL_NAME,
     TaskExecutionRail,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 
 class _FakeSession:
@@ -243,7 +244,7 @@ async def test_nudge_tool_is_skipped_and_does_not_advance_todos() -> None:
     await rail.before_tool_call(ctx)
     await rail.after_tool_call(ctx)
 
-    assert ctx.extra["_skip_tool"] is True
+    assert was_skipped(ctx) is True
     assert "todo_modify" in ctx.inputs.tool_result
     assert "没有送达用户" in ctx.inputs.tool_result
     assert "完整重写" in ctx.inputs.tool_result
