@@ -46,8 +46,22 @@ _TEAM_HISTORY_DEFAULT_LIMIT = 500
 _TEAM_HISTORY_MAX_LIMIT = 1000
 _TEAM_HISTORY_DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 _TEAM_HISTORY_MIN_MAX_BYTES = 2048
-_TEAM_HISTORY_MAX_MAX_BYTES = 6 * 1024 * 1024
-_TEAM_HISTORY_FRAME_OVERHEAD_BYTES = 1024
+# Keep the largest allowed page comfortably below the WebSocket send budget
+# (``agent_gateway.common.ws_limits.AGENT_WS_SEND_BUDGET_BYTES``, 6 MiB).  A page
+# selected at exactly 6 MiB grows again when encode_agent_response_for_wire()
+# adds envelope fields (request_id/response_id/sequence/metadata/...), so the
+# final wire payload exceeds the budget and send_wire_payload() replaces it with
+# an error frame (#6859).  Reserving 2 MiB for that envelope keeps long team
+# history sessions syncable via pagination instead of failing outright.
+_TEAM_HISTORY_MAX_MAX_BYTES = 4 * 1024 * 1024
+# Envelope headroom reserved when filling a team-history page.  E2A encoding
+# adds several KB of envelope per response; 1 KiB was far too small and let the
+# serialized wire payload cross the 6 MiB budget (#6859).  64 KiB is a realistic
+# margin for the largest pages.  It is a *cap*, not a flat deduction: small
+# max_bytes requests subtract only max_bytes // 4 (see the budget formula in
+# _select_history_record_page), so a client asking for, say, 32 KiB does not get
+# its page budget clamped down to _TEAM_HISTORY_MIN_MAX_BYTES.
+_TEAM_HISTORY_FRAME_OVERHEAD_BYTES = 64 * 1024
 _WORKFLOW_AGENT_FIELD_PART_BYTES = 32 * 1024
 _WORKFLOW_LIST_DEFAULT_LIMIT = 50
 _WORKFLOW_LIST_MAX_LIMIT = 200
@@ -417,9 +431,14 @@ def _select_history_record_page(
     if cursor >= total:
         return [], total
 
+    # Reserve envelope headroom proportionally to the requested page size so a
+    # small max_bytes is not pinned to _TEAM_HISTORY_MIN_MAX_BYTES by a flat
+    # 64 KiB deduction.  Large pages still reserve the full overhead (capped at
+    # a quarter of max_bytes), preserving #6859's protection at the top end.
+    overhead = min(_TEAM_HISTORY_FRAME_OVERHEAD_BYTES, max_bytes // 4)
     budget = max(
         _TEAM_HISTORY_MIN_MAX_BYTES,
-        max_bytes - _TEAM_HISTORY_FRAME_OVERHEAD_BYTES,
+        max_bytes - overhead,
     )
     base_payload = {
         "records": [],
