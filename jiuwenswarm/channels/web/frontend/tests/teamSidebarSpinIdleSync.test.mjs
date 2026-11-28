@@ -9,7 +9,11 @@ import { useChatStore } from '../node_modules/.cache/team-sidebar-spin/stores/ch
 import { useSessionStore } from '../node_modules/.cache/team-sidebar-spin/stores/sessionStore.mjs';
 import { isTeamAgentMode } from '../node_modules/.cache/team-sidebar-spin/features/planMode/wireMode.mjs';
 import { maySnapshotRelightProcessing } from '../node_modules/.cache/team-sidebar-spin/features/interruptSettleGuard.mjs';
-import { shouldKeepLocalCronProcessing } from '../node_modules/.cache/team-sidebar-spin/features/cron/cronProcessingGuard.mjs';
+import {
+  markCronOptimisticProcessing,
+  resetCronOptimisticProcessingForTests,
+  shouldKeepLocalCronProcessing,
+} from '../node_modules/.cache/team-sidebar-spin/features/cron/cronProcessingGuard.mjs';
 
 const SESSION_ID = 'web_team_sidebar_spin_idle_sync';
 
@@ -18,6 +22,8 @@ function createRefresh({
   metadata = { session_id: SESSION_ID, is_processing: false, status: 'idle' },
   recoveringExecution = false,
   patches = [],
+  requestImpl = null,
+  cronLastRunSessionId = {},
 } = {}) {
   useChatStore.getState().ensureRuntime(SESSION_ID);
   useSessionStore.getState().ensureRuntime(SESSION_ID);
@@ -33,7 +39,7 @@ function createRefresh({
     setOrganizationOwnerStopped: () => {},
     useChatStore,
     useSessionStore,
-    useCronStore: { getState: () => ({ lastRunSessionId: {}, jobs: [] }) },
+    useCronStore: { getState: () => ({ lastRunSessionId: cronLastRunSessionId, jobs: [] }) },
     useWorkspaceStore: {
       getState: () => ({
         upsertSession() {},
@@ -64,7 +70,7 @@ function createRefresh({
     setMissingSessionId() {},
     setProcessing: (...args) => chat.setProcessing(...args),
     setThinking: (...args) => chat.setThinking(...args),
-    request: async () => metadata,
+    request: requestImpl ?? (async () => metadata),
     console: { warn() {} },
   });
 
@@ -74,6 +80,7 @@ function createRefresh({
 function cleanup() {
   useChatStore.getState().removeRuntime(SESSION_ID);
   useSessionStore.getState().removeRuntime(SESSION_ID);
+  resetCronOptimisticProcessingForTests();
 }
 
 test('team + server idle + local busy: metadata refresh clears processing lamp', async () => {
@@ -115,6 +122,62 @@ test('team forced-idle is skipped while execution recovery is in progress', asyn
   const { refresh, chat } = createRefresh({ recoveringExecution: true, patches });
   try {
     await refresh(SESSION_ID);
+    assert.equal(chat.getRuntime(SESSION_ID).foregroundIsProcessing, true);
+    assert.equal(
+      patches.some((item) => item.patch?.is_processing === false),
+      false,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('team forced-idle is skipped when turnRevision advances during metadata fetch', async () => {
+  const patches = [];
+  let releaseRequest;
+  const pendingMetadata = new Promise((resolve) => {
+    releaseRequest = resolve;
+  });
+  const { refresh, chat } = createRefresh({
+    patches,
+    requestImpl: async () => pendingMetadata,
+  });
+  try {
+    const revisionBefore = chat.getRuntime(SESSION_ID).turnRevision;
+    const pending = refresh(SESSION_ID);
+    // 请求在途期间用户新开一轮：滞后 idle 快照不得压灭新 turn
+    chat.setProcessing(SESSION_ID, true, { newTurn: true });
+    assert.equal(chat.getRuntime(SESSION_ID).turnRevision, revisionBefore + 1);
+
+    releaseRequest({ session_id: SESSION_ID, is_processing: false, status: 'idle' });
+    await pending;
+
+    assert.equal(chat.getRuntime(SESSION_ID).foregroundIsProcessing, true);
+    assert.equal(
+      patches.some((item) => item.patch?.is_processing === false),
+      false,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('team forced-idle respects cron optimistic processing grace', async () => {
+  const patches = [];
+  markCronOptimisticProcessing(SESSION_ID);
+  const { refresh, chat } = createRefresh({
+    patches,
+    metadata: {
+      session_id: SESSION_ID,
+      is_processing: false,
+      status: 'idle',
+      cron_id: 'job_team_cron',
+    },
+    cronLastRunSessionId: { job_team_cron: SESSION_ID },
+  });
+  try {
+    await refresh(SESSION_ID);
+    // cron 宽限期内 metadata 误报 false，不得灭掉「任务执行」提示
     assert.equal(chat.getRuntime(SESSION_ID).foregroundIsProcessing, true);
     assert.equal(
       patches.some((item) => item.patch?.is_processing === false),
