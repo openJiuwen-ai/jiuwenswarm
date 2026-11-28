@@ -110,7 +110,9 @@ test('in-flight receipt becomes stale after replacement, without claiming side e
     const pending = app.binding.emit('ui.change', { value: 'a', isComposing: false });
     app.transport.injectRenderFrame(componentMockFrame(input(), 1));
     app.transport.resolveNextDispatch({ accepted: true, status: 'handled' });
-    assert.equal((await pending).status, 'stale');
+    const result = await pending;
+    assert.equal(result.status, 'stale');
+    assert.deepEqual(result.receipt, { accepted: true, status: 'handled' });
   } finally { app.dispose(); }
 });
 

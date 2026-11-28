@@ -8,6 +8,7 @@ import { useRef, useState } from 'react';
 import { Button } from 'antd';
 import { useTranslation } from 'react-i18next';
 import type { WebUIAdapterProps } from '../../types.ts';
+import { isWebUIInteractionFailed } from '../../../contracts/interaction.ts';
 import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
 import { useLocalizedText } from '../../useLocalizedText.ts';
 import { WebUIUploadError, describePickedFiles } from '../../../transfers/uploads.ts';
@@ -44,7 +45,9 @@ export function WebUIFileImport({ node, context, emit, appearance }: WebUIAdapte
         setPercent(totalBytes > 0 ? Math.floor((sentBytes * 100) / totalBytes) : 100);
       });
       const result = await emit('ui.change', { upload_id: uploadId });
-      if (result.status !== 'sent' || result.receipt?.accepted === false) throw new WebUIUploadError('UPLOAD_FAILED');
+      if (isWebUIInteractionFailed(result)) {
+        throw new WebUIUploadError('UPLOAD_FAILED');
+      }
       setPhase('done');
     } catch (error) {
       setErrorKey(ERROR_KEYS[error instanceof WebUIUploadError ? error.code : ''] ?? 'webuiFileImport.failed');
