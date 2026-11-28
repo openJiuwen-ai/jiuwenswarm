@@ -22,6 +22,7 @@ root = RenderNode("ApplicationSurface", {
 
 Declare the Gateway domain and this slot. An overlay with `autoStart: True` appears on installation or enable and closes on disable, without a form-menu selection. Reloading the app mounts it again.
 `autoStart` defaults to False and supports both modes; desktop mode still requires the desktop client. Other candidates use the application form menu or the existing `presentation query/start` command.
+The floating application form launcher defaults to the bottom-right corner and can be dragged anywhere within the viewport bounds (menu placement adapts by quadrant). Its position is persisted in `localStorage` and re-clamped on viewport resize. Hovering, focusing, or using a coarse pointer reveals a close button to temporarily hide the launcher without clearing runtime candidates or dispatching `ui.closed`; it reappears when a new manual candidate arrives, a cleared candidate is republished, or the page reloads.
 One connection runs one active form. Existing resources without mode continue to use desktop.
 
 Plugins managing their own visibility use controlled `Switch.checked` and `ui.change` to send actions to their backend. Use `ops.ui.render` to publish a surface with `autoStart: True`, and the same Ops with CLEAR to disable it. DELIVERED confirms frame delivery, not container readiness. Open failures report `ui.closed` so the plugin can turn its switch off. Starting the current conversation retains the current page.

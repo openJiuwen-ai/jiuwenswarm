@@ -163,3 +163,4 @@
 | `features/groupChat` | `group-chat` | 群聊创建、成员、公开消息、任务卡片与产物 |
 
 | `features/memory` | `memory` | 记忆管理页面与 Portal 连接状态 |
+| `features/webui/presentation` | `webui-presentation` | 应用形态宿主; 悬浮启动器与关闭; 悬浮/桌面容器控制 |

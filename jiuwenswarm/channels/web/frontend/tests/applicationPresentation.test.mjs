@@ -2,13 +2,15 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { createPresentationRequests, parsePresentationRequest, conversationActivity, presentationConversations, useChatStore,
   useSessionStore, useWorkspaceStore, ApplicationPresentationHost, usePresentationHost, WebUIProvider, componentCatalog,
   createRendererRegistry, createWebUIRuntime, createMockTransport, createPresentationReplyReader, lastPresentationReply, lastPresentationUserMessage, selectConversationModel, webClient,
-  WebUIApplicationSurface,
+  WebUIApplicationSurface, clampLauncherPosition, getLauncherMenuPlacement, LAUNCHER_POSITION_STORAGE_KEY,
+  readStoredLauncherPosition, reconcileDismissedKeys, writeStoredLauncherPosition,
 } from '../node_modules/.cache/application-presentation/protocol.mjs';
 
 const request = (id, action = 'send', params = { conversationKey: 'session::team', text: 'hello' }) => ({
@@ -1022,5 +1024,340 @@ test('project and pinned conversations are available and removed project targets
     await act(async () => { await host.receive(request(3, 'send', { conversationKey: 'project-chat', text: 'do not send' })); });
     assert.equal(sends, 0);
     assert.equal(host.results.find(item => item.id === 3).error.code, 'TARGET_INACTIVE');
+  } finally { await host.dispose(); }
+});
+
+test('launcher geometry helpers clamp to viewport, place menus by quadrant, and reconcile dismissed candidates', () => {
+  assert.deepEqual(
+    clampLauncherPosition({ x: -40, y: 900 }, { width: 160, height: 40 }, { width: 1000, height: 700 }),
+    { x: 12, y: 648 },
+  );
+  assert.deepEqual(
+    getLauncherMenuPlacement({ left: 820, top: 620, width: 160, height: 40 }, { width: 1000, height: 700 }),
+    { side: 'top', align: 'end' },
+  );
+  assert.deepEqual(
+    getLauncherMenuPlacement({ left: 20, top: 20, width: 160, height: 40 }, { width: 1000, height: 700 }),
+    { side: 'bottom', align: 'start' },
+  );
+
+  const memory = new Map();
+  const storage = {
+    getItem: key => memory.get(key) ?? null,
+    setItem: (key, value) => memory.set(key, value),
+  };
+  assert.equal(readStoredLauncherPosition(storage), null);
+  writeStoredLauncherPosition({ x: 123.6, y: 45.4 }, storage);
+  assert.deepEqual(readStoredLauncherPosition(storage), { x: 124, y: 45 });
+  memory.set(LAUNCHER_POSITION_STORAGE_KEY, '{"x":"bad","y":10}');
+  assert.equal(readStoredLauncherPosition(storage), null);
+
+  assert.deepEqual([...reconcileDismissedKeys(new Set(['a']), ['a'])], ['a']);
+  assert.deepEqual([...reconcileDismissedKeys(new Set(['a']), ['a', 'b'])], []);
+  assert.deepEqual([...reconcileDismissedKeys(new Set(['a', 'b']), ['a'])], ['a']);
+  assert.deepEqual([...reconcileDismissedKeys(new Set(['a']), [])], []);
+});
+
+function dispatchPointer(target, type, init = {}) {
+  const event = new window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
+  if (init.pointerId !== undefined) {
+    Object.defineProperty(event, 'pointerId', { value: init.pointerId });
+  }
+  target.dispatchEvent(event);
+}
+
+test('launcher supports manual dragging with viewport clamp, localStorage persistence, and click suppression', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true, true);
+  try {
+    window.innerWidth = 1024;
+    window.innerHeight = 768;
+    const launcher = document.querySelector('[data-testid="webui-presentation-launcher"]');
+    const openButton = document.querySelector('[data-testid="webui-presentation-open"]');
+    assert.ok(launcher && openButton);
+
+    let box = { left: 820, top: 700, width: 180, height: 42 };
+    launcher.getBoundingClientRect = () => ({
+      ...box,
+      right: box.left + box.width,
+      bottom: box.top + box.height,
+      x: box.left,
+      y: box.top,
+      toJSON: () => box,
+    });
+
+    // Small movement below threshold still allows normal click to open the menu.
+    await act(async () => {
+      dispatchPointer(openButton, 'pointerdown', { clientX: 900, clientY: 720, pointerId: 1 });
+      dispatchPointer(window, 'pointermove', { clientX: 902, clientY: 721, pointerId: 1 });
+      dispatchPointer(window, 'pointerup', { clientX: 902, clientY: 721, pointerId: 1 });
+      openButton.click();
+    });
+    const initialMenu = document.querySelector('[role="menu"]');
+    assert.ok(initialMenu, 'sub-threshold movement opens the menu');
+    assert.equal(initialMenu.getAttribute('data-side'), 'top');
+    assert.equal(window.localStorage.getItem(LAUNCHER_POSITION_STORAGE_KEY), null);
+
+    // Close menu and drag past threshold to top-left quadrant.
+    await act(async () => openButton.click());
+    assert.equal(openButton.getAttribute('aria-expanded'), 'false');
+    await act(async () => new Promise(resolve => setTimeout(resolve, 150)));
+    assert.equal(document.querySelector('[role="menu"]'), null);
+
+    await act(async () => {
+      dispatchPointer(openButton, 'pointerdown', { clientX: 900, clientY: 720, pointerId: 2 });
+      dispatchPointer(window, 'pointermove', { clientX: 300, clientY: 120, pointerId: 2 });
+      dispatchPointer(window, 'pointerup', { clientX: 300, clientY: 120, pointerId: 2 });
+      openButton.click();
+    });
+    assert.equal(openButton.getAttribute('aria-expanded'), 'false', 'drag release suppresses accidental click');
+    assert.equal(document.querySelector('[role="menu"]'), null, 'drag release suppresses accidental click');
+    assert.equal(launcher.style.left, '220px');
+    assert.equal(launcher.style.top, '100px');
+    assert.deepEqual(JSON.parse(window.localStorage.getItem(LAUNCHER_POSITION_STORAGE_KEY)), { x: 220, y: 100 });
+    box = { ...box, left: 220, top: 100 };
+
+    // A fresh click after drag opens the menu downward in the top quadrant.
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await act(async () => openButton.click());
+    const movedMenu = document.querySelector('[role="menu"]');
+    assert.ok(movedMenu);
+    assert.equal(movedMenu.getAttribute('data-side'), 'bottom');
+
+    // Shrinking the viewport re-clamps the launcher into view without overwriting stored intent.
+    await act(async () => {
+      window.innerWidth = 360;
+      window.innerHeight = 200;
+      window.dispatchEvent(new window.Event('resize'));
+    });
+    assert.equal(launcher.style.left, '168px');
+    assert.equal(launcher.style.top, '100px');
+  } finally { await host.dispose(); }
+});
+
+test('launcher restores clamped position from localStorage and ignores dragging from the close button', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true, true);
+  try {
+    const launcher = document.querySelector('[data-testid="webui-presentation-launcher"]');
+    const closeButton = document.querySelector('[data-testid="webui-presentation-launcher-close"]');
+    assert.ok(launcher && closeButton);
+
+    await act(async () => {
+      dispatchPointer(closeButton, 'pointerdown', { clientX: 900, clientY: 720, pointerId: 3 });
+      dispatchPointer(window, 'pointermove', { clientX: 400, clientY: 300, pointerId: 3 });
+      dispatchPointer(window, 'pointerup', { clientX: 400, clientY: 300, pointerId: 3 });
+    });
+    assert.equal(launcher.style.left, '');
+    assert.equal(window.localStorage.getItem(LAUNCHER_POSITION_STORAGE_KEY), null);
+  } finally { await host.dispose(); }
+
+  // Seed an out-of-bounds stored coordinate before mounting a fresh host and verify clamped restoration.
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  const restoreKeys = ['window', 'document', 'getComputedStyle', 'MutationObserver', 'HTMLElement', 'Element', 'ShadowRoot', 'CustomEvent', 'IS_REACT_ACT_ENVIRONMENT'];
+  const previous = new Map(restoreKeys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const key of restoreKeys.slice(0, -1)) {
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      writable: true,
+      value: key === 'getComputedStyle' ? dom.window.getComputedStyle.bind(dom.window) : dom.window[key],
+    });
+  }
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  dom.window.innerWidth = 900;
+  dom.window.innerHeight = 700;
+  dom.window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
+  dom.window.localStorage.setItem(LAUNCHER_POSITION_STORAGE_KEY, JSON.stringify({ x: 2400, y: 1800 }));
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const registry = createRendererRegistry(Object.fromEntries(componentCatalog.listComponents().map(rule =>
+    [rule.name, rule.name === 'ApplicationSurface' ? WebUIApplicationSurface : () => null])));
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(WebUIProvider, { runtime, registry },
+      React.createElement(ApplicationPresentationHost, {
+        sessionId: 'a',
+        connected: true,
+        onSend: async () => ({ accepted: true, conversationKey: 'a' }),
+        onSelect: async () => {},
+        onStop: async () => true,
+        onWorkspace: async () => {},
+      }))));
+    await act(async () => transport.injectRenderFrame({
+      target: { scope: 'application', slot_id: 'application.presentation', package_id: 'bee', instance_key: 'main' },
+      revision: 1,
+      mode: 'replace',
+      schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Bee', src: '/extension-assets/bee/g1/index.html' } },
+    }));
+    const restored = document.querySelector('[data-testid="webui-presentation-launcher"]');
+    assert.ok(restored);
+    assert.equal(restored.style.left, '888px');
+    assert.equal(restored.style.top, '688px');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    dom.window.close();
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
+    }
+  }
+});
+
+test('launcher restores persisted coordinates on mount and dismisses only until a new manual candidate appears', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true, false);
+  try {
+    window.innerWidth = 800;
+    window.innerHeight = 600;
+    const launcher = () => document.querySelector('[data-testid="webui-presentation-launcher"]');
+    const openButton = () => document.querySelector('[data-testid="webui-presentation-open"]');
+    const closeButton = () => document.querySelector('[data-testid="webui-presentation-launcher-close"]');
+
+    // Even when open button is disabled in browser mode, dragging on the launcher wrapper works.
+    assert.equal(openButton().disabled, true);
+    assert.ok(document.querySelector('[data-testid="webui-presentation-desktop-required"]'));
+    launcher().getBoundingClientRect = () => ({ left: 600, top: 520, width: 180, height: 60, right: 780, bottom: 580, x: 600, y: 520 });
+    await act(async () => {
+      dispatchPointer(launcher(), 'pointerdown', { clientX: 650, clientY: 540, pointerId: 4 });
+      dispatchPointer(window, 'pointermove', { clientX: 250, clientY: 240, pointerId: 4 });
+      dispatchPointer(window, 'pointerup', { clientX: 250, clientY: 240, pointerId: 4 });
+    });
+    assert.equal(launcher().style.left, '200px');
+    assert.equal(launcher().style.top, '220px');
+    assert.ok(launcher().classList.contains('webui-presentation-launcher--align-start'));
+
+    // Dismissing hides the launcher without clearing runtime instances or dispatching ui.closed.
+    await act(async () => closeButton().click());
+    assert.equal(launcher(), null);
+    assert.equal(host.transport.dispatches.filter(item => item.event === 'ui.closed').length, 0);
+    assert.equal(host.runtime.getInstance(host.declaration.key)?.state, 'active');
+
+    // Updating the existing dismissed candidate keeps the launcher hidden.
+    await act(async () => host.transport.injectRenderFrame({
+      target: host.target,
+      revision: 2,
+      mode: 'replace',
+      schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Bee Updated', src: host.declaration.src } },
+    }));
+    assert.equal(launcher(), null);
+
+    // Adding a brand-new manual candidate reveals the launcher again.
+    const secondTarget = { scope: 'application', slot_id: 'application.presentation', package_id: 'fox', instance_key: 'main' };
+    await act(async () => host.transport.injectRenderFrame({
+      target: secondTarget,
+      revision: 1,
+      mode: 'replace',
+      schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Fox', src: '/extension-assets/fox/g1/index.html', mode: 'overlay' } },
+    }));
+    assert.ok(launcher());
+    await act(async () => openButton().click());
+    const menuItems = [...document.querySelectorAll('[data-testid="webui-presentation-launcher-item"]')];
+    assert.equal(menuItems.length, 2);
+    assert.ok(menuItems.some(item => item.getAttribute('data-variant') === host.declaration.key));
+
+    // Dismissing again, releasing 'fox', and re-adding 'fox' reveals the launcher.
+    await act(async () => closeButton().click());
+    assert.equal(launcher(), null);
+    await act(async () => host.transport.injectClearFrame({ target: secondTarget, revision: 2, reason: 'requested' }));
+    assert.equal(launcher(), null);
+    await act(async () => host.transport.injectRenderFrame({
+      target: secondTarget,
+      revision: 3,
+      mode: 'replace',
+      schema_version: 1,
+      root: { component: 'ApplicationSurface', props: { title: 'Fox', src: '/extension-assets/fox/g1/index.html', mode: 'overlay' } },
+    }));
+    assert.ok(launcher());
+  } finally { await host.dispose(); }
+});
+
+test('launcher stylesheet allows dragging over disabled button and hides close button while dragging', () => {
+  const css = readFileSync(
+    new URL('../src/features/webui/presentation/PresentationLauncher.css', import.meta.url),
+    'utf8',
+  );
+  assert.match(css, /\.webui-presentation-launcher__button:disabled\s*\{[^}]*pointer-events:\s*none;/);
+  assert.match(
+    css,
+    /\.webui-presentation-launcher:not\(\.webui-presentation-launcher--dragging\):hover\s+\.webui-presentation-launcher__close/,
+  );
+  assert.match(
+    css,
+    /\.webui-presentation-launcher:not\(\.webui-presentation-launcher--dragging\):focus-within\s+\.webui-presentation-launcher__close/,
+  );
+});
+
+test('launcher resets dragging state on interrupted drag or lost pointer capture and captures only after drag threshold', async () => {
+  const host = await mountHost(undefined, undefined, {}, false, true, true);
+  try {
+    window.innerWidth = 1024;
+    window.innerHeight = 768;
+    const launcher = document.querySelector('[data-testid="webui-presentation-launcher"]');
+    const openButton = document.querySelector('[data-testid="webui-presentation-open"]');
+    assert.ok(launcher && openButton);
+
+    const capturedIds = new Set();
+    const captureCalls = [];
+    const releaseCalls = [];
+    launcher.setPointerCapture = (id) => {
+      captureCalls.push(id);
+      capturedIds.add(id);
+    };
+    launcher.releasePointerCapture = (id) => {
+      releaseCalls.push(id);
+      capturedIds.delete(id);
+    };
+    launcher.hasPointerCapture = (id) => capturedIds.has(id);
+    launcher.getBoundingClientRect = () => ({
+      left: 820,
+      top: 700,
+      width: 180,
+      height: 42,
+      right: 1000,
+      bottom: 742,
+      x: 820,
+      y: 700,
+    });
+
+    // Sub-threshold tap must not call setPointerCapture so the click still reaches the button.
+    await act(async () => {
+      dispatchPointer(openButton, 'pointerdown', { clientX: 900, clientY: 720, pointerId: 10 });
+      dispatchPointer(window, 'pointermove', { clientX: 901, clientY: 721, pointerId: 10 });
+      dispatchPointer(window, 'pointerup', { clientX: 901, clientY: 721, pointerId: 10 });
+    });
+    assert.deepEqual(captureCalls, []);
+    assert.equal(launcher.getAttribute('data-dragging'), 'false');
+
+    // Dragging past threshold captures the pointer; a second pointerdown before pointerup
+    // must clean up the first drag, reset dragging, and release capture even if the second tap does not move.
+    await act(async () => {
+      dispatchPointer(openButton, 'pointerdown', { clientX: 900, clientY: 720, pointerId: 11 });
+      dispatchPointer(window, 'pointermove', { clientX: 800, clientY: 620, pointerId: 11 });
+    });
+    assert.deepEqual(captureCalls, [11]);
+    assert.equal(launcher.getAttribute('data-dragging'), 'true');
+    assert.ok(launcher.classList.contains('webui-presentation-launcher--dragging'));
+
+    await act(async () => {
+      dispatchPointer(openButton, 'pointerdown', { clientX: 800, clientY: 620, pointerId: 12 });
+      dispatchPointer(window, 'pointerup', { clientX: 800, clientY: 620, pointerId: 12 });
+    });
+    assert.deepEqual(releaseCalls, [11]);
+    assert.equal(launcher.getAttribute('data-dragging'), 'false');
+    assert.equal(launcher.classList.contains('webui-presentation-launcher--dragging'), false);
+
+    // Losing pointer capture mid-drag must also finish the drag and clear --dragging.
+    await act(async () => {
+      dispatchPointer(openButton, 'pointerdown', { clientX: 720, clientY: 600, pointerId: 13 });
+      dispatchPointer(window, 'pointermove', { clientX: 520, clientY: 400, pointerId: 13 });
+    });
+    assert.equal(launcher.getAttribute('data-dragging'), 'true');
+    await act(async () => {
+      dispatchPointer(launcher, 'lostpointercapture', { pointerId: 13 });
+    });
+    assert.equal(launcher.getAttribute('data-dragging'), 'false');
+    assert.equal(launcher.classList.contains('webui-presentation-launcher--dragging'), false);
+    assert.ok(window.localStorage.getItem(LAUNCHER_POSITION_STORAGE_KEY) !== null);
   } finally { await host.dispose(); }
 });
