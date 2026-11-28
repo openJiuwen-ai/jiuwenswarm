@@ -94,8 +94,11 @@ def _register_team_ops(bus: ExtensionEventBus) -> None:
     The resolver answers from the team database via the host's shared
     singleton factory: ``ops.build`` runs at process start, long before
     any team exists, and teams stay queryable after they stop. Same
-    soft-gate as the team events.
+    soft-gate as the team events. ``hide_dm`` forwards the host's
+    message visibility policy, so plugin queries never widen beyond
+    what the host allows.
     """
+    from jiuwenswarm.agents.harness.team.config_loader import resolve_team_hide_dm
 
     try:
         from openjiuwen.agent_teams.extensions.resolver import DatabaseResolver
@@ -103,7 +106,10 @@ def _register_team_ops(bus: ExtensionEventBus) -> None:
     except ImportError as exc:
         logger.warning("[ExtensionsV2] team ops unavailable (agent-core too old): %s", exc)
         return
-    team_ops.register(bus, DatabaseResolver(_team_db_factory))
+    team_ops.register(
+        bus,
+        DatabaseResolver(_team_db_factory, hide_dm=resolve_team_hide_dm()),
+    )
 
 
 async def _team_db_factory():
