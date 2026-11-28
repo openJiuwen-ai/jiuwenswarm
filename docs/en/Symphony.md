@@ -251,7 +251,7 @@ When a skill looks relevant, the agent may read its `SKILL.md` before executing 
 
 1. Open left sidebar -> **Skills** -> **Skill Graph**.
 2. Turn on **Enable skill orchestration** at the top of the page. The setting is saved and takes effect as soon as you toggle it.
-3. Confirm the required skills are installed. If you recently added, removed, or changed skills, open **Skills** -> **Skill Graph** and run **Incremental build**. The page reads the current graph automatically when opened.
+3. Confirm the required skills are installed. If you recently added, removed, or changed skills, open **Skills** -> **Skill Graph** and run **Incremental build**. With orchestration enabled, the page reads the current graph automatically when opened. The refresh and build buttons are unavailable while orchestration is off.
 
 **Enable skill orchestration** is the Symphony master switch. Skill Retrieval is still controlled by the separate **Skill Retrieval** switch on the configuration page.
 

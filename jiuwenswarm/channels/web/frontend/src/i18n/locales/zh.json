@@ -4457,6 +4457,7 @@
         "saving": "正在保存…",
         "saveFailed": "技能编排开关保存失败，请稍后重试。",
         "toggleLabel": "启用技能编排",
+        "disabledEmptyGraph": "开启技能编排后即可构建图谱。",
         "connectionRequired": "连接服务器后可修改技能编排开关"
       },
       "stats": {

@@ -12,6 +12,7 @@ import { Switch } from '../Switch';
 interface SkillGraphTabProps {
   isActive: boolean;
   isConnected: boolean;
+  symphonyEnabled: boolean;
   symphonySaving: boolean;
   symphonyEnabledDraft: boolean;
   onUpdateSymphonyEnabled: (enabled: boolean) => void;
@@ -23,6 +24,7 @@ interface SkillGraphTabProps {
 export function SkillGraphTab({
   isActive,
   isConnected,
+  symphonyEnabled,
   symphonySaving,
   symphonyEnabledDraft,
   onUpdateSymphonyEnabled,
@@ -73,7 +75,8 @@ export function SkillGraphTab({
       <div className="flex-1 min-h-0">
         <SkillGraphPanel
           ref={skillGraphPanelRef}
-          isActive={isActive}
+          isActive={isActive && isConnected}
+          orchestrationEnabled={symphonyEnabled}
           onReadingChange={onGraphReadingChange}
           onBuildAccepted={(mode) => void onStartRetrievalIndexBuild(mode === 'full')}
         />
