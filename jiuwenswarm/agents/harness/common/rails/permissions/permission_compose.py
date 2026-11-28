@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from copy import deepcopy
 from typing import Any
 
@@ -12,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 _SESSION_DROP = frozenset({"deny_tools", "ask_tools", "enabled"})
 _TOOL_LEVELS = frozenset({"allow", "ask", "deny"})
+FILE_GUARD_AXES = ("read", "write", "exec")
+# The Engine treats path rules as literal strings (it never folds case); only
+# Windows paths are case-insensitive by platform contract.
+_CASE_INSENSITIVE = os.name == "nt"
 _NET_ACTIONS = frozenset({"allow", "deny"})
 _FALSE_STRINGS = frozenset({"false", "0", "no", "off"})
 
@@ -90,6 +95,182 @@ def _pick_level(global_lv: str | None, user_lv: str | None, session_lv: str | No
         if lv == "allow":
             return "allow"
     return global_lv or user_lv or session_lv
+
+
+def path_axis_level(item: dict[str, Any], key: str) -> str | None:
+    """One path axis of a ``file_guard.paths`` entry.
+
+    ``None`` means the layer holds no opinion about that axis; it must stay
+    distinct from ``"ask"`` so a per-axis increment never tightens a lower
+    layer's explicit ``allow``.
+    """
+    raw = item.get(key)
+    if not isinstance(raw, str):
+        return None
+    level = raw.strip().lower()
+    return level if level in _TOOL_LEVELS else None
+
+
+def _expand_user(path: str) -> str:
+    """``os.path.expanduser`` seam: tests stand in for another host's home."""
+    return os.path.expanduser(path)
+
+
+def path_rule_scope(item: dict[str, Any]) -> tuple[str, str]:
+    """``(path, match)`` identity of one ``file_guard.paths`` entry.
+
+    Follows the Engine's compile step: separators normalized, trailing slash
+    dropped for prefix rules, ``~`` expanded for prefix rules, and ``match``
+    collapsed to the two values the Engine understands. Glob paths are kept
+    verbatim because the Engine matches them literally (``/data/**/`` and
+    ``/data/**`` are two different rules). ``resolve()`` is deliberately not
+    applied, so ``..``, symlinks and ``$VAR`` spellings can still yield two
+    entries that compile to the same prefix.
+
+    Case folding follows the Engine too: only prefix rules are merged
+    case-insensitively, because the Engine's prefix match leans on
+    ``contains_path`` (``normcase``) while its glob match is a case-sensitive
+    regular expression on every platform.
+    """
+    match = "glob" if str(item.get("match") or "").strip().lower() == "glob" else "prefix"
+    raw = item.get("path")
+    path = raw.strip() if isinstance(raw, str) else ""
+    path = path.replace("\\", "/")
+    if match == "prefix":
+        path = path.rstrip("/")
+        if path:
+            # expanduser brings separators of its own (backslashes on Windows)
+            # and may keep a trailing one; normalize both so "~" and the
+            # equivalent explicit path compile to the same prefix.
+            path = _expand_user(path).replace("\\", "/").rstrip("/")
+        path = path.casefold() if _CASE_INSENSITIVE else path
+    return (path, match)
+
+
+def _layer_path_axes(layer: dict[str, Any]) -> dict[tuple[str, str], dict[str, str]]:
+    """Per-scope axis union inside one layer: ``deny`` > ``allow`` > ``ask``."""
+    axes: dict[tuple[str, str], dict[str, str]] = {}
+    fg = layer.get("file_guard")
+    if not isinstance(fg, dict):
+        return axes
+    entries = fg.get("paths")
+    if not isinstance(entries, list):
+        return axes
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        merged = axes.setdefault(path_rule_scope(item), {})
+        for key in FILE_GUARD_AXES:
+            level = path_axis_level(item, key)
+            if level is None:
+                continue
+            current = merged.get(key)
+            if current == "deny" or level == "deny":
+                merged[key] = "deny"
+            elif current == "allow" or level == "allow":
+                merged[key] = "allow"
+            else:
+                merged[key] = "ask"
+    return axes
+
+
+def _compose_path_axis(
+    global_lv: str | None, user_lv: str | None, session_lv: str | None,
+) -> str | None:
+    """One path axis across layers; ``None`` when no layer holds an opinion.
+
+    A User-layer ``ask`` on a path rule is the fill value the approval flow
+    writes for the actions it did not grant (``_axes_for_file_guard_action``
+    in the Engine); the settings RPC only edits tool lists, so a path ask
+    arrives from an approval landing in the User layer, or from a hand-edited
+    YAML. It must not turn a Global ``allow`` on the same axis back into a
+    prompt, so it is dropped there.
+
+    It is dropped *only* against an explicit Global ``allow``. With no opinion
+    above it, the ask is the only one on that axis, and dropping it hands the
+    axis to the Engine's own default: legacy mode compiles an absent axis of a
+    path rule as ``read``/``write`` allow (``exec`` ask), so a grant of read
+    alone would silently allow writes to the same directory. The asymmetry
+    with the tool-level merge -- where a User ``ask`` does tighten a Global
+    ``allow`` -- follows from the data source: tool lists are user-editable,
+    path rules are not.
+    """
+    if user_lv == "ask" and global_lv == "allow":
+        user_lv = None
+    return _pick_level(global_lv, user_lv, session_lv)
+
+
+def compose_path_axes(
+    global_permissions: dict[str, Any] | None = None,
+    user_permissions: dict[str, Any] | None = None,
+    session_permissions: dict[str, Any] | None = None,
+) -> dict[tuple[str, str], dict[str, str | None]]:
+    """Global ⊕ User ⊕ Session view of ``file_guard.paths``, one row per scope.
+
+    Axes follow ``_pick_level``: a Global/User deny wins, a User allow relaxes
+    a Global ask, and a Session allow relaxes an ask. A User ``ask`` is kept
+    unless a Global allow already covers the axis -- see ``_compose_path_axis``.
+    A ``None`` axis means no layer holds an opinion, so callers must not
+    materialize it: the Engine's own default differs between native (``ask``)
+    and legacy (``allow`` for ``read``/``write``) mode.
+    """
+    global_axes = _layer_path_axes(global_permissions) if isinstance(
+        global_permissions, dict
+    ) else {}
+    user_axes = _layer_path_axes(user_permissions) if isinstance(user_permissions, dict) else {}
+    session_axes = _layer_path_axes(session_permissions) if isinstance(
+        session_permissions, dict
+    ) else {}
+    scopes = list(global_axes)
+    scopes += [scope for scope in user_axes if scope not in global_axes]
+    scopes += [
+        scope for scope in session_axes if scope not in global_axes and scope not in user_axes
+    ]
+    composed: dict[tuple[str, str], dict[str, str | None]] = {}
+    for scope in scopes:
+        composed[scope] = {
+            key: _compose_path_axis(
+                global_axes.get(scope, {}).get(key),
+                user_axes.get(scope, {}).get(key),
+                session_axes.get(scope, {}).get(key),
+            )
+            for key in FILE_GUARD_AXES
+        }
+    return composed
+
+
+def _merge_file_guard_paths(*layers: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Collapse ``file_guard.paths`` into one entry per ``(path, match)``.
+
+    The Engine resolves a path through its longest matching prefix and keeps
+    the first entry on a tie, so a second entry for the same path would hide
+    every later layer's axis. Entries without a usable ``path`` are not
+    keyable; they are passed through and ignored by the Engine as before.
+    """
+    axes = compose_path_axes(*layers)
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    passthrough: list[dict[str, Any]] = []
+    for layer in layers:
+        fg = layer.get("file_guard") if isinstance(layer, dict) else None
+        entries = fg.get("paths") if isinstance(fg, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if not isinstance(item, dict) or not str(item.get("path") or "").strip():
+                passthrough.append(deepcopy(item))
+                continue
+            merged.setdefault(path_rule_scope(item), deepcopy(item))
+    out: list[dict[str, Any]] = []
+    for scope, entry in merged.items():
+        # Never materialize an axis no layer spoke about: the Engine's default
+        # for an absent axis is ``ask`` in native mode but ``allow`` in legacy
+        # mode, and legacy configs rely on that.
+        for key, level in (axes.get(scope) or {}).items():
+            if level is not None:
+                entry[key] = level
+        out.append(entry)
+    out.extend(passthrough)
+    return out
 
 
 def _merge_list_of_dicts(*layers: list[Any]) -> list[dict[str, Any]]:
@@ -314,18 +495,9 @@ def compose_host_effective_permissions(
         )
 
         fg = deepcopy(g.get("file_guard")) if isinstance(g.get("file_guard"), dict) else {}
-        for layer in (u, s):
-            overlay_fg = layer.get("file_guard")
-            if not isinstance(overlay_fg, dict):
-                continue
-            extra = overlay_fg.get("paths")
-            if not isinstance(extra, list):
-                continue
-            paths = fg.get("paths")
-            if not isinstance(paths, list):
-                paths = []
-            paths.extend(deepcopy(p) for p in extra if isinstance(p, dict))
-            fg["paths"] = paths
+        merged_paths = _merge_file_guard_paths(g, u, s)
+        if merged_paths:
+            fg["paths"] = merged_paths
         if fg:
             out["file_guard"] = fg
 
@@ -363,4 +535,10 @@ def compose_host_effective_permissions(
         return _fail_closed(str(exc), enabled=enabled)
 
 
-__all__ = ["compose_host_effective_permissions"]
+__all__ = [
+    "FILE_GUARD_AXES",
+    "compose_host_effective_permissions",
+    "compose_path_axes",
+    "path_axis_level",
+    "path_rule_scope",
+]
