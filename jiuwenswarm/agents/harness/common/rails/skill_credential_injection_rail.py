@@ -24,6 +24,7 @@ from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
     get_session_active_skill,
     resolve_skill_session_id,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 
 logger = logging.getLogger(__name__)
 
@@ -509,7 +510,7 @@ class SkillCredentialInjectionRail(DeepAgentRail):
         """拒绝执行（_skip_tool 短路）并写入激活指引，模型可据此自愈。"""
         language = resolve_language_from_context(ctx)
         message = build_skill_gate_message(skill, language)
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
         _write_gate_tool_result(ctx, message)
 
     def _reject_with_split_guidance(
@@ -518,7 +519,7 @@ class SkillCredentialInjectionRail(DeepAgentRail):
         """多技能复合命令：指引拆分为多条命令分别激活执行（CR-1）。"""
         language = resolve_language_from_context(ctx)
         message = build_skill_gate_multi_message(skills, language)
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
         _write_gate_tool_result(ctx, message)
 
     def _resolve_session_id(self, ctx: AgentCallbackContext) -> str:

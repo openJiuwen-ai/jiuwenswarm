@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 
 if TYPE_CHECKING:
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
@@ -532,7 +534,7 @@ def _write_read_file_tool_result(ctx: "AgentCallbackContext", message: str) -> N
 
 def reject_read_file(ctx: "AgentCallbackContext", message: str) -> None:
     """Skip tool execution and inject an error result for the model/UI."""
-    ctx.extra["_skip_tool"] = True
+    mark_skipped(ctx)
     _write_read_file_tool_result(ctx, message)
 
 

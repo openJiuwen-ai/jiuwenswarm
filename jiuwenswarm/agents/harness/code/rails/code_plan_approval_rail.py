@@ -27,6 +27,7 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import PENDING_APPROVAL_MARKER
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
@@ -112,7 +113,7 @@ class PlanApprovalRail(DeepAgentRail):
         """
         if ctx.inputs.tool_name != "exit_plan_mode":
             return
-        if ctx.extra.get("_skip_tool"):
+        if was_skipped(ctx):
             return
         # ConfirmInterrupt 等 hook 中断时工具未真正执行，不应进入待审批状态。
         if ctx.inputs.tool_result is None:

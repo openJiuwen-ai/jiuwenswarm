@@ -23,27 +23,42 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from openjiuwen.core.single_agent import create_agent_session
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.stream import OutputSchema
+from openjiuwen.core.single_agent import create_agent_session
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     ModelCallInputs,
     ToolCallInputs,
 )
 
-from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
-from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
-from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
+from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import (
+    NotifyingLLMRetryRail,
+)
+from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
+    JiuSwarmStreamEventRail,
+)
+from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+    get_current_task_id,
+)
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.server.runtime.agent_adapter.llm_io_trace import (
     begin_tool_trace_event,
     end_tool_trace_event,
     log_tool_call_input,
     log_tool_call_output,
 )
-from jiuwenswarm.server.runtime.skill_turbo.rails import (
-    SkillTurboArtifactRail,
-    SkillTurboAskUserRail,
+from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import (
+    FallbackCall,
+    FallbackContractError,
+)
+from jiuwenswarm.server.runtime.skill_turbo.interactive_ask import (
+    resolve_interactive_ask_from_inputs,
+)
+from jiuwenswarm.server.runtime.skill_turbo.json_utils import extract_llm_json
+from jiuwenswarm.server.runtime.skill_turbo.markdown_stream import (
+    markdown_stream_incoming,
+    terminate_dangling_markdown_fence,
 )
 from jiuwenswarm.server.runtime.skill_turbo.node_artifact_store import (
     clear_node_artifacts,
@@ -59,32 +74,24 @@ from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     save_resume_ctx,
     set_skill_turbo_id,
 )
-from jiuwenswarm.server.utils.stream_utils import (
-    build_chat_error_event,
-    parse_stream_chunk,
-)
-from jiuwenswarm.server.runtime.skill_turbo.json_utils import extract_llm_json
-from jiuwenswarm.server.runtime.skill_turbo.markdown_stream import (
-    markdown_stream_incoming,
-    terminate_dangling_markdown_fence,
-)
-from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import (
-    FallbackCall,
-    FallbackContractError,
-)
-from jiuwenswarm.server.runtime.skill_turbo.interactive_ask import (
-    resolve_interactive_ask_from_inputs,
-)
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNode
+from jiuwenswarm.server.runtime.skill_turbo.rails import (
+    SkillTurboArtifactRail,
+    SkillTurboAskUserRail,
+)
 from jiuwenswarm.server.runtime.skill_turbo.validator import (
     PlanCodeValidationError,
     PlanCodeValidator,
 )
+from jiuwenswarm.server.utils.stream_utils import (
+    build_chat_error_event,
+    parse_stream_chunk,
+)
 
 if TYPE_CHECKING:
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.server.runtime.skill_turbo.environment import SkillTurboEnvironment
     from jiuwenswarm.server.runtime.skill_turbo.evolver import SkillTurboEvolver
-    from jiuwenswarm.common.schema.agent import AgentResponseChunk
 
 # ──────────────────────── NOT FOUND 依赖的内联兜底 ────────────────────────
 # STREAM_SOURCE_ID_FIELD: 目标仓库 stream_utils 未导出此常量，在此内联定义
@@ -102,13 +109,13 @@ except ImportError:
 
 try:
     from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
-        set_send_file_request_context,
+        get_effective_request_output_dir,
+        get_effective_request_workspace_dir,
+        reset_interactive_ask,
         reset_send_file_request_context,
         set_effective_request_workspace_dir,
-        get_effective_request_workspace_dir,
-        get_effective_request_output_dir,
         set_interactive_ask,
-        reset_interactive_ask,
+        set_send_file_request_context,
     )
 except ImportError:
     # Fallback no-ops for environments without subagent_executor
@@ -1759,7 +1766,7 @@ class SkillTurboExecutor:
             await self._run_rail_hook("before_tool_call", ctx)
 
             # rail 通过 _skip_tool 标记 reject，已经在 ctx.inputs.tool_result 写入结果
-            if ctx.extra.get("_skip_tool"):
+            if was_skipped(ctx):
                 logger.debug(
                     "[SkillTurboExecutor] use_tool skipped by rail name=%s tcid=%s",
                     tool_name,
@@ -1886,7 +1893,9 @@ class SkillTurboExecutor:
     def _tool_trace_session_id(self) -> str:
         """工具 trace 用的 session_id，优先复用 LLM trace 的 ContextVar，保持口径一致。"""
         try:
-            from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _LLM_TRACE_SESSION_ID
+            from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+                _LLM_TRACE_SESSION_ID,
+            )
 
             sid = _LLM_TRACE_SESSION_ID.get()
             if sid:

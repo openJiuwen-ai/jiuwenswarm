@@ -37,8 +37,13 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
 )
-from jiuwenswarm.agents.harness.common.rails.symphony import (
-    SymphonyToolStreamHandler,
+from jiuwenswarm.agents.harness.common.rails.multimodal_image_state import (
+    PROVIDED_IMAGE_PATHS_KEY,
+    mark_native_images_sent,
+    mark_provided_image_paths,
+    native_images_sent,
+    provided_image_paths,
+    unsafe_image_paths,
 )
 from jiuwenswarm.agents.harness.common.rails.path_whitespace_fix import (
     WHITESPACE_FIX_TOOL_NAMES,
@@ -61,13 +66,8 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     reject_vision_tool_for_native_image,
     vision_tool_targets_all_provided,
 )
-from jiuwenswarm.agents.harness.common.rails.multimodal_image_state import (
-    PROVIDED_IMAGE_PATHS_KEY,
-    mark_native_images_sent,
-    mark_provided_image_paths,
-    native_images_sent,
-    provided_image_paths,
-    unsafe_image_paths,
+from jiuwenswarm.agents.harness.common.rails.symphony import (
+    SymphonyToolStreamHandler,
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
@@ -87,14 +87,14 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     is_resume_user_query,
     snapshot_includes_persistent_todos,
 )
-from jiuwenswarm.common.todo_snapshot import versioned_todo_output
+from jiuwenswarm.common.todo_snapshot import (
+    format_todos_for_frontend,
+    versioned_todo_output,
+)
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
     extract_call_goal,
     inject_call_goal_schema,
-)
-from jiuwenswarm.common.todo_snapshot import (
-    format_todos_for_frontend,
 )
 from jiuwenswarm.common.utils import fix_json_arguments, logger
 
@@ -418,6 +418,7 @@ def _infer_tool_result_error(value: Any) -> bool | None:
 
 # skill_turbo 专用 ContextVar 的绑定/复位收口（8 个 token 单一进出）。
 # 详细机制与条件语义见 context_binding 模块；新增通道在该模块加一行即可。
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.server.runtime.skill_turbo.context_binding import (  # noqa: E402
     bind_skill_turbo_context,
     reset_skill_turbo_context,
@@ -932,13 +933,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         content: str,
         tool_name: str,
     ) -> bool:
+        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+        )
         from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
             _SKILL_TURBO_HITL_PLACEHOLDER,
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY,
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2,
-        )
-        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
-            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
         )
 
         legacy_templates = [
@@ -1603,14 +1604,16 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             extra = getattr(ctx, "extra", None)
             if not isinstance(extra, dict):
                 extra = {}
-            from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+            from openjiuwen.core.single_agent.interrupt.state import (
+                RESUME_USER_INPUT_KEY,
+            )
             skip_resume_tool_call = (
                 tool_name == "skill_acceleration_exec"
                 and extra.get(RESUME_USER_INPUT_KEY) is not None
             )
             if not skip_resume_tool_call and not is_todo_close_nudge(tc):
                 await self._emit_tool_call(session, tc, model_display_name=model_display)
-                if not ctx.extra.get("_skip_tool"):
+                if not was_skipped(ctx):
                     await self._emit_tool_update(session, tc, status="in_progress")
             self._symphony_stream_handler.bind_progress(ctx, session, tc)
             # Track in-flight tool call for cancellation
@@ -1631,7 +1634,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             _resume_answers = None
             extra = getattr(ctx, "extra", None)
             if isinstance(extra, dict):
-                from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+                from openjiuwen.core.single_agent.interrupt.state import (
+                    RESUME_USER_INPUT_KEY,
+                )
 
                 _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
             _outer_todo_active = None

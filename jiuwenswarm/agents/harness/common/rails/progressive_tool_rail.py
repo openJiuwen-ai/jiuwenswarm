@@ -41,6 +41,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     is_vision_tool,
     vision_tool_targets_all_provided,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 from jiuwenswarm.agents.harness.common.tool_result_schema import (
     normalize_tool_result,
 )
@@ -677,7 +678,7 @@ class ProgressiveToolRail(DeepAgentRail):
         inputs = getattr(ctx, "inputs", None)
         tool_call = getattr(inputs, "tool_call", None)
         tool_call_id = str(getattr(tool_call, "id", "") or "")
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
         # 拒绝执行 ≠ 成功：产出统一 schema dict（对齐 read_file_validation.
         # reject_read_file 模式）。纯文本会被归一 rail 判为 success——skip 只跳过
         # 工具执行体，AFTER_TOOL_CALL 链照常执行。

@@ -8,7 +8,7 @@
 | 编号 / slug | S_15 / interrupt-primitives-and-tri-state-decision |
 | 关联模块（agent-core 仓） | `openjiuwen/core/single_agent/interrupt/`（`state.py` 五状态键与状态模型、`response.py` `InterruptRequest`/`ToolCallInterruptRequest`、`exception.py` `ToolInterruptException`、`handler.py` `ToolInterruptHandler` 588 行、`resume_guard.py` 恢复分类四问）、`openjiuwen/harness/rails/interrupt/`（`interrupt_base.py` `BaseInterruptRail`+三态决策、`confirm_rail.py` `ConfirmInterruptRail`、`ask_user_rail.py` `AskUserRail`） |
 | 关联模块（jiuwenswarm 仓） | 无本体文件——本层为纯 agent-core 原语层；jiuwenswarm 侧的权限 rail（[[S_16]]）、宿主装配（[[S_17]]）、相位守卫（[[S_18]]）、取消结算（[[S_19]]）均为其上层消费者，经 `openjiuwen` 包依赖引用 |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -38,7 +38,7 @@
 - **N1（五状态键语义各自固定）**：键名与语义不得改动——`INTERRUPTION_KEY = "__react_agent_interruption__"`（存 `ToolInterruptionState`，session 持久）、`RESUME_USER_INPUT_KEY = "_resume_user_input"`（replay 期 ctx.extra）、`INTERRUPT_AUTO_CONFIRM_KEY = "__interrupt_auto_confirm__"`（auto_confirm 记忆，session 持久）、`RESUME_START_ITERATION_KEY = "_resume_start_iteration"`（续跑起点，ctx.extra）、`RESUME_BATCH_ALLOW_KEYS = "_resume_batch_allow_keys"`（批次级授权，ctx.extra）。session 持久键与 ctx.extra 键**不得互换存放位置**。
 - **N2（batch allow 生命周期 = replay 本身）**（state.py @17-25）：`RESUME_BATCH_ALLOW_KEYS` 只在重放前注入 `ctx.extra`、在**同一 `finally`** 中与 resume keys 一并弹出、**永不写 session state**——后续迭代的全新批次必须重新询问。key 值复用 auto_confirm key 语义（工具名，或简单 shell 命令的 `tool:subcommand`）。
 - **N3（中断信号唯一载体与 cause 链）**：工具执行被中断的唯一表达 = `ToolInterruptException`（request + tool_call 两字段，`AgentInterrupt` 子类）；rail 侧只能经 `_raise_interrupt` 抛 `AbortError(reason=..., cause=ToolInterruptException(...))`——runner 捕获 AbortError 后从 cause 中还原中断语义，**不得另造异常类型**。
-- **N4（三态决策封闭）**：`InterruptDecision` 只有 `ApproveResult`（可带 `new_args` 改写 `ctx.inputs.tool_args` 后继续执行）、`RejectResult`（`_skip_tool`：置 `ctx.extra["_skip_tool"]=True` + `ctx.inputs.tool_result` + `ctx.inputs.tool_msg`，工具体跳过但结果二元组完整）、`InterruptResult`（触发 N3 中断）三态。`_apply_decision` 对未知子类静默放行——新增决策类型必须同时改 `_apply_decision`。
+- **N4（三态决策封闭）**：`InterruptDecision` 只有 `ApproveResult`（可带 `new_args` 改写 `ctx.inputs.tool_args` 后继续执行）、`RejectResult`（`_skip_tool(ctx, ...)` 通过 Core 的 `mark_tool_skipped(ctx)` 为本次调用设置否决标记，并填充 `ctx.inputs.tool_result` 和 `ctx.inputs.tool_msg`，工具体跳过但结果二元组完整）、`InterruptResult`（触发 N3 中断）三态。`_apply_decision` 对未知子类静默放行——新增决策类型必须同时改 `_apply_decision`。
 - **N5（ConfirmPayload schema 判定式）**（resume_guard.py @97-103）：confirm/权限卡的判定 = payload_schema 的 properties **含 `"approved"` 且不含 `"answers"`**。该判定式是纯权限关闭路径（S_19）与恢复路由的分类依据，两侧实现必须保持一致（jiuwenswarm 侧因 CI pin 旧版而本地复制实现，修改任一侧须同步另一侧）。
 - **N6（恢复分类四问语义）**（resume_guard.py）：
   1. `pending_tool_resume_ids` = 外层 tool_call id 与内层 interrupt request id 的**并集**（结构化回复可命中任一层）
@@ -104,7 +104,7 @@
 | `resolve_interrupt(...)` | 子类必须实现；返回三态之一 |
 | `approve(new_args=None)` / `reject(tool_result=None)` / `interrupt(request)` | 三态工厂 |
 | `_raise_interrupt` | N3 AbortError cause 链 |
-| `_skip_tool` | N4 RejectResult 落地（`_skip_tool` / tool_result / tool_msg 三件套） |
+| `_skip_tool` | N4 RejectResult 落地（单次调用否决标记、`tool_result`、`tool_msg`） |
 | `add_tool` / `add_tools` / `get_tools` | 注册拦截工具名；`add_policy` 为废弃别名（policy 忽略） |
 
 ### `ConfirmInterruptRail`（confirm_rail.py）

@@ -11,6 +11,7 @@ from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 
 from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
 )
@@ -94,7 +95,7 @@ async def test_legacy_deny_blocks_aggregate_before_execution(
     _, rail = permission_adapter({name: "allow", legacy: "deny"})
     ctx = tool_context(name, args)
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
     assert "PERMISSION_DENIED" in str(ctx.inputs.tool_result)
 
 
@@ -131,7 +132,7 @@ async def test_install_deny_returns_search_results_without_install(
     ctx = tool_context("search_skill", {"query": "fixture"})
     ctx.agent.ability_manager = SimpleNamespace(get=lambda _: tool.card)
     await rail.before_tool_call(ctx)
-    assert not ctx.extra.get("_skip_tool")
+    assert not was_skipped(ctx)
     result = await tool.invoke(
         {"query": "fixture"}, session=ctx.session, tool_call_id="call-1"
     )
@@ -167,8 +168,8 @@ async def test_install_deny_returns_search_results_without_install(
 async def test_cron_actions_native_sdk_backend_counts(
     permission_adapter, action, legacy, args, policy, record_property, monkeypatch
 ):
-    from flash_sdk import sdk_tools
     from agent_shield.tool_permission import get_permission_manager
+    from flash_sdk import sdk_tools
 
     from jiuwenswarm.agents.harness.flash.tools.cron_flash import build_cron_flash_tool
 
@@ -329,16 +330,15 @@ async def test_ambiguous_or_unknown_action_is_denied(permission_adapter, name, a
     _, rail = permission_adapter({name: "allow"})
     ctx = tool_context(name, args)
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
 
 
 @pytest.mark.asyncio
 async def test_disabled_permission_preserves_existing_execution(permission_adapter):
-    from openjiuwen.harness.security.models import PermissionLevel
-
     from unittest.mock import MagicMock
 
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+    from openjiuwen.harness.security.models import PermissionLevel
 
     _, rail = permission_adapter({"web_flash": "deny", "web_search": "deny"})
     rail.update_config({**rail._static_config, "enabled": False})
@@ -398,7 +398,7 @@ async def test_todo_preserves_operation_denials(
     _, rail = permission_adapter({"todo": "allow", legacy: "deny"})
     ctx = tool_context("todo", {"action": action, **extra})
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
 
 
 @pytest.mark.asyncio
@@ -408,7 +408,9 @@ async def test_todo_missing_modify_action_fails_without_skipping_sibling(
 ):
     from flash_sdk import sdk_tools
 
-    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
+        JiuSwarmStreamEventRail,
+    )
     from jiuwenswarm.agents.harness.common.rails.tool_result_normalize_rail import (
         ToolResultNormalizeRail,
     )
@@ -464,7 +466,7 @@ async def test_invalid_todo_preserves_outer_deny(permission_adapter):
     _, rail = permission_adapter({"todo": "deny"})
     ctx = tool_context("todo", {"action": "modify", "todos": [{"id": "a"}]})
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
     assert ctx.inputs.tool_result.startswith("[PERMISSION_DENIED]")
     assert "Invalid Flash action" not in ctx.inputs.tool_result
 
@@ -507,7 +509,7 @@ async def test_outer_deny_cannot_be_relaxed_by_legacy_allow(permission_adapter):
     _, rail = permission_adapter({"web_flash": "deny", "web_search": "allow"})
     ctx = tool_context("web_flash", {"search": {"query": "fixture"}})
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
 
 
 @pytest.mark.asyncio
@@ -552,7 +554,7 @@ async def test_hosted_approval_policy_revocation_blocks_side_effect(permission_a
     rail._host.request_permission_confirmation = confirm
     ctx = tool_context("web_flash", {"fetch": {"url": ["https://example.invalid/a"]}})
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool")
+    assert was_skipped(ctx)
 
 
 @pytest.mark.asyncio
@@ -565,7 +567,7 @@ async def test_projected_call_needs_trusted_sdk_session(permission_adapter, sess
     if session_id is None:
         ctx.session = None
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool")
+    assert was_skipped(ctx)
 
 
 @pytest.mark.asyncio
@@ -576,7 +578,7 @@ async def test_explicit_provider_deny_is_preserved(permission_adapter, provider)
     )
     ctx = tool_context("web_flash", {"search": {"query": "fixture"}})
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool")
+    assert was_skipped(ctx)
 
 
 @pytest.mark.asyncio
@@ -621,7 +623,7 @@ async def test_todo_close_nudge_skips_action_projection(permission_adapter, perm
     for each in order:
         await each.before_tool_call(ctx)
 
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
     assert "[TODO_CLOSE_REQUIRED]" in str(ctx.inputs.tool_result)
     assert "PERMISSION_DENIED" not in str(ctx.inputs.tool_result)
 
@@ -635,5 +637,5 @@ async def test_forged_nudge_id_on_other_tool_still_checked(permission_adapter):
     _, rail = permission_adapter({"todo": "allow"})
     ctx = tool_context("cron_flash", {"list": {}, "run": {"job_id": "a"}}, call_id=f"{TODO_CLOSE_NUDGE_ID_PREFIX}x")
     await rail.before_tool_call(ctx)
-    assert ctx.extra.get("_skip_tool") is True
+    assert was_skipped(ctx) is True
     assert "PERMISSION_DENIED" in str(ctx.inputs.tool_result)

@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from jiuwenswarm.common.hooks_config import HooksConfig, HookMatcher
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
+from jiuwenswarm.common.hooks_config import HookMatcher, HooksConfig
 from jiuwenswarm.server.hooks.executor import HookOutcome, HookResult
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
-
 
 # ============================================================
 # Mock helpers: 模拟 openjiuwen 的 AgentCallbackContext
@@ -67,7 +67,7 @@ class TestBeforeToolCall:
         ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Write"))
         await rail.before_tool_call(ctx)
         # ctx 不应被修改
-        assert "_skip_tool" not in ctx.extra
+        assert not was_skipped(ctx)
 
     @pytest.mark.asyncio
     async def test_passes_session_id_from_context_session_to_tool_and_stop_hooks(self):
@@ -106,7 +106,7 @@ class TestBeforeToolCall:
         ])
         ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"))
         await rail.before_tool_call(ctx)
-        assert ctx.extra["_skip_tool"] is True
+        assert was_skipped(ctx) is True
         assert "_hook_feedback" in ctx.extra
 
     @pytest.mark.asyncio
@@ -167,7 +167,7 @@ class TestBeforeToolCall:
         # Bash 不匹配 Write → 不会被阻止
         ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"))
         await rail.before_tool_call(ctx)
-        assert "_skip_tool" not in ctx.extra
+        assert not was_skipped(ctx)
 
     @pytest.mark.asyncio
     async def test_additional_context_appended(self):
@@ -222,7 +222,7 @@ class TestBeforeToolCall:
             ),
         ):
             await rail.before_tool_call(ctx)
-        assert ctx.extra["_skip_tool"] is True
+        assert was_skipped(ctx) is True
         # modifiedInput 不应该被应用（因为早已 return）
         assert "safe" not in str(ctx.inputs.tool_args)
 
@@ -246,7 +246,7 @@ class TestBeforeToolCall:
         rail = UserHookRail(config)
         ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"))
         await rail.before_tool_call(ctx)
-        assert "_skip_tool" not in ctx.extra
+        assert not was_skipped(ctx)
 
 
 # ============================================================
@@ -476,4 +476,4 @@ class TestDisableAllHooks:
         rail = UserHookRail(config)
         ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"))
         await rail.before_tool_call(ctx)
-        assert "_skip_tool" not in ctx.extra
+        assert not was_skipped(ctx)

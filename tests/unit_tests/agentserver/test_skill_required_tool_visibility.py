@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
     SkillActiveStateRail,
     clear_session_skill_state,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
     deepresearch_execute,
 )
@@ -139,7 +140,7 @@ async def test_report_registration_tool_requires_skill_and_binds_request_workspa
     assert card not in hidden.inputs.tools
     denied = _tool_call_ctx(agent, card.name)
     await rail.before_tool_call(denied)
-    assert denied.extra["_skip_tool"] is True
+    assert was_skipped(denied) is True
 
     active_skill["name"] = "deepresearch"
     visible = _model_ctx(agent, [card])
@@ -150,7 +151,7 @@ async def test_report_registration_tool_requires_skill_and_binds_request_workspa
     allowed = _tool_call_ctx(agent, card.name)
     await rail.before_tool_call(allowed)
     try:
-        assert "_skip_tool" not in allowed.extra
+        assert not was_skipped(allowed)
         assert _get_route()["session_id"] == "report-registration-session"
         await deepresearch_register_report.invoke({"report_path": str(report)})
         assert report.with_suffix(".provenance.json").is_file()
@@ -606,7 +607,7 @@ async def test_registered_card_list_failure_does_not_bypass_direct_gate() -> Non
 
     await rail.before_tool_call(ctx)
 
-    assert ctx.extra["_skip_tool"] is True
+    assert was_skipped(ctx) is True
     _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
@@ -625,7 +626,7 @@ async def test_registered_card_lookup_failure_fails_closed() -> None:
 
     await rail.before_tool_call(ctx)
 
-    assert ctx.extra["_skip_tool"] is True
+    assert was_skipped(ctx) is True
     _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
@@ -645,7 +646,7 @@ async def test_removed_registered_gated_tool_is_rejected_on_replay() -> None:
 
     await rail.before_tool_call(ctx)
 
-    assert ctx.extra["_skip_tool"] is True
+    assert was_skipped(ctx) is True
     _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
@@ -662,7 +663,7 @@ async def test_matching_active_skill_allows_registered_direct_call() -> None:
 
     await rail.before_tool_call(ctx)
 
-    assert "_skip_tool" not in ctx.extra
+    assert not was_skipped(ctx)
 
 
 @pytest.mark.asyncio

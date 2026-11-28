@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_03 |
 | 状态 | 当前实现的真实描述 |
-| 修订日期 | 2026-11-06 |
+| 修订日期 | 2026-11-28 |
 | 关联模块 | `jiuwenswarm/agents/harness/common/rails/task_execution_rail.py`（与 [[S_02]] 同文件的另一机制面：`_todo_close_nudge_message` / `_attach_todo_close_nudge` / `_arm/_finish/_retry/_mark/_write_todo_close_control` / `_reject_todo_close_nudge` / `_is_last_react_iteration` / `_started_in_progress_tasks`）<br>`jiuwenswarm/server/runtime/agent_adapter/todo_close_text_hold.py`（117 行，adapter 侧缓冲状态机）<br>消费点：`jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` stream() 主循环（实例创建 ~21056、first_chunk 判定 ~21121、decide 分派 ~21206、buffer push ~21298、`_parse_stream_chunk` 剔除 ~22402）<br>配合面（不展开）：`skill_turbo/rails/skill_prompt_rail.py` 的 guide 文本与 `_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT`、`JiuSwarmStreamEventRail` 对 nudge 的静默处理 |
 | 装配点 | rail 侧随 [[S_02]]（config `enable_task_execution_rail`，默认 False）一并装配，无独立开关；adapter 侧在每条用户请求的 stream() 循环内新建 `TodoCloseTextHold()` 实例（per-request 生命周期） |
 
@@ -32,7 +32,7 @@
 `_todo_close_nudge_used` 挂接成功即置 True；`before_invoke` 重置为 False（跨请求预算刷新）。第二次纯文本收尾直接放行——避免"收口-重写-又被拦"死循环。
 
 **N2 真假 todo_modify 的唯一区分是 tool_call_id 前缀**
-nudge 假调用 `name="todo_modify"`（`TODO_CLOSE_NUDGE_TOOL_NAME`，与真工具**同名**），id 形如 `todo-close-nudge-{uuid12}`（`TODO_CLOSE_NUDGE_ID_PREFIX`）。`is_todo_close_nudge` 只认 id 前缀。nudge 的 `before_tool_call` 走 `_reject_todo_close_nudge`：`ctx.extra["_skip_tool"] = True` 拦截执行，tool_result/tool_msg = 中文收口指令（含"上一轮正文视为作废、必须完整重写"）；**不改 todo.json、不触发 auto_advance、`after_tool_call` 直接 return**。流式侧 `JiuSwarmStreamEventRail` 对 nudge 同样不发 tool_call/tool_update/tool_result 帧（用户全程不可见）。
+nudge 假调用 `name="todo_modify"`（`TODO_CLOSE_NUDGE_TOOL_NAME`，与真工具**同名**），id 形如 `todo-close-nudge-{uuid12}`（`TODO_CLOSE_NUDGE_ID_PREFIX`）。`is_todo_close_nudge` 只认 id 前缀。nudge 的 `before_tool_call` 走 `_reject_todo_close_nudge`：`mark_skipped(ctx)` 拦截执行（否决标记 per-call：新 core 落 `AgentCallbackContext` 的 marker，旧 core 回落 `extra["_skip_tool"]`，见 [[B_10]]），tool_result/tool_msg = 中文收口指令（含"上一轮正文视为作废、必须完整重写"）；**不改 todo.json、不触发 auto_advance、`after_tool_call` 直接 return**。流式侧 `JiuSwarmStreamEventRail` 对 nudge 同样不发 tool_call/tool_update/tool_result 帧（用户全程不可见）。
 
 **N3 挂接前置条件（全过才挂）**
 `_attach_todo_close_nudge` 七条闸门，任一不过即返回 False：① `_todo_close_nudge_used` 已用；② `ctx.session is None`；③ response 已有 tool_calls（真工具调用照常走）；④ `finish_reason == "length"`（截断重试会持久化无配对 tool_result 的 assistant 消息，不能拦）；⑤ `_is_last_react_iteration`（最后一轮没有空间补一轮回复）；⑥ content 为空；⑦ `_started_in_progress_tasks()` 为空。
@@ -153,7 +153,7 @@ attach 成功时 `response.content = ""` 且 `response.tool_calls = [nudge]`—�
 | 最后 ReAct 迭代不挂 | 不挂 | `test_last_react_iteration_does_not_attach_nudge` |
 | 有真 tool_calls 时不改响应 | 保留原调用 | `test_text_only_ending_keeps_real_tool_calls` |
 | 无开放任务不挂 | 不挂 | `test_text_only_ending_skipped_without_open_task` |
-| nudge 被拦截且不推进 todo | `_skip_tool` + 无 auto_advance + `_todo_map` 不变 | `test_nudge_tool_is_skipped_and_does_not_advance_todos` |
+| nudge 被拦截且不推进 todo | `skip_tool` 标记 + 无 auto_advance + `_todo_map` 不变 | `test_nudge_tool_is_skipped_and_does_not_advance_todos` |
 | release 失败在下次 hold 前重试 | 重发 release | `test_failed_release_is_retried_before_the_next_hold` |
 | drop 失败重试仍发 drop（不发 release） | N6 | `test_failed_drop_is_retried_and_not_released` |
 | before_invoke 重置 nudge 预算 | 三态清零 | `test_before_invoke_resets_nudge_budget` |

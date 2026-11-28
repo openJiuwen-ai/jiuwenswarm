@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.fil
     FileSkillGrantStore,
     configure_shared_skill_authorization,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 
 @pytest.fixture
@@ -517,7 +518,9 @@ async def test_child_tool_approval_cannot_execute_after_session_storage_changes(
     directory = store.session_directory("session")
     policy = {"enabled": True, "defaults": {"*": "ask"},
               "skill_authorization": {"enabled": True}}
-    from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import PublishedPermissionScopes
+    from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import (
+        PublishedPermissionScopes,
+    )
 
     publisher = PublishedPermissionScopes("default", base_config=policy, store=store)
     publisher.publish_session("session", policy)
@@ -556,7 +559,7 @@ async def test_child_tool_approval_cannot_execute_after_session_storage_changes(
                     await callbacks.trigger("before_tool", ctx)
             else:
                 await callbacks.trigger("before_tool", ctx)
-                assert bool(ctx.extra.get("_skip_tool")) == (change != "allow")
+                assert was_skipped(ctx) == (change != "allow")
                 assert "_interrupt_decision" in ctx.extra
         finally:
             file_store._session_file_context.reset(token)

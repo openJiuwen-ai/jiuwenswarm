@@ -22,6 +22,7 @@ from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import mark_skipped
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import logger
 
@@ -67,7 +68,9 @@ class AvatarPromptRail(DeepAgentRail):
         _external_ok = is_external_memory_allowed(_config) and is_external_memory_enabled(_config)
         engine_disabled = not (_builtin_ok or _external_ok)
         try:
-            from jiuwenswarm.agents.harness.common.memory.forbidden import get_forbidden_memory_prompt
+            from jiuwenswarm.agents.harness.common.memory.forbidden import (
+                get_forbidden_memory_prompt,
+            )
             forbidden = get_forbidden_memory_prompt(language) or ""
         except Exception as e:
             logger.debug("[AvatarRail] 加载 forbidden_memory 失败: %s", e)
@@ -209,7 +212,7 @@ class AvatarPromptRail(DeepAgentRail):
         """跳过工具执行，直接返回拒绝消息。"""
         tool_call = ctx.inputs.tool_call
         tool_call_id = tool_call.id if tool_call else ""
-        ctx.extra["_skip_tool"] = True
+        mark_skipped(ctx)
         ctx.inputs.tool_result = message
         ctx.inputs.tool_msg = ToolMessage(content=message, tool_call_id=tool_call_id)
 

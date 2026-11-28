@@ -17,6 +17,7 @@ from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail imp
     match_skill_in_command,
     match_skills_in_command,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.agents.harness.common.tools.command_tools import _build_subprocess_env
 
 
@@ -366,7 +367,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
         asyncio.run(rail.before_tool_call(ctx))
         assert ctx.inputs.tool_args["env"]["HWOCR_AK"] == "ak"
         assert ctx.inputs.tool_args["env"]["HWOCR_SK"] == "sk"
-        assert not ctx.extra.get("_skip_tool")
+        assert not was_skipped(ctx)
 
     @patch(
         "jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail.get_session_active_skill"
@@ -380,7 +381,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             tool_args={"command": "python3 /opt/skills/hwocr/scripts/run.py"}
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert ctx.extra.get("_skip_tool") is True
+        assert was_skipped(ctx) is True
         assert 'skill_tool(skill_name="hwocr")' in str(ctx.inputs.tool_result)
         assert ctx.inputs.tool_msg is not None
         assert "env" not in ctx.inputs.tool_args
@@ -396,7 +397,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             tool_args={"command": "node /opt/skills/ppt-creation/build.mjs"}
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert ctx.extra.get("_skip_tool") is True
+        assert was_skipped(ctx) is True
         assert "env" not in ctx.inputs.tool_args
 
     @patch(
@@ -415,7 +416,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             }
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert not ctx.extra.get("_skip_tool")
+        assert not was_skipped(ctx)
         assert ctx.inputs.tool_args["env"]["PPT_TOKEN"] == "tok"
         assert ctx.inputs.tool_args["env"]["OTHER_KEY"] == "keep"
         assert "PPT_SK" not in ctx.inputs.tool_args["env"]
@@ -432,7 +433,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             tool_args={"command": "cd /opt/skills/hwocr && python3 run.py"}
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert not ctx.extra.get("_skip_tool")
+        assert not was_skipped(ctx)
         assert ctx.inputs.tool_args["env"]["HWOCR_AK"] == "ak"
 
     @patch(
@@ -448,7 +449,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             }
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert not ctx.extra.get("_skip_tool")
+        assert not was_skipped(ctx)
         assert ctx.inputs.tool_args["env"]["HWOCR_AK"] == "ak"
 
     @patch(
@@ -464,7 +465,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             }
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert not ctx.extra.get("_skip_tool")
+        assert not was_skipped(ctx)
         assert ctx.inputs.tool_args["env"]["HWOCR_AK"] == "ak"
 
     @patch(
@@ -479,7 +480,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             )
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert ctx.extra.get("_skip_tool") is True
+        assert was_skipped(ctx) is True
         assert isinstance(ctx.inputs.tool_args, dict)
         assert 'skill_tool(skill_name="hwocr")' in str(ctx.inputs.tool_result)
 
@@ -494,7 +495,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
         )
         ctx.extra["language"] = "en"
         asyncio.run(rail.before_tool_call(ctx))
-        assert ctx.extra.get("_skip_tool") is True
+        assert was_skipped(ctx) is True
         message = str(ctx.inputs.tool_result)
         assert "skill_tool" in message
         assert "credential" in message.lower()
@@ -513,7 +514,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             }
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert ctx.extra.get("_skip_tool") is True
+        assert was_skipped(ctx) is True
         message = str(ctx.inputs.tool_result)
         assert "hwocr" in message and "ppt-creation" in message
         assert "拆分" in message
@@ -532,7 +533,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             }
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert ctx.extra.get("_skip_tool") is True
+        assert was_skipped(ctx) is True
         message = str(ctx.inputs.tool_result)
         assert "hwocr" in message and "ppt-creation" in message
         assert "拆分" in message
@@ -554,7 +555,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
             }
         )
         asyncio.run(rail.before_tool_call(ctx))
-        assert not ctx.extra.get("_skip_tool")
+        assert not was_skipped(ctx)
         assert ctx.inputs.tool_args["env"]["HWOCR_AK"] == "ak"
 
 

@@ -18,10 +18,11 @@ from openjiuwen.core.common.logging import logger
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.agent_mode_rail import AgentModeRail
 
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import PLAN_EXECUTE_CTX_KEY
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     extract_tool_interrupt,
 )
-from jiuwenswarm.agents.harness.code.prompt.plan_approval import PLAN_EXECUTE_CTX_KEY
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 
 if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
@@ -148,7 +149,7 @@ class CodeAgentModeRail(AgentModeRail):
                 return
 
         await super().before_tool_call(ctx)
-        if ctx.extra.get("_skip_tool"):
+        if was_skipped(ctx):
             return
 
         if plan_state.mode != "plan":

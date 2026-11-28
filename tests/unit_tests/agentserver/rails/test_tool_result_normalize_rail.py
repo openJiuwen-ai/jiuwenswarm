@@ -12,6 +12,7 @@ from jiuwenswarm.agents.harness.common.rails.tool_result_normalize_rail import (
     PRE_NORMALIZE_RESULT_KEY,
     ToolResultNormalizeRail,
 )
+from jiuwenswarm.agents.harness.common.skip_tool_compat import was_skipped
 from jiuwenswarm.agents.harness.common.tool_result_schema import (
     STATUS_ERROR,
     STATUS_SUCCESS,
@@ -19,8 +20,6 @@ from jiuwenswarm.agents.harness.common.tool_result_schema import (
     render_tool_result_for_llm,
 )
 from jiuwenswarm.server.utils.stream_utils import build_tool_result_payload
-
-
 
 
 def test_none_becomes_success_empty_data() -> None:
@@ -350,11 +349,11 @@ def test_normalize_error_none_sentinel_stays_success() -> None:
 
 def test_failure_signal_parity_with_circuit_breaker_detector() -> None:
     """哨兵/exit_code 规则契约：error 键与退出码判定必须与熔断器一致。"""
-    from jiuwenswarm.agents.harness.common.tool_result_schema import (
-        has_failure_signal,
-    )
     from jiuwenswarm.agents.harness.common.rails.execution_guard.circuit_breaker_rail import (
         ToolResultErrorDetector,
+    )
+    from jiuwenswarm.agents.harness.common.tool_result_schema import (
+        has_failure_signal,
     )
 
     cases = [
@@ -413,11 +412,11 @@ def test_normalize_boolish_success_strings() -> None:
 
 
 def test_boolish_success_parity_with_detector() -> None:
-    from jiuwenswarm.agents.harness.common.tool_result_schema import (
-        normalize_tool_result,
-    )
     from jiuwenswarm.agents.harness.common.rails.execution_guard.circuit_breaker_rail import (
         ToolResultErrorDetector,
+    )
+    from jiuwenswarm.agents.harness.common.tool_result_schema import (
+        normalize_tool_result,
     )
 
     for payload in ({"success": "false"}, {"success": "0"}, {"success": "no"}):
@@ -964,7 +963,7 @@ async def test_read_file_reject_path_produces_schema() -> None:
         ),
     )
     reject_read_file(ctx, "[READ_FILE_ERROR] 二进制文件无法按文本读取。")
-    assert ctx.extra["_skip_tool"] is True
+    assert was_skipped(ctx) is True
     final = ctx.inputs.tool_result
     assert isinstance(final, dict)
     assert final["status"] == STATUS_ERROR
