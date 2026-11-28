@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import signal
 from dataclasses import dataclass
 
 from openjiuwen.harness_providers.jsonsafe import to_json_safe
@@ -64,6 +65,27 @@ class HookExecutor:
             for r in results
         ]
 
+    @staticmethod
+    def _kill_hook_tree(proc: asyncio.subprocess.Process, start_new_session: bool) -> None:
+        """Terminate a timed-out hook and the processes it spawned.
+
+        On POSIX the shell was started in its own session, so its pid is also
+        the process-group id: ``killpg`` reaps background grandchildren too and
+        releases the inherited stdout/stderr pipes.  A direct ``proc.kill()``
+        is always attempted as a fallback (and is the only action on Windows,
+        where process groups are not available here).
+        """
+        killed_group = False
+        if start_new_session and proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+                killed_group = True
+            except (ProcessLookupError, PermissionError, OSError):
+                # Group already gone, or platform without killpg -- fall back.
+                pass
+        if not killed_group and proc.returncode is None:
+            proc.kill()
+
     async def _run_command_hook(self, config: dict, hook_input: dict) -> HookResult:
         """执行 command 类型 hook（子进程）."""
         command = config.get("command", "")
@@ -80,6 +102,11 @@ class HookExecutor:
         env["TOOL_NAME"] = tool_name
 
         proc = None
+        # POSIX: putting the shell in a new session makes it the leader of its
+        # own process group, so a timeout can reap the whole tree (including
+        # background grandchildren that inherited the stdout/stderr pipes).
+        # Windows keeps the original "kill the direct child only" behaviour.
+        start_new_session = os.name != "nt"
         try:
             proc = await asyncio.create_subprocess_exec(
                 shell, "-c", command,
@@ -87,6 +114,7 @@ class HookExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                start_new_session=start_new_session,
             )
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -98,7 +126,7 @@ class HookExecutor:
         except asyncio.TimeoutError:
             try:
                 if proc is not None:
-                    proc.kill()
+                    self._kill_hook_tree(proc, start_new_session)
                     await proc.wait()
             except Exception:
                 logger.debug("Failed to kill hook process after timeout", exc_info=True)
