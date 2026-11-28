@@ -327,6 +327,7 @@ Symphony 只会使用已安装技能。请先在左侧导航栏 **技能** 页�
 
 | 配置 | 缺省/模板 | 作用 |
 |---|---|---|
+| `capability.scan.max_depth` | `1` | 能力目录扫描深度。显式设为 `null` 时，扫描仅受预算约束。 |
 | `capability.fingerprint.extraction.max_concurrency` / `batch_size` | 缺省 `1/1`，模板 `4/2` | 指纹提取；实际并发还受构图并发上限限制 |
 | `orchestration.build.max_concurrency` / `matching.batch_size` | 缺省 `1/12`，模板 `4/16` | 关系匹配并发和批量 |
 | `orchestration.min_edge_confidence` | `0.5` | 构图和规划共用的关系阈值 |

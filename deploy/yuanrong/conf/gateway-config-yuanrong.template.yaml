@@ -21,7 +21,7 @@ symphony:
     #   - type: expert
     #     root: /path/to/agent_templates/local
     scan:
-      max_depth: null
+      max_depth: 1
     fingerprint:
       extraction:
         llm_enabled: true
