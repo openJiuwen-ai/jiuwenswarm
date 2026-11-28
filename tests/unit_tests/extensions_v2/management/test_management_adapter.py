@@ -464,6 +464,27 @@ async def test_install_notification_failure_preserves_successful_activation(
     assert (await manager.query("test.pkg")).active[0].package_id == "test.pkg"
 
 
+@pytest.mark.asyncio
+async def test_notification_side_failure_keeps_the_install_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+
+    async def unavailable(*args: Any, **kwargs: Any) -> bool:
+        raise OSError("state store unavailable")
+
+    monkeypatch.setattr(adapter_module, "_notify_installed_packages", unavailable)
+    source = archive_package(write_package(tmp_path / "source"))
+
+    response = await PackageManagementAdapter().handle(
+        _request(ReqMethod.EXTENSIONS_V2_INSTALL, {"paths": [str(source)]})
+    )
+
+    assert response.ok and response.payload["reports"][0]["status"] == "SUCCESS"
+    assert response.payload["ui_notified"] is False
+    assert (await manager.query("test.pkg")).active[0].package_id == "test.pkg"
+
+
 async def test_failed_install_does_not_notify_ready_clients(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

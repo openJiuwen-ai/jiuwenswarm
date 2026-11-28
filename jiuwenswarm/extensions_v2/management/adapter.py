@@ -135,10 +135,16 @@ class PackageManagementAdapter(GatewayAdapter):
         if method in (ReqMethod.EXTENSIONS_V2_INSTALL.value, ReqMethod.EXTENSIONS_V2_IMPORT.value) or (
             method == ReqMethod.EXTENSIONS_V2_SET_ENABLED.value and parsed.enable is True
         ):
-            store = ExtensionInstallState.for_install_dir(resolve_install_dir())
-            payload["ui_notified"] = await _notify_installed_packages(
-                payload.get("reports", ()), store,
-            )
+            # The package result is already committed; a notification-side failure
+            # (config or state-store read) must not turn it into an error response.
+            try:
+                store = ExtensionInstallState.for_install_dir(resolve_install_dir())
+                payload["ui_notified"] = await _notify_installed_packages(
+                    payload.get("reports", ()), store,
+                )
+            except Exception:  # noqa: BLE001 - keep the management response authoritative
+                logger.warning("[ExtensionsV2] package change UI notification failed", exc_info=True)
+                payload["ui_notified"] = False
         try:
             return AgentResponse(
                 request_id=request.request_id,
