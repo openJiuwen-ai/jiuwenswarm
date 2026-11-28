@@ -34,6 +34,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
     NativePathGuardProjection, current_native_path_access,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.path_guard_exemptions import (
+    PathGuardExemptions, SkillRootsProvider,
+)
 from jiuwenswarm.common.utils import logger
 
 ExactPermissionPersistCallback = Callable[..., bool]
@@ -97,13 +100,28 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
                 return outcome
             self._host.permission_scene_hook = preserve_confirmation
 
+    def set_skill_read_roots(self, skill_roots: SkillRootsProvider | None) -> None:
+        """Let the path guard skip its question for reads under the folders ``skill_roots`` returns."""
+        self._skill_read_roots = skill_roots
+        self._project_native_path_guard()
+
     def _project_native_path_guard(self) -> None:
-        if getattr(self, "_exact_persist_callback", None) is None:
-            return
         # SDK exposes no guard injection API; preserve its checker on each rebuild.
         checker = self._engine._file_guard  # pylint: disable=protected-access
-        if checker is not None and not isinstance(checker, NativePathGuardProjection):
-            self._engine._file_guard = NativePathGuardProjection(checker)  # pylint: disable=protected-access
+        if checker is None:
+            return
+        projected = isinstance(checker, NativePathGuardProjection)
+        inner = checker.checker if projected else checker
+        if not isinstance(inner, PathGuardExemptions):
+            inner = PathGuardExemptions(inner)
+        inner.set_skill_roots(getattr(self, "_skill_read_roots", None))
+        if projected:
+            checker.checker = inner
+        elif getattr(self, "_exact_persist_callback", None) is not None:
+            checker = NativePathGuardProjection(inner)
+        else:
+            checker = inner
+        self._engine._file_guard = checker  # pylint: disable=protected-access
 
     def _sync_engine_workspace_root(self) -> None:
         """Refresh file_guard workspace when the host resolver changes."""
