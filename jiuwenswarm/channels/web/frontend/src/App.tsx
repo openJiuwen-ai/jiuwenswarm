@@ -2217,7 +2217,9 @@ function AppContent({
 
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
     const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
-    const snapshotTurnRevision = useChatStore.getState().getRuntime(targetSessionId)?.turnRevision ?? 0;
+    const initialRuntime = useChatStore.getState().getRuntime(targetSessionId);
+    const snapshotTurnRevision = initialRuntime?.turnRevision ?? 0;
+    const snapshotEndRevision = initialRuntime?.processingEndRevision ?? 0;
     const contextEpoch = browserClientCapabilities.getEpoch();
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
@@ -2227,6 +2229,23 @@ function AppContent({
       );
       if (contextEpoch !== browserClientCapabilities.getEpoch()) return null;
       const { queued_session_messages: queuedMessages, can_continue_queued_session_messages: canContinueQueuedMessages, ...session } = response;
+      const currentRuntime = useChatStore.getState().getRuntime(targetSessionId);
+      const snapshotMatchesCurrentTurn = (currentRuntime?.turnRevision ?? 0) === snapshotTurnRevision;
+      const recoveryPending = response.runtime?.recovery_pending === true;
+      // Recovery can return a pending snapshot after the client has cleared its local recovery flag.
+      const recoveringExecution = recoveryPending || (
+        typeof session.is_processing === 'boolean' &&
+        'isRecoveringExecution' in webClient && webClient.isRecoveringExecution(targetSessionId)
+      );
+      // Only a same-turn idle event outside recovery can supersede this busy snapshot.
+      if (
+        session.is_processing === true && currentRuntime && !currentRuntime.isProcessing &&
+        !recoveringExecution && snapshotMatchesCurrentTurn &&
+        currentRuntime.processingEndRevision !== snapshotEndRevision
+      ) {
+        session.is_processing = false;
+        if (session.status === 'processing') session.status = 'idle';
+      }
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
           navigate({ kind: 'chat-new' }, { replace: true });
@@ -2281,7 +2300,7 @@ function AppContent({
       //
       // 企业版 cron 执行态走 /sessions/{id}/live，不写进 web channel 的 busy 表，
       // metadata 常误报 false。乐观宽限期内挡住误报；权威 idle / 宽限过期必须放行。
-      if (typeof session.is_processing === 'boolean' && response.runtime?.recovery_pending !== true) {
+      if (typeof session.is_processing === 'boolean' && !recoveryPending) {
         const runtime = useChatStore.getState().getRuntime(targetSessionId);
         const localProcessing = runtime?.isProcessing ?? false;
         const locallyBusy = runtime?.foregroundIsProcessing === true;
@@ -2291,10 +2310,7 @@ function AppContent({
         );
         const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
         // The cursor recovery owns settlement while it can still replay the terminal output.
-        const recoveringExecution =
-          'isRecoveringExecution' in webClient && webClient.isRecoveringExecution(targetSessionId);
-        const mayDowngrade = allowDowngrade && !recoveringExecution &&
-          (runtime?.turnRevision ?? 0) === snapshotTurnRevision;
+        const mayDowngrade = allowDowngrade && !recoveringExecution && snapshotMatchesCurrentTurn;
         if (
           (session.is_processing || mayDowngrade || !locallyBusy)
           && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
@@ -2322,8 +2338,6 @@ function AppContent({
         // 但仍复用 turnRevision 匹配与 cron 乐观宽限，避免滞后快照压掉新轮次 /
         // 误灭 cron「任务执行」提示。
         const sessionMode = useSessionStore.getState().getRuntime(targetSessionId)?.mode;
-        const snapshotMatchesCurrentTurn =
-          (runtime?.turnRevision ?? 0) === snapshotTurnRevision;
         const keepCronOptimistic = shouldKeepLocalCronProcessing(
           targetSessionId,
           session.is_processing,

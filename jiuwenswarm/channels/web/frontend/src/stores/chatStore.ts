@@ -214,6 +214,8 @@ export interface ChatRuntime {
   isProcessing: boolean;
   foregroundIsProcessing: boolean;
   turnRevision: number;
+  /** Counts non-replayed idle updates, including those arriving after a segment final. */
+  processingEndRevision: number;
   organizationIsProcessing: boolean;
   activeExecutionId: string | null;
   executionError: string | null;
@@ -295,6 +297,7 @@ function createEmptyRuntime(): ChatRuntime {
     isProcessing: false,
     foregroundIsProcessing: false,
     turnRevision: 0,
+    processingEndRevision: 0,
     organizationIsProcessing: false,
     activeExecutionId: null,
     executionError: null,
@@ -430,7 +433,11 @@ interface ChatState {
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
   setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
-  setProcessing: (sessionId: string, status: boolean, options?: { newTurn?: boolean }) => void;
+  setProcessing: (
+    sessionId: string,
+    status: boolean,
+    options?: { newTurn?: boolean; fromLiveStatus?: boolean },
+  ) => void;
   setOrganizationProcessing: (sessionId: string, status: boolean) => void;
   setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
@@ -1144,6 +1151,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             foregroundIsProcessing: status,
+            processingEndRevision: runtime.processingEndRevision + (!status && options?.fromLiveStatus ? 1 : 0),
             ...(status && (turnStart || options?.newTurn) ? { turnRevision: runtime.turnRevision + 1 } : {}),
             isProcessing: status || runtime.organizationIsProcessing,
             ...(!status ? {
