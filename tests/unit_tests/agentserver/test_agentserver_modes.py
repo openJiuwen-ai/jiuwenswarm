@@ -1024,8 +1024,9 @@ async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team
     assert fake_adapter.seen_inputs["query"].user_inputs == {"exit_plan_mode_call_1": expected_payload}
     assert request.params["mode"] == mode
     assert chunks[0].payload == {"event_type": "chat.done"}
-    assert chunks[0].is_complete is True
+    assert chunks[0].is_complete is False
     assert chunks[-1].is_complete is True
+    assert sum(chunk.is_complete for chunk in chunks) == 1
 
 
 def test_deliver_control_input_uses_existing_adapter_without_opening_work_turn(monkeypatch):
@@ -1451,9 +1452,10 @@ async def test_process_message_stream_treats_team_plan_confirm_resume_as_team_fo
     assert FakeSessionManager.submit_task_calls == []
     assert len(FakeTeamManager.interact_calls) == 0
     assert chunks[0].payload == {"event_type": "chat.done"}
-    assert chunks[0].is_complete is True
+    assert chunks[0].is_complete is False
     assert chunks[-1].payload == {"is_complete": True}
     assert chunks[-1].is_complete is True
+    assert sum(chunk.is_complete for chunk in chunks) == 1
 
 
 @pytest.mark.asyncio

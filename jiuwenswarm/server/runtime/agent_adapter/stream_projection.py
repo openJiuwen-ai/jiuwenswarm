@@ -391,6 +391,11 @@ class StreamResponsePipeline:
     async def _project_chunk(
         self, data: AgentResponseChunk
     ) -> AsyncIterator[AgentResponseChunk]:
+        # The facade owns transport completion, including producer cleanup
+        # and post-processing after a nested stream's terminal marker.
+        data = self.ports.normalize_nested_stream_chunk(data)
+        if data is None:
+            return
         phase_payload = data.payload if isinstance(data.payload, dict) else {}
         phase_event = phase_payload.get("event_type")
         if phase_event == "chat.input_received":
@@ -424,10 +429,6 @@ class StreamResponsePipeline:
                 for key in ("output_phase_id", "output_suppressed")
                 if key in phase_payload
             }
-        if self.projector.suppress_a2ui_stream:
-            data = self.ports.normalize_nested_stream_chunk(data)
-            if data is None:
-                return
         if isinstance(data.payload, dict):
             payload_event_type = data.payload.get("event_type")
             enriched_payload = self.ports.with_web_agent_template_payload(
