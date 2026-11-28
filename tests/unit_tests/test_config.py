@@ -49,6 +49,35 @@ from jiuwenswarm.common.config import (
 from jiuwenswarm.common import symphony_config as symphony_config_module
 
 
+def test_fresh_workspace_init_does_not_create_logs_in_working_directory(tmp_path):
+    repo_root = Path(__file__).resolve().parents[2]
+    command_dir = tmp_path / "wheel"
+    command_dir.mkdir()
+    home = tmp_path / "home"
+    data = tmp_path / "data"
+    result = subprocess.run(
+        [sys.executable, "-m", "jiuwenswarm.init_workspace"],
+        cwd=command_dir,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "JIUWENSWARM_HOME": str(home),
+            "JIUWENSWARM_DATA_DIR": str(data),
+            "JIUWENSWARM_CONFIG_DIR": str(data / "config"),
+            "JIUWENSWARM_RUNTIME_PROFILE": "",
+            "PYTHONPATH": str(repo_root),
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, (result.stdout + result.stderr).decode("utf-8", errors="replace")
+    assert (data / "config" / "config.yaml").is_file()
+    assert not (command_dir / "logs").exists()
+
+
 @pytest.mark.parametrize("enabled", [None, False, True])
 def test_migrate_legacy_symphony_loads_without_changing_other_settings(tmp_path, monkeypatch, enabled):
     template = Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml"
@@ -120,18 +149,26 @@ def test_symphony_migration_preserves_explicit_new_values_and_unrelated_comments
     assert migrate_config_from_template(template, config_path) is False
 
 
-def test_symphony_migration_writes_even_when_no_template_defaults_are_added(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("legacy", "expected"), [
+    ({"enabled": True}, {"orchestration": {"enabled": True}}),
+    (
+        {"orchestration": {"mode": "fast", "top_k": 3, "max_depth": 4}},
+        {"orchestration": {"plan": {"mode": "fast", "top_k": 3, "max_depth": 4}}},
+    ),
+])
+def test_symphony_migration_writes_even_when_no_template_defaults_are_added(tmp_path, monkeypatch, legacy, expected):
     from jiuwenswarm.common import version
 
     monkeypatch.setattr(version, "get_runtime_version_label", lambda: "same-version")
     template = tmp_path / "template.yaml"
     config_path = tmp_path / "config.yaml"
     template.write_text('{}\n', encoding="utf-8")
-    config_path.write_text('config_version: same-version\nsymphony:\n  enabled: true\n', encoding="utf-8")
+    config_path.write_text(
+        yaml.safe_dump({"config_version": "same-version", "symphony": legacy}),
+        encoding="utf-8",
+    )
     assert migrate_config_from_template(template, config_path) is True
-    assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["symphony"] == {
-        "orchestration": {"enabled": True},
-    }
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["symphony"] == expected
     assert migrate_config_from_template(template, config_path) is False
 
 
@@ -632,6 +669,7 @@ def test_config_migration_preserves_explicit_image_policy(tmp_path: Path) -> Non
 
     migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
     assert migrated["react"]["enable_read_image_multimodal"] is False
+
 
 @pytest.mark.parametrize(
     ("sandbox", "expected"),
