@@ -18,6 +18,8 @@ description: SkillTurbo 技能加速引擎模块说明书——给修改/检视�
 - `docs/specs/S_08_event-stream-protocol.md` — 事件流前端协议（事件全集 / 顺序约束 / 缓冲 / 转发 / 交付总结时序）
 - `docs/specs/S_09_outer-integration.md` — 外层集成面（adapter 装配 / ContextVar 桥 / WS-gateway / 双仓部署）
 - `docs/specs/S_10_segment-state-and-inputs.md` — 跨段台账、产物命名空间、唯一输入/后置检查
+- `docs/specs/S_13_batch-execution-and-resume.md` — 同技能串行批、静态依赖、逐段提交/force、审阅组合及原段断点
+- `docs/specs/S_12_model-disclosure-and-delivery.md` — 请求级三载体披露、根加载附录、交付归属及SDK顺序
 - `docs/specs/S_11_explicit-segment-execution.md` — 显式单段、真实结果聚合、内容快照与段恢复
 
 ## 统一术语
@@ -128,7 +130,7 @@ skill_turbo/
    外层 skill_acceleration_exec call id（或其 `#n` 变体），必经 `_dedupe_ask_user_card`
    （序号计数收口 hitl_dedup.OuterCallIDDeduplicator，挂 adapter 实例跨请求存续）。
 5. **tcid 确定性**（[[S_06]] N4）。`skill_turbo-tc-{name}-{args_hash}-{idx}`（args_hash =
-   `sha1` 对请求域与 canonical_args 以竖线拼接后取前 8 位 hex；请求域通常为`request_id`，预留批次控制存在时追加batch_id/cursor）；
+   `sha1` 对请求域与 canonical_args 以竖线拼接后取前 8 位 hex；请求域通常为`request_id`，批次按 [[S_13]] 追加batch_id/cursor）；
    request_id 混入使 **resume 精确匹配必然失效，name+idx 回退命中是预期路径**。改 tcid 格式必须
    同步两个解析函数并重新评估回退命中链。
 6. **退出路径事件终态收口对称**（[[S_01]] E1-E13 / [[S_08]]）。改任何异常分支前对照 E 表：

@@ -12,14 +12,14 @@
 
 ## 范围与边界
 
-本规约定义跨调用状态与纯数据检查。声明由 [[S_02]] 的统一解析器提供；实际 PlanNode 和 HITL 的内部单段接线归 [[S_11]]；公开工具扩展、批次编排与 Relay 消费适配留待后续集成。执行前当前声明/代码复核由段调用边界负责，Registry 与展示缓存均非执行许可。
+本规约定义跨调用状态与纯数据检查。声明由 [[S_02]] 的统一解析器提供；工具、实际 PlanNode 和 HITL 接线归 [[S_11]]，批次编排归 [[S_13]]，Relay 消费适配不在本规约范围。执行前当前声明/代码复核由段调用边界负责，Registry 与展示缓存均非执行许可。
 
 ## 不变量
 
 1. N1 台账 KEY 只在 SkillRunLedger 定义，使用 `{card.id}__skill_turbo`；缺 card/session 身份明确拒绝，无默认键空间回退。
 2. N2 current/load 只读，不分配序号或目录；独立读 Session 仅 close_stream，不 post_run。写路径在同会话/card 写锁内重读完整 book，替换写并同步已参与隔离通道的调用方快照。
    同身份的锁、调用方弱集合和已访问键由一个内存 scope 管理。身份索引弱持有 scope；存活调用方通过弱键索引保有它，活跃和等待操作也持有它。最后一个使用者释放后回收，不在单次提交结束或业务终态时删除仍被使用的锁。回收仅针对内存管理信息，不删除已持久化台账、产物或断点。
-3. N3 首次 query 去除首尾及合并空白，工作区取显式 metadata.output_dir 的规范路径；段引擎不从宿主内部目录补值。task_key 为 UTF-8 编码 `normalized_query|workspace_base|sequence` 的 SHA1 前12位。todo 只定位，不进入哈希；后续 query/request/段/fresh_start 不改变身份。
+3. N3 首次 query 去除首尾及合并空白，工作区取显式 metadata.output_dir 的规范路径；宿主仅传project_dir时，由请求适配层按 [[S_09]] N5补齐该字段，段引擎不自行增加来源。task_key 为 UTF-8 编码 `normalized_query|workspace_base|sequence` 的 SHA1 前12位。todo 只定位，不进入哈希；后续 query/request/段/fresh_start 不改变身份。
 4. N4 新身份/active 可靠持久化并重读确认后才返回可启动任务；保存失败或无法确认明确创建失败。重试读取实际状态，已生效就复用。run_dir 只能在工作区内，身份确认前不创建业务目录。
 5. N5 同任务竞争按 `(revision, updated_at)` 取大者；同版本不采用基准版本冲突拒绝。save 回带胜负、revision、persisted，并同步最终选中记录；保留其他任务、sequence、active。
 6. N6 会话/card 级执行租约约束所有任务；已有其他协程租约或持久 pending 断点返回 busy。已验证恢复仅可接管与传入原断点完全相同的 pending 槽，重复作答仍拒绝。单进程锁不是跨进程 CAS；无后台租约服务。
@@ -85,7 +85,7 @@ P4 assembly/finalize：有界 offload→路径/事实/来源/文件检查→sche
 
 ## 与其它 spec 的关系
 
-[[S_01]] 保持 legacy 执行路径；[[S_06]] 保持断点 owner 和隔离规则；[[S_09]] 保持显式工作区来源。内部单段门面已接入状态和数据校验，公开工具仍保留 legacy 调用方式。
+[[S_01]] 保持 legacy 执行路径；[[S_06]] 保持断点 owner 和隔离规则；[[S_09]] 保持显式工作区来源。公开工具已接入单段和批次执行。
 
 节点入口哈希通过 Executor.hash_plan_code 统一计算，沿用原 MD5 前八位算法；方法名调整不
 改变已持久化桶的 hash 匹配规则，也不以新算法使原断点失效。

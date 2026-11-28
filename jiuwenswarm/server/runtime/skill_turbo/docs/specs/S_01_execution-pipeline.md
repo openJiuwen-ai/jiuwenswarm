@@ -7,13 +7,14 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / execution-pipeline |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：agent.py / executor.py / skill_turbo_tools.py；environment.py / planner.py 仅涉执行链一侧） |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | [[F_02]]（回调槽 12→11 / resume 横幅不再抑制）；[[F_04]]（inputs 注入 python_cmd） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
 
 ## 范围与边界
 
+同技能批次在第七步接入，完整静态校验、逐段owner、步骤force、审阅组合、segment.batch断点及调用ID隔离以 [[S_13]] 为准；legacy协议不扩大。
 
 ### 本规约管什么
 

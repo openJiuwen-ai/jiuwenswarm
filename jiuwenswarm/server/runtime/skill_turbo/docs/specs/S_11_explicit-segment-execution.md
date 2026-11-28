@@ -6,19 +6,19 @@
 |---|---|
 | 类型 | spec |
 | 编号 / slug | S_11 / explicit-segment-execution |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联模块 | agent、executor、skill_turbo_tools、resume_context、permission_bridge |
 | 关联 feature | [[F_07]] |
 
 ## 范围 / 边界
 
-本规约描述 SkillTurbo.run_accelerator_stream 的内部单段执行与恢复。它在 [[S_10]] 的台账和输入装配 API 上运行真实 PlanNode，不调用 planner。指定技能整流程由 run_skill_stream 精确构建旧根入口。
-
-公开 skill_acceleration_exec 仍保留 query/fresh_start 签名；公开多入口、候选查询、批量、模型披露和宿主集成留待下一 PR。本规约不宣称这些入口已经开放。
+第四步在 [[S_10]] 的唯一台账和输入装配 API 上接入真实 PlanNode。legacy 和指定技能的
+`__full__` 保留整流程语义；批次和步骤force由 [[S_13]] 编排，单段工具不新增顶层force。公开工具指定普通起始段且省略/null auto_batch 默认组批；精确单段须显式 auto_batch=false。底层 run_accelerator_stream 不改变单段语义。PPT四段业务在技能侧；第六步加载描述及交付关联见 [[S_12]]。
 
 ## 不变量
 
-1. N1 内部单段门面按 skill/accelerator 精确选择，零 planner；params 只作为本段声明输入。公开工具签名及 legacy 路由不变。
+1. N1 `skill_turbo(query, fresh_start=False, skill='', accelerator='', params=None, accelerators=None, auto_batch=None)` 保留旧位置参数。
+   普通段精确选择，零 planner；不接受顶层force；accelerators选择批次且与accelerator互斥，未选择普通段或批次时拒绝params。auto_batch省略/null由调用形式分流，普通起始段默认组批，显式false执行单段；true须带skill及普通accelerator，互斥accelerators/__full__。自动批次params仅传起始段，经 [[S_13]] 批量执行器运行。
 2. N2 执行前无缓存重读当前清单和源码并验证。初次身份保存、实际重试失效保存未经确认，零业务执行。
 3. N3 已完成段核对文件和事实后默认跳过，零新 run；query/fresh_start 不改变任务身份。
 4. N4 根输出在 JSON 序列化前捕获；内部 handoff 不进入显示和 after，子节点产物仍保留真实 owner。
@@ -50,10 +50,17 @@ SegmentContext 含准确身份、spec、namespace 和首次执行快照，结果
 handoff、子终态、错误与 fallback_count。断点 segment 为可验证的纯数据控制状态，包含原 inputs、task_states 和 pending tcid 的完整性依据，及连续卡片重放所需的已回答工具记录。
 段结果包含 success、mode、skill、accelerator、status、facts、artifacts、verified、covered_steps、
 remaining_steps、next_steps、warnings、ledger、delivery_confirmed。
+条件审阅声明另返回 review_required：由段门面读取实际执行输入中的 hitl.review_when_param 布尔值计算，
+不从节点返回字典取值；缺省为 false，非法类型失败。原批恢复使用原输入和当前节点输出，不重新猜测用户意图。
+
+`__full__` 的任务要求经 query 传入，不接受 params（含空对象）、accelerators 或 auto_batch=true。
+参数冲突在业务执行前拒绝；保留机器错误码，并向模型展示具体冲突和正确传参方式，不静默丢弃参数或切换模式。
+仅传 skill 返回 needs_accelerator 和候选阶段，success=false、delivery_confirmed=false；该结果是未选择入口，
+不是业务执行失败。必须携带可经工具归一化展示的说明，指出尚未执行，并列出 __full__ 和可选阶段，fresh_start 不选择入口。
 
 ## 执行路径全景
 
-P1 内部单段门面 → 新实例 → 当前精确 Registry → 会话租约 → 台账 current/open → 完成检查 →
+P1 工具模式检查 → 新实例 → 当前精确 Registry → 会话租约 → 台账 current/open → 完成检查 →
 必要时 prepare_rerun → 唯一输入装配 → 执行定义快照 → executor → 唯一后置验收 → record/save → 交回外层。
 
 P2 原答案通道 → 读原断点 → 身份/参数/工作区/入口/内容快照验证 → 租约接管 → 原 inputs 重放 →
@@ -68,11 +75,11 @@ P2 原答案通道 → 读原断点 → 身份/参数/工作区/入口/内容快
 ## 边界 case 清单
 
 按第四步方案 E01–E09、H01–H11、C01 检查实际 SDK invoke、事件、文件、独立状态、节点次数及资源回收。
-本 PR 的测试从内部单段门面进入；公开 SDK 多入口、真实模型、产品 UI、完整服务重启和 PPT 四段交接属于后续集成与验收。
+真实模型、产品 UI、完整服务重启和 PPT 四段交接属于后续验收，不由模块测试替代。
 
 ## 修改检查单
 
-- 改入口 → 精确选择、未知段、指定技能根入口及 legacy 工具签名兼容。
+- 改模式 → 旧位置参数/SDK schema/未知参数、准确选择、__full__、fresh 守卫和停止提示。
 - 改结果 → 根与子输出、fallback 修复、后置不足、发送确认、内部键和常规保存失败。
 - 改恢复 → 原 inputs/tcid/task_states、同会话防重、merge 负例、快照漂移、二次中断、取消及 can_pause。
 

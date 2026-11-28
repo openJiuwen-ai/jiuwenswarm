@@ -7,10 +7,13 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / outer-integration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（外层接缝：`server/runtime/agent_adapter/interface_deep.py`、`agents/harness/common/rails/*`、`server/agent_ws_server.py`、`common/e2a/gateway_normalize.py`；双仓部署边界见附录） |
-| 最近一次修订日期 | 2026-10-29 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | [[F_02]]（outer_todo_pending 第 8 通道 / 附件注入链 / resume 入口统一 / 发卡去重收口）、[[F_03]]（指南多交付物清单编排与串行契约，4.3 规则要点 ⑦）；关联 bugfix [[B_04]]（outer_todo_completed_before 第 9 通道，fresh 守卫后续交付物放行） |
 
 ## 范围 / 边界
+
+同技能批次在第七步接入，完整静态校验、逐段owner、步骤force、审阅组合、segment.batch断点及调用ID隔离以 [[S_13]] 为准；legacy协议不扩大。
+
 
 ### 本规约管什么
 
@@ -46,11 +49,11 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 2. **N2 请求期绑定必做**：每次进入请求处理必须执行 `set_current_request_metadata` + `set_skill_turbo_request_metadata`（`interface_deep.py` 请求期绑定段）。漏绑后果可判定：executor 建会话落到随机 session_id，HITL 断点存错位置，作答无法恢复。
 3. **N3 绑定条件语义与复位隔离**：bind 仅对非缺失值（None / 非 bool 视为缺失）产生 token；token 挂在 ctx 的 task-local 属性 `_jiuwenswarm_skill_turbo_bind_tokens`，不进共享 extra dict；reset 幂等（无 token 跳过）且单通道复位失败不影响其余通道。
 4. **N4 推送唯一路径 + 送达数语义**：AgentServer 侧的带外推送只走 `AgentWebSocketServer.send_push`（经 `PushRegistry` 扇出 Gateway WS 连接与 `GET /api/v1/events/stream` HTTP 订阅者）；返回值为送达订阅者数，**0 = 未投递**（无订阅者 / 编码失败 / 过滤后无人匹配 / sink 全部失败），调用方必须按 0 判失败，不得把 warning 当成功。
-5. **N5 workspace_base 单一 owner**：`inputs["workspace_base"]` 仅当 `request_metadata["output_dir"]` 非空时设置，除此之外**不存在任何兜底来源**。输出路径解析的 owner 是 pipeline 层（skill_code 内 workspace_init 节点），工具层不得猜值兜底。
+5. **N5 workspace_base 单一 owner**：`inputs["workspace_base"]` 仅当 `request_metadata["output_dir"]` 非空时设置，工具和执行器不得猜值兜底。适配层请求绑定时，若output_dir未提供或为空白，可将本次RuntimeConfig中明确、非空且为绝对路径的project_dir归一化为output_dir；已有非空output_dir保持原值并沿用严格路径校验。不得使用adapter缓存项目、effective_project_dir、cwd或内部默认工作区补齐。
 6. **N6 两套路径语义不混用**：`effective_project_dir`（ContextVar，工具运行 cwd / 产物检测基线）与 `workspace_base`（pipeline 输出目录）是两个字段两种语义；`executor.get_workspace_base_path` 的回退链（effective_project_dir → `resolve_tenant_agent_workspace_dir()` → None）只服务产物检测基线，不得当作 pipeline 输出目录消费。
-7. **N7 清单双同源**：`skill_acceleration_exec` 的 ToolCard.description 与 SkillTurboPromptRail 指南技能清单必须由**同一次** `refresh_skill_acceleration_description()` 扫描产出；两处清单不一致即为装配缺陷（矛盾指令会驱使 LLM 空跑）。
-8. **N8 空清单不注入**：扫描结果为空或 `acceleration_disabled=True`（`react.disabled_tools` 含该工具）时，PromptRail 整段不注入（`remove_section`）；外部源瞬时扫描失败沿用 `_last_good_entries` 进程级兜底，**绝不闪断为"暂无"**。
-9. **N9 rail priority 时序**：外层 rail priority 固定 PromptRail=8（before_model_call 注入）< StreamEventRail=80（tool_result 发射）< DeliverySummaryRail=90（交付总结）；交付总结必须晚于 tool_result 到达前端，任何 priority 调整都要保持该偏序。
+7. **N7 请求披露同源**：阶段ToolCard、目录及根加载附录复用同一已解析清单，并与宿主请求可见技能取交集；共享card保留通用模板，动态描述只写请求副本。完整契约见 [[S_12]]。
+8. **N8 空清单不注入**：扫描结果为空或 `acceleration_disabled=True`（`react.disabled_tools` 含该工具）时，PromptRail 整段不注入（`remove_section`）；外部 IO 失败仅沿用同来源 `_last_good_catalogs` 展示，保留原时间、来源及当前失败状态，不授权执行。可靠删除/禁用/非法声明清除旧候选。
+9. **N9 rail时序**：SDK高priority先执行，目录在95/94后，附录在80前，交付总结79在StreamEvent80之后。实际SDK兼容及排版priority见 [[S_12]]。
 10. **N10 permissions 深拷贝**：`build_skill_turbo_config` 注入的 permissions 必须深拷贝；turbo 会话对权限结构的写入不得回流污染外层 DeepAgent 审批状态。
 11. **N11 共享 rail 实例约束**：fallback 子代理与父 agent **共享同一权限 rail 实例**（PermissionInterruptRail / SkillAuthorizationPermissionRail / SkillTurboPermissionRail 三类）；suspend 必须 finally restore，且 `host.get_permissions_snapshot` 回调同步临时替换（`resolve_interrupt` 首次调用会用 snapshot 刷新覆盖）。
 12. **N12 暂停帧语义**：HITL 暂停收尾只发 `chat.invocation_paused`（awaiting_user_input=True, is_complete=True）终结帧；`gateway_normalize` 必须将其转为 `is_final=False` 的 in_progress 帧（前端流保持开启等待作答）；暂停中禁止合成 chat.final。
@@ -135,18 +138,20 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 - **为什么统一收口**：复位有三个触发点且含异常路径，散落的逐通道 reset 在任一异常路径都会产生遗漏窗口（绑定残留 → 串请求）；统一入口 + token 列表使绑定/复位天然对称。
 - 全部延迟 import（函数内 import），避免模块级循环依赖。
 
-### 4.3 外层 3 rail 契约
+### 4.3 外层 rail 契约
 
-**SkillTurboPromptRail**（priority=8，`rails/skill_prompt_rail.py`，指南全文归 [[S_02]]）
+阶段披露与新交付关联的当前契约归 [[S_12]]；下面的旧指南和字符串骨架通道仅保留legacy兼容。
+
+**Legacy SkillTurboPromptRail**（保留兼容；实际装配SkillAcceleratorRail见 [[S_12]]；priority=8，`rails/skill_prompt_rail.py`，指南全文归 [[S_02]]）
 
 - 七条规则要点：① 默认优先——意图匹配时第一个工具调用必须是 `skill_acceleration_exec`（唯一例外是用户显式要求的、加速通道不会自行处理的前置操作；搜索/读文件不算例外）；② 已误触 `skill_tool` 加载技能正文后仍须立即调用加速通道；③ 加速成功后禁止用 skill_tool 重复同一任务，失败/未处理必须转 skill_tool 标准流程；④ **暂停不是失败**——返回"技能加速已暂停"/弹补充问题卡片/含 `__skill_turbo_hitl__` 标记时必须停止后续工具调用等待用户回答，禁止改走标准流程从头重跑；⑤ 选区/编辑已有 PPT 排除（region_edit 关键词，只支持从零生成）；⑥ tool_result 提示"检测到上一轮留下的已完成产物"时不调用；⑦ **多交付物清单编排**（[[F_03]]）——单轮多份交付物必须先 `todo_create` 建清单（每份一项），**串行契约**：等 `todo_create` / `todo_modify` 返回成功后再进加速通道（严禁同批并行），全部完成后再一次性统一总结。
 - **清单动态化双同源**：`before_model_call` 每次模型调用前调 `refresh_skill_acceleration_description()`（`skill_turbo_tools.py:181-213`）——同一次扫描同时重建 ToolCard.description 与指南技能清单（N7）。
-- **缓存与兜底**：60s TTL `_entries_cache`（key=根目录集合）+ `_last_good_entries` 进程级兜底（N8）。
+- **缓存与兜底**：`_entries_cache` 以有序规范 roots 为 key，逐文件元数据变化或 60s TTL 后重扫；同来源 `_last_good_catalogs` 仅在 IO 失败时供展示（N8）。`collect_accelerator_catalog` 保留来源和失败状态；可见描述不变，显式模式参数见 [[S_11]]。
 - **注入方式**：`system_prompt_builder.add_section(PromptSection(name="skill_turbo_guide", priority=PromptPriority.SKILL_PROTOCOL))`；uninit / disabled / 空清单时 `remove_section`。
 
-**Flash 指南与技能检索协作**：`FlashTurboPromptRail` 复用同源发现结果，为所有当前支持的技能注入加速优先规则，包含 Docx / Xlsx。文字指定、前端选择与未指定技能的请求使用同一原则；`SkillSelectionRail` 不再只对 pptx-craft 提供加速例外，必须同时要求指定技能准确名称及任务范围匹配工具描述。加速工具缺席时保留原生加载，PPT 专属模板/选区规则不限制 Word / Excel；候选返回后的工具精简仍保留（[[S_02]] N19 / [[B_06]]）。
+**Flash 指南与技能检索协作**：有声明技能采用 [[S_12]]，以下强制优先规则仅属于无声明legacy模式。`FlashTurboPromptRail` 复用同源发现结果，为所有当前支持的技能注入加速优先规则，包含 Docx / Xlsx。文字指定、前端选择与未指定技能的请求使用同一原则；`SkillSelectionRail` 不再只对 pptx-craft 提供加速例外，必须同时要求指定技能准确名称及任务范围匹配工具描述。加速工具缺席时保留原生加载，PPT 专属模板/选区规则不限制 Word / Excel；候选返回后的工具精简仍保留（[[S_02]] N19 / [[B_06]]）。
 
-**SkillTurboDeliverySummaryRail**（priority=90，`rails/delivery_summary_rail.py`）
+**SkillTurboDeliverySummaryRail**（priority=79，`rails/delivery_summary_rail.py`）
 
 - **时序**：在 `skill_acceleration_exec` 的 after_tool_call 中、晚于 StreamEventRail(priority=80) 发出的 tool_result 之后，以 `write_stream(llm_output)` 流式发出 PPT 交付总结（N9）。
 - **通道**：消费 `_pending_ppt_delivery_summary` ContextVar（tool 层 `_wrap_skill_turbo_result` 成功分支挂载）；`take_pending_ppt_delivery_summary()` 取走并清空；骨架文本由 PPT 流水线 P10 节点写入 artifact_holder，通道内确定性产出、不调 LLM。
@@ -178,7 +183,7 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 
 ### 4.5 路径与工作区规范
 
-- **workspace_base 唯一来源**：`request_metadata["output_dir"]`（格式 `.../files/user_id/chat_id/output`）。`skill_turbo_tools.py:972-981` 仅当其非空时设置 `inputs["workspace_base"]`，否则不设置、无任何 agent workspace 兜底（N5）。pipeline（skill_code 的 workspace_init 节点）在其下建 `generate-{timestamp}` 时间戳子目录，防同 session 连续任务产物串扰。
+- **workspace_base 唯一来源**：`request_metadata["output_dir"]`。适配层在绑定ContextVar和StreamEventRail/TaskExecutionRail副本之前执行N5的显式project_dir归一化；Deep和Flash共用此路径，正常调用和原调用恢复均执行。原wire metadata不原地修改，每次请求重新构造副本。工具只从该字段设置workspace_base；段/批次的固定run_dir规则见 [[S_10]]，legacy保留原workspace_init目录逻辑。
 - **路径解析唯一 owner 原则**：输出路径的解析优先级只能有一个 owner（pipeline 层）；工具层不得猜值兜底——兜底会把产物写到抢占性目录，路径跑偏。
 - **两套语义区分**（N6）：`effective_project_dir`（ContextVar `get_effective_request_workspace_dir`）= 工具运行 cwd / 产物检测基线；`workspace_base`（inputs）= pipeline 输出目录。executor `_setup_execution_context` 据前者 `init_cwd/set_cwd`。
 - **get_workspace_base_path 回退链**（`executor.py:1570-1584`，仅产物检测用）：`effective_project_dir` → `resolve_tenant_agent_workspace_dir()`（`<tenant_root>/agent/jiuuwenclaw_workspace`）→ None。
@@ -247,7 +252,7 @@ executor chunk → 工具层 skip/映射/剥 id（[[S_08]]）→ `parent_session
 
 ### P5 带外推送旁路
 
-`task.update` 全量快照 → `_push_task_event_out_of_band` → `AgentWebSocketServer.send_push`（PushRegistry 扇出）→ 返回送达数（0=未投递）。`task.start`/`task.complete` 留 FIFO 与 chat.* 同序，禁止带外。
+所有 Turbo 技能的内部 task.start/task.complete/task.update 在公开工具边界统一过滤，不经父流或 OOB 外发；正文、思考、工具等仅剥内部 task_id。执行器内部任务状态保留，见 [[S_08]] 与 [[F_12]]。
 
 ### P6 HITL 发卡与暂停收口（adapter 侧）
 
@@ -269,7 +274,7 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 
 | # | 场景 | 现行为 / 约束 | 测试覆盖 |
 |---|---|---|---|
-| B1 | 外部技能目录扫描失败 | 60s TTL 缓存 + `_last_good_entries` 进程级兜底，沿用上次成功清单，绝不闪断"暂无"；ToolCard 并发最后写入生效（per-user sidecar 内目录一致，无实际冲突） | test_description_refresh（last-good） |
+| B1 | 外部技能目录扫描失败 | 同 roots 最近成功快照仅展示，保留采集时间并标记 ok=False；新来源不继承旧候选，恢复后重扫；注册侧失败不回灌缓存 | test_accelerator_catalog、test_description_refresh |
 | B2 | adapter 长生命周期内存态 | HITL 卡片注册表有界 1024/512 防泄漏；`_ask_user_card_seq` 等不持久化，重启后死卡守卫 fail-open、序号回卷，仅剩相位守卫兜底 | 部分：test_hitl_superseded_invalidation（活卡/死卡守卫）；有界上限无 |
 | B3 | tool_info.json 多实例写同一默认路径 | 类级去重 + 原子写；不同 agent 实例注册不同工具集时最后写者胜（CodeGen 可能读到别家 schema） | test_environment_export_tool_info |
 | B4 | 对端心跳不识别 | Gateway 侧 message_handler 跳过 keepalive 不投递 IM；对端版本过旧时需确认其 keepalive 帧过滤行为，否则保活失效退化为依赖 ping/pong | 无（gateway 侧） |
@@ -281,7 +286,7 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 | B10 | 沙箱关闭残留 | `sandbox_config_rpc` 关沙箱时清 Runner.resource_mgr sysop 残留，防 `environment._resolve_sys_operation` 兜底命中已关闭实例 | 无 |
 | B11 | parent_session 为 None | task 事件 drop 并告警（任务列表到不了前端）；resume 侧 session_id 缺失仅告警继续（checkpointer key 可能 miss） | 无专项 |
 | B12 | rail 构建失败 | 两个 rail 工厂异常安全返回 None，不阻塞 adapter 初始化（缺指南注入/交付总结但加速仍可运行） | 无 |
-| B13 | send_push 0 送达 | 无订阅者 / 编码失败 / 过滤无匹配 / sink 全败 → warning + return 0；调用方必须以返回值判定成败（N4） | 部分：test_skill_turbo_tools（OOB 旁路）；0 送达判定无 |
+| B13 | send_push 0 送达 | 无订阅者 / 编码失败 / 过滤无匹配 / sink 全败 → warning + return 0；调用方必须以返回值判定成败（N4） | Turbo 内部阶段不再使用 OOB；其他 send_push 消费方仍遵守 N4 |
 | B14 | ③ 先于 ② 部署 | 新引擎进程扫不到外部 turbo_codes → 清单为空 → PromptRail 不注入 + planner 无匹配 → `SkillTurboNotHandled` 降级（用户表现为"加速不生效"而非报错；只能靠部署顺序与验证日志预防） | 无（部署顺序预防） |
 | B15 | gateway 帧误判 | `chat.error` + is_complete 会被 normalize 为 E2A final FAILED、前端清 activeRequestIdRef 终结本轮——这正是降级路径禁止发 chat.error 的边界（[[S_07]]/[[S_08]]），改事件桥时须逐帧推演 | 部分：test_exit_path_frames（E10/E11 禁发 chat.error）；gateway 帧归 gateway 侧 |
 
@@ -295,7 +300,7 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 6. **改事件桥 / gateway_normalize** → 必查三分支逐帧推演：chat.error+is_complete→FAILED / awaiting_user_input→in_progress(is_final=False) / complete→SUCCEEDED。
 7. **改部署脚本 / 发布流程** → 必查三仓顺序 ①agent-core→②技能侧仓→③jiuwenswarm + 回滚逆序 + 部署验证（turbo_codes/ppt/ 含 meta.json+ppt_gen_root.py；重启日志 `[TurboPackageLoader] bound`）。
 8. **新增请求级状态** → 必查 before_invoke/bind 时重置 + 异常路径复位不残留（复用 token 机制，不自建 reset）。
-9. **改 ToolCard description / 技能清单逻辑** → 必查双同源（同一次 `refresh_skill_acceleration_description()` 产出两处）+ 空清单不注入 + `_last_good_entries` 兜底。
+9. **改 ToolCard description / 技能清单逻辑** → 必查双同源（同一次 `refresh_skill_acceleration_description()` 产出两处）+ 空清单不注入 + 同来源 last-good 的时间/失败状态保留 + 可靠关停清除旧候选。
 10. **改技能侧仓 turbo code** → 必跑注册门禁测试：`python -m unittest discover -s <shared_skills_root>/pptx-craft/turbo/tests -p 'test_turbo_registration_gate.py'`——`compileall` 只能发现语法错误，validator 安全策略拒绝（注册期整技能静默跳过）只能靠注册门禁发现。
 11. **改 spawn_fallback / 权限 rail 交互** → 必查共享 rail 实例 suspend / finally restore + `get_permissions_snapshot` 回调临时替换（[[S_07]]）。
 12. **改 HITL 收尾帧**（chat.invocation_paused）→ 必查 gateway_normalize `is_final=False` 分支 + 暂停中禁 chat.final（[[S_06]]）。
@@ -309,6 +314,8 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 - 技能侧仓注册门禁：`<shared_skills_root>/pptx-craft/turbo/tests/test_turbo_registration_gate.py`——改 turbo code 后必跑（用运行时实际 `PlanCodeValidator.for_skill_code` 校验整个 turbo_codes/ppt/；compileall 不能发现安全策略拒绝）。
 
 ## 与其它 spec 的关系
+
+段路径的数据通道见 [[S_10]]：assemble_segment_inputs 只接受 ctx.metadata.output_dir，缺失 blocked；与台账工作区一致后从台账恢复唯一 run_dir。effective_project_dir、cwd、技能根不能补输出工作区；宿主本次显式project_dir仅由adapter按N5归一化。保留上下文不能被台账、批内事实、defaults 或显式 params 覆盖。普通结果保存失败可披露 persisted=false，不单凭该标记禁止续接；首次身份及重跑前失效属于单独的启动前条件。显式工具参数与真实节点执行经 [[S_11]] 段门面接入；加载说明与只读进度见 [[S_12]]，批次见 [[S_13]]。
 
 | Spec | 关系 |
 |---|---|
@@ -333,3 +340,11 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 | 上层前端 / 上层应用（事件消费、作答路由、终稿拼接） | relay-claw / OfficeClaw 前端链路（FrameQueue / pptTurboSummary / computeFinalTextDelta 等行为锚点位于该链路） |
 | 上层 sidecar（事件帧生命周期管理） | relay-claw sidecar（FrameQueue 提前关闭风险源自该层） |
 | `channel == "officeclaw"` | `tools_loader.py` 历史兼容旁路（待删除）；正典装载条件为 `config.channels[channel].send_file_allowed`（[[S_02]]） |
+
+## 声明展示快照接缝
+
+旧描述条目与collect_accelerator_catalog声明数据来自同一发现快照；可见描述模板、静态排除文案不变。工具保留 query/fresh_start 位置并追加 skill/accelerator/params，模式契约见 [[S_11]]。TTL内先比元数据快照，来源顺序或文件集合/stat变化即失效，到期重新解析。
+
+真正IO失败仅回退相同有序roots的最近成功展示快照，ok=false、来源及原成功collected_at保留，另记失败；不将失败写成成功。可靠删除、禁用或非法清单按权威结果更新，不能last-good复活。展示状态在投影中保留；Registry不把旧展示数据注册为当前有效技能。
+
+实际段执行必须读取并复用声明/代码安全校验，确认失败零节点执行，不能用TTL/stat/Registry/ok=true替代当前复核。断点恢复按 [[S_11]] 原始文件内容快照处理。DeepAdapter.build_skill_turbo_config 深拷贝 _config_cache.skill_turbo 执行配置，Flash 继承同一构造路径；不新增加载态 rail。

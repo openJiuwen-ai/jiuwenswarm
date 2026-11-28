@@ -7,13 +7,15 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | F_03_multi-deliverable-todo-guide.md；F_05_enable-turbo-switch.md |
 
 ## 范围 / 边界
 
+同技能批次在第七步接入，完整静态校验、逐段owner、步骤force、审阅组合、segment.batch断点及调用ID隔离以 [[S_13]] 为准；legacy协议不扩大。
 
 
+有声明技能的请求级三载体披露、可见集合及选段策略见 [[S_12]]。下述FIRST MUST等旧指南仅适用于无声明legacy模式，不限制阶段调用。
 
 ### 本规约管什么
 
@@ -131,7 +133,7 @@ def get_tool_function(self, tool_name) -> Callable | None
 
 ### 入口工具 skill_acceleration_exec（skill_turbo_tools.py）
 
-- `@tool(name="skill_acceleration_exec", stateless=True)`，函数名 `skill_turbo(query: str, fresh_start: bool = False)`；每次调用新建 SkillTurbo 实例（请求隔离）。
+- `@tool(name="skill_acceleration_exec", stateless=True)`，函数名 `skill_turbo(query: str)`；每次调用新建 SkillTurbo 实例（请求隔离）。
 - **超时豁免**：`card.properties["resilience"] = {"timeout_s": None}` 豁免 AbilityManager 默认 300s 工具超时（PPT 流水线常超），仍受 `MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT`（3600s）硬上限约束。
 - **两块临时入口拦截**（均标注删除方式，属待退役层）：
   - 两块仅在 query 含 PPT / PPTX / PowerPoint / 幻灯片 / 演示文稿标识时启用；Word / Excel 请求中的通用模板和编辑用语不属于 PPT 信号。此处仍为启发式兜底，原始请求及上下文的语义判断由指南和 planner 承担。
@@ -321,4 +323,4 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 
 外部缓存与展示缓存按有序规范roots隔离，元数据集合及逐文件stat参与失效；Environment保留Python安全校验及mtime。Skill保存兼容builder生成的full_plan_code，Registry精确按external_name索引，歧义拒绝；查询深拷贝且不读盘、不调用模型。__full__不在普通段列表。
 
-声明由 Registry 只读索引；实际普通段执行另按 [[S_11]] 无缓存重读当前声明与源码，并复用安全校验。当前公开工具保留 query/fresh_start，目录收集只服务原描述刷新；skill/accelerator/params、批次和请求级模型披露留待后续集成。声明与目录测试入口为 test_accelerator_manifest.py、test_accelerator_catalog.py。
+声明由 Registry 只读索引；实际普通段执行另按 [[S_11]] 无缓存重读当前声明与源码，并复用安全校验。工具使用 skill/accelerator/params；显式 accelerators 批次及步骤 force、auto_batch 自动组批见 [[S_13]]，模型加载说明见 [[S_12]]。batch.auto_next 仅能指向同技能启用、order 更大且非独占的段，来源也不得独占；非法链接整份声明拒绝。hitl.review_when_param 仅允许 review 段引用本段已声明的布尔输入，条件审阅与固定审阅的停批语义见 [[S_13]]。声明测试入口为 test_accelerator_manifest.py、test_auto_batch_execution.py 与 test_accelerator_catalog.py；实际 SDK 入口见 test_segment_tool_boundary.py。

@@ -12,6 +12,7 @@
 
 ## 范围 / 边界
 
+同技能批次在第七步接入，完整静态校验、逐段owner、步骤force、审阅组合、segment.batch断点及调用ID隔离以 [[S_13]] 为准；legacy协议不扩大。
 
 
 ### 本规约管什么
@@ -100,7 +101,7 @@ ask_user / 权限类中断的**完整生命周期**：
 1. **N1 断点清理完备性**：任何退出路径（rail approve / resume 成功 / resume 不可复用（SkillTurboNotHandled）/ cancel / supplement）必须清理 HITL 持久化状态（`__skill_turbo_resume_ctx__` 与 `__react_agent_interruption__`）；**瞬时失败是唯一合法保留场景**。当前由 5 处清理入口拼装实现（见 P5 清理触点表），无单一 owner 断言——改动任一入口必须对照全表。
 2. **N2 AbortError 不吞**：引擎侧 **14 处守卫点**一律透传——plan_node 4 处（`PlanNode.run` / `run_stream` / `execute_subplan` / `execute_subplan_stream`）、executor 7 处（`execute_plan_stream`、`_run_rail_hook`、`use_tool` 两层【工具执行分支 + 外层捕获落盘分支】、`call_llm` / `stream_llm` 重试循环【不进重试】、`_execute_node_stream` 消费循环【AbortError/TIE 分支】）、agent 3 处（`SkillTurbo.run` / `run_stream` / `resume_stream`）。穷尽全表见 P1 步 6；任何新增宽泛 `except` 必须回答"AbortError 怎么过"。
 3. **N3 AbortError 单一符号**：仅从 `plan_node` re-export（re-export 自 openjiuwen core），禁止二次定义 / 别处 import 源。
-4. **N4 tcid 确定性**：tcid 是 `(请求域, tool_name, canonical_args, idx)` 的确定性函数；请求域通常为request_id，批次追加原控制中持久化的batch_id/cursor（预留批次控制字段），不在生成调用ID时另取随机值。两个解析函数（`_parse_tool_name_from_call_id` / `_parse_call_idx_from_call_id`）与生成格式强耦合，改一处必改另一处。request_id 混入哈希后，**resume 的 name+idx 回退命中是预期路径而非异常**（日志按 info 定级）。
+4. **N4 tcid 确定性**：tcid 是 `(请求域, tool_name, canonical_args, idx)` 的确定性函数；请求域通常为request_id，批次追加原控制中持久化的batch_id/cursor（[[S_13]]），不在生成调用ID时另取随机值。两个解析函数（`_parse_tool_name_from_call_id` / `_parse_call_idx_from_call_id`）与生成格式强耦合，改一处必改另一处。request_id 混入哈希后，**resume 的 name+idx 回退命中是预期路径而非异常**（日志按 info 定级）。
 5. **N5 checkpointer 键同一性**：resume_ctx、node_artifacts、skill_ledger 的键分别由 resume_context、node_artifact_store、SkillRunLedger 定义；`__skill_turbo` agent_id 后缀只由 resume_context 定义。断点走 ResumeContextManager，产物走 node_artifact_store，台账走 SkillRunLedger，禁止各消费方手写键名。
 6. **N6 clear 落盘语义**：清隔离键必须走 **isolated session 通道**（独立 create_agent_session + set_skill_turbo_id + pre_run + update_state(None) + post_run）+ **同步清调用方 session 内存快照**。checkpointer post_run 是全量覆盖而非增量合并，若调用方随后 post_run 自己的 session，含旧条目的内存快照会把磁盘上刚清掉的 resume_ctx 写回复活。
 7. **N7 save 替换语义**：`save_resume_ctx` 必须显式写全量键（含 `resume_in_flight=None`），不得依赖 merge 增量——openjiuwen `update_state` 是 update_dict merge 语义，缺键不删旧键。
