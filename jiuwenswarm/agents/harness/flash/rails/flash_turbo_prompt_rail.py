@@ -4,59 +4,15 @@
 
 from __future__ import annotations
 
-import logging
-
-from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
-from openjiuwen.harness.prompts import PromptSection
-
-from jiuwenswarm.agents.harness.common.prompt.prompt_builder import PromptPriority
-from jiuwenswarm.server.runtime.skill_turbo.rails.skill_prompt_rail import SkillTurboPromptRail
+from jiuwenswarm.server.runtime.skill_turbo.rails.accelerator_rail import SkillAcceleratorRail
 from jiuwenswarm.server.runtime.skill_turbo.region_edit import region_edit_keyword_summary
 
-logger = logging.getLogger(__name__)
 
-# Stable section/tool identifiers; do not import private implementation constants.
-_SECTION_NAME = "skill_turbo_guide"
-_SKILL_ACCELERATION_TOOL = "skill_acceleration_exec"
-
-
-class FlashTurboPromptRail(SkillTurboPromptRail):
+class FlashTurboPromptRail(SkillAcceleratorRail):
     """Reuse Turbo discovery without restoring Deep's task-loop instructions."""
 
-    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        builder = getattr(ctx.agent, "system_prompt_builder", None) or self.system_prompt_builder
-        if builder is None:
-            return
-        self.system_prompt_builder = builder
-        # Never guide the model to a tool absent from this call's actual tool set.
-        tools = getattr(ctx.inputs, "tools", None) or []
-        if self._acceleration_disabled or not any(tool.name == _SKILL_ACCELERATION_TOOL for tool in tools):
-            builder.remove_section(_SECTION_NAME)
-            return
-
-        # Reuse cached discovery; Flash owns its guide without changing the shared rail.
-        try:
-            from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
-                refresh_skill_acceleration_description,
-            )
-
-            skill_names = refresh_skill_acceleration_description()
-        except Exception as exc:
-            logger.warning("[FlashTurboPromptRail] refresh description failed: %s", exc)
-            skill_names = []
-        if not skill_names:
-            builder.remove_section(_SECTION_NAME)
-            return
-        try:
-            language = self._resolve_language()
-            builder.add_section(PromptSection(
-                name=_SECTION_NAME,
-                content={language: self._build_guide_text(language, skill_names)},
-                priority=self._resolve_priority(_SECTION_NAME, PromptPriority.SKILL_PROTOCOL),
-            ))
-        except Exception as exc:
-            logger.warning("[FlashTurboPromptRail] build skill_turbo_guide section failed: %s", exc)
-            builder.remove_section(_SECTION_NAME)
+    def _legacy_guide(self, language, names):
+        return self._build_guide_text(language, names)
 
     def _build_guide_text(self, language: str, skill_names: list[str]) -> str:
         names = "、".join(skill_names) if language == "cn" else ", ".join(skill_names)

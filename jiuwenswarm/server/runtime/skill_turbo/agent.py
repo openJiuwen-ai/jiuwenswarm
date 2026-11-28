@@ -42,6 +42,12 @@ class SkillTurbo:
         async for chunk in run_segment_stream(self._env, self._executor, self._segment_state, **kwargs):
             yield chunk
 
+    async def run_batch_stream(self, **kwargs):
+        from jiuwenswarm.server.runtime.skill_turbo.batch import run_batch_stream
+
+        async for chunk in run_batch_stream(self, self._env, self._segment_state, **kwargs):
+            yield chunk
+
     async def run_skill_stream(self, skill: str, inputs: dict, request_id: str, channel_id: str):
         """指定技能整流程；精确构建入口后复用legacy执行和收尾。"""
         import asyncio

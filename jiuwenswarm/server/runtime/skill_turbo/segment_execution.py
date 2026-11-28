@@ -140,9 +140,16 @@ async def run_segment_stream(
         registry = AcceleratorRegistry(env)
         spec = registry.get(skill, accelerator)
         if not accelerator:
-            state.result = _result(skill, accelerator, 'needs_accelerator', candidates=[
+            candidates = [
                 {'id': s.id, 'summary': s.summary} for s in registry.list_for(skill)
-            ])
+            ]
+            state.result = _result(
+                skill, accelerator, 'needs_accelerator', candidates=candidates, error_code='needs_accelerator',
+                error='尚未执行：仅传 skill 是能力查询。完整技能执行请选择 accelerator="__full__"，'
+                      '任务要求写入 query，不传 params；阶段执行请选择候选阶段：'
+                      + '、'.join(f"{item['id']}（{item['summary']}）" for item in candidates)
+                      + '。fresh_start 不负责选择入口。',
+            )
             return
         if not record.manifest_valid or spec is None:
             raise SegmentInputError('invalid_args', 'unknown_or_invalid_accelerator')
@@ -298,6 +305,11 @@ async def run_segment_stream(
                 context.handoff, initial_inputs=initial_inputs,
             )
             checked['warnings'] = warnings + checked['warnings']
+            if spec.hitl.review_when_param is not None:
+                review_value = (context.outputs or actual_inputs).get(spec.hitl.review_when_param, False)
+                if type(review_value) is not bool:
+                    raise SegmentInputError('failed', 'review_condition_must_be_boolean')
+                checked['review_required'] = review_value
             checked['params'] = copy.deepcopy(params or {})
             checked['consumed_facts'] = {req.key: copy.deepcopy(ledger.data['facts_provenance'].get(req.key, {}))
                                          for req in spec.requires if req.kind == 'ledger_fact'}

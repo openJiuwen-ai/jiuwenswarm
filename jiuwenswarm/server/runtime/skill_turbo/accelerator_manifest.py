@@ -119,6 +119,7 @@ class Hitl(DeclarationModel):
     can_pause: bool = True
     kind: Literal["clarify", "review"] = "clarify"
     continue_after_resume: bool | None = None
+    review_when_param: Text | None = None
 
     @model_validator(mode="after")
     def derive_continue(self):
@@ -130,6 +131,7 @@ class Hitl(DeclarationModel):
 class Batch(DeclarationModel):
     standalone: bool = True
     stop_after: Literal["review_checkpoint", "never"] = "review_checkpoint"
+    auto_next: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,31}$")
 
 
 class Cost(DeclarationModel):
@@ -181,6 +183,12 @@ class AcceleratorSpec(DeclarationModel):
         if schema.get("type") != "object":
             raise ValueError("input_schema必须为object")
         properties = schema.get("properties", {})
+        review_key = self.hitl.review_when_param
+        review_schema = properties.get(review_key, {})
+        if review_key is not None and (
+            self.hitl.kind != 'review' or not isinstance(review_schema, dict) or review_schema.get('type') != 'boolean'
+        ):
+            raise ValueError('review_when_param只允许引用review段已声明的布尔输入')
         if not set(schema.get("required", [])).issubset(properties):
             raise ValueError("required键必须在properties声明")
         if not set(self.defaults).issubset(properties) or _RESERVED.intersection(self.defaults):
@@ -260,6 +268,11 @@ def _parse_manifest(raw: Any, *, skill: str, skill_name: str, code_dir: Path | N
     coverage: dict[tuple[str, str], str] = {}
     fatal: list[str] = []
     for spec in enabled.values():
+        if spec.batch.auto_next is not None:
+            successor = enabled.get(spec.batch.auto_next)
+            if (successor is None or successor.order <= spec.order
+                    or not spec.batch.standalone or not successor.batch.standalone):
+                fatal.append(f"{spec.id}: auto_next须指向同技能启用、顺序更大且非独占的段")
         for kind, values in (("stage", spec.covers.stages + spec.covers.optional_stages), ("step", spec.covers.steps)):
             for value in set(values):
                 owner = coverage.setdefault((kind, value), spec.id)

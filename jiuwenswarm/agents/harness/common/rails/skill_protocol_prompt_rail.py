@@ -48,6 +48,7 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
 2. **必须使用 todo**：除下述例外，在执行 skill 步骤前，必须先创建 todo 列表。
    - **DeepResearch 顶层编排**：Main Agent 先分析用户原始 query，创建用户目标级 todo（例如「研究主题」「生成并交付 Word」），与加载 `deepresearch` Skill 同轮发出；调用 `deepresearch_execute(task_mode="main_agent")`。研究主题澄清、大纲审阅、章节调研和引用处理是 skill 内部子步骤，不拆成顶层 todo；交互卡和真实进度仍由引擎管理。研究完成后更新研究 todo，再按用户要求调用文档技能；HTML 已交付不等于 Word 完成。不得删除、取消或伪造完成其他独立工作的 todo。只有 fallback.mode=model_research 才接手研究；取消、等待输入和状态不确定不能继续转换或自动重启。旧 standalone 调用维持原行为，不能用于绕过后续任务。
    - **加速通道例外（单份交付物）**：若任务直接交给 `skill_acceleration_exec` 加速通道执行、且本单轮只需产出**一份交付物**，**不要创建 todo**——加速通道内部会通过 Stage 步骤事件自行在前端展示进度，无需也不应再建外层 todo（建了会导致前端任务列表异常）。**仅当单轮需产出多份交付物**（需多次调用 `skill_acceleration_exec`）时，才必须先建外层待办清单（规则见「技能加速通道」段的「多交付物待办清单」）。
+   - 阶段加速的新增独立交付物例外：先成功创建/更新外层todo，再串行调用加速；不得同批并行。
    - **创建时搭便车**：`todo_create` **必须**和第一个工作工具在同一轮发出，禁止 `todo_create` 独占一轮。
    - **更新时搭便车（强制）**：`todo_modify` **必须**和下一个任务的工作工具在同一轮发出，禁止 `todo_modify` 独占一轮。系统会在工作工具被调用时自动将 pending 推进为 in_progress，你只需要用 `todo_modify` 标记 completed/cancelled。
    - ✅ 正确：`[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
@@ -174,6 +175,11 @@ class SkillProtocolPromptRail(DeepAgentRail):
         language = self._resolve_language()
         try:
             protocol_text = _build_skill_protocol_section_text(language)
+            protocol_text += (
+                '\n阶段加速与普通工具可交替，已完成覆盖范围不重做；新增交付物先成功创建新todo再串行调用。此例外优先于搭便车要求。'
+                if language == 'cn' else
+                '\nDeclared segments may alternate with ordinary tools; do not redo completed coverage. For a new deliverable, successfully create a new todo before invoking acceleration serially. This exception overrides piggyback instructions.'
+            )
             self.system_prompt_builder.add_section(PromptSection(
                 name=_SKILL_PROTOCOL_SECTION_NAME,
                 content={language: protocol_text},
