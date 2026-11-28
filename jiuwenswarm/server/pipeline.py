@@ -13,6 +13,9 @@ from typing import Any
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    is_interrupt_resume_payload,
+)
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.log_context import bind_log_session, unbind_log_session
 from jiuwenswarm.common.log_preview import preview_text
@@ -40,6 +43,9 @@ from jiuwenswarm.server.request_summary_log import (
     build_summary_payload,
     classify_error_class,
     emit_request_summary,
+)
+from jiuwenswarm.server.runtime.plan_execute_continuation import (
+    cancel_plan_execute_continuation,
 )
 from jiuwenswarm.server.runtime.swarm_skill_session import SwarmSkillSessionError
 from jiuwenswarm.server.runtime.team_binding_store import TeamSessionBindingError
@@ -228,6 +234,17 @@ async def dispatch_parsed_request(
             if await dispatch_with_context(ctx, request):
                 return
             await _ensure_auto_team_binding_for_chat(ctx, request)
+            # plan_execute 续跑的 grace 取消面（issue 5223）：普通 chat.send 到达
+            # 即取消待执行续跑，由这条消息充当执行消息（兼容旧前端缓存包补发）。
+            # interrupt-resume 本身不算普通消息，放行续跑。
+            if (
+                request.req_method == ReqMethod.CHAT_SEND
+                and request.session_id
+                and not is_interrupt_resume_payload(request.params)
+            ):
+                cancel_plan_execute_continuation(
+                    request.session_id, reason="new chat.send"
+                )
             if request.is_stream:
                 await _handle_stream(ctx, request)
             else:

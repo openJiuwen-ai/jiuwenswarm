@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_04 |
 | 状态 | 当前实现的真实描述（含未装配遗留机制的登记） |
-| 修订日期 | 2026-11-02 |
+| 修订日期 | 2026-11-05 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_plan_approval_interrupt_rail.py`（p78 现行审批门，357 行）<br>`jiuwenswarm/agents/harness/code/prompt/plan_approval.py`（常量、Web 三动作描述符、意图分类，368 行）<br>`jiuwenswarm/agents/harness/code/rails/code_agent_mode_rail.py`（批准后的模式恢复 / 正文压缩 / 延迟收尾消费面，325 行）<br>`jiuwenswarm/agents/harness/work/rails/work_agent_mode_rail.py`（76 行）+ `work/prompt/work_plan_prompts.py` 的 `WORK_PLAN_ALLOWED_TOOLS`（work profile plan 白名单）<br>`jiuwenswarm/agents/harness/code/rails/code_plan_approval_rail.py`（p76 文本审批，**未装配遗留**，226 行） |
 | 装配点 | 三处，均返回同一个 `PlanApprovalInterruptRail()` 实例类：① `server/runtime/agent_adapter/interface_deep.py` `_build_work_plan_approval_rail()`（~10580，`_RailBuildInfo("_work_plan_approval_rail")` ~10800，deep 与 work profile 共用）；② `server/runtime/agent_adapter/interface_code.py` `_build_plan_approval_rail()`（~1339），并在 `_get_current_agent_rails`（~1353-1369）纳入热重载覆盖；③ `agents/swarm/providers/code_rails.py` `build_team_plan_approval`（~375，`_is_team_plan_leader` 门控，team.plan leader 复用） |
 | 消费点 | `server/runtime/agent_adapter/interface.py`（~2256-2285 Web 动作 → confirm 载荷映射；~97/253 reminder 原文还原）<br>`agents/harness/common/rails/interrupt/interrupt_helpers.py`（~1078 ask_user 载荷增强）<br>`server/handlers/_shared.py`（~645 进 plan 轮记录 original_query）<br>`server/handlers/_default.py`（~201 消费 `PLAN_MODE_EXITED_EVENT_TYPE`） |
@@ -15,7 +15,7 @@
 
 - 约束链：plan 模式只读（[[S_04-N13]] 白名单 + bash 写正则拦截）→ 模型完成规划后调 `exit_plan_mode` 提交 → **工具体执行前**弹审批（对齐 Claude Code 的即时交互）→ 按用户选择恢复或保持 plan
 - 现行机制是 p78 `PlanApprovalInterruptRail`（中断弹窗）：审批、模式恢复、Web「执行」的延迟收尾全部在一次中断 + 恢复内闭环
-- Web 的三个按钮把"批准"拆成两条路径：执行（结束本轮 + 前端补发新消息）与跳过（留在 plan + 结束本轮），避免 Web 流式界面里"批准后同轮狂奔"
+- Web 的三个按钮把"批准"拆成两条路径：执行（结束本轮 + 服务端幂等续跑）与跳过（留在 plan + 结束本轮），避免 Web 流式界面里"批准后同轮狂奔"
 - TUI 行为刻意不动：approve 同轮继续实现
 - work profile 的 plan 白名单是本域的安全边界（task_tool 刻意排除）
 
@@ -34,8 +34,8 @@
 **N2 模式恢复发生在批准后的 resumed 调用内，而非下一轮**
 批准 → 中断恢复 → `ExitPlanModeTool.invoke()` 真正执行并在体内调 `restore_mode_after_plan_exit()`。这是对齐 Claude Code 的关键设计：不依赖"下一条用户消息"来恢复模式（p76 文本机制的做法，见 N15）。拒绝 → 工具体被 `_skip_tool` 拦截、模型收到反馈错误、留在 plan 继续修订。
 
-**N3 Web「执行」= 批准 + 本轮收尾 + 前端补发**
-`plan_execute` 取值映射为 `{approved: True, plan_execute: True}`——`plan_execute` 是 ConfirmPayload 的**额外键**（N6）。rail 在决策非 RejectResult 后置 `ctx.extra[PLAN_EXECUTE_CTX_KEY] = True`；`CodeAgentModeRail.after_tool_call` Segment 4 检测到该标记即 `ctx.request_force_finish({"output": "", "result_type": "answer"})` 结束本轮。**真正的执行由前端紧接着补发的一条普通非 plan 消息开启全新一轮**——若同轮继续，本轮与前端补发轮会并发。
+**N3 Web「执行」= 批准 + 本轮收尾 + 服务端幂等续跑**
+`plan_execute` 取值映射为 `{approved: True, plan_execute: True}`——`plan_execute` 是 ConfirmPayload 的**额外键**（N6）。rail 在决策非 RejectResult 后置 `ctx.extra[PLAN_EXECUTE_CTX_KEY] = True`；`CodeAgentModeRail.after_tool_call` Segment 4 检测到该标记即 `ctx.request_force_finish({"output": "", "result_type": "answer"})` 结束本轮。**真正的执行由服务端在批准轮收尾后幂等续跑**（issue 5223，方案 A）：`_check_post_process_plan_exit` 检出 plan→normal 且 resume 载荷含 plan_execute 取值时，登记 `(session_id, request_id)` 记账并经 ~3s grace window（窗口内该会话到达普通消息即取消，兼容旧前端缓存包的补发）后代发执行消息开启新一轮——续跑模块与去重细节见 `server/docs/features/F_02_plan-execute-continuation.md`。若同轮继续，本轮与续跑轮会并发；前端不再补发，客户端超时/断连不再导致已批准永不执行。
 
 **N4 Web「跳过」= reject 通道 + 强制结束本轮 + 留在 plan**
 `plan_skip` 映射为 `{approved: False, feedback: custom_input or plan_skip_feedback(lang), plan_skip: True}`。rail 走 RejectResult 分支：置 `ctx.extra["_plan_rejected"]`（N9）与 `"_plan_skipped"`，随即 `ctx.request_force_finish(PLAN_SKIP_TURN_OUTPUT[lang])`（result_type="answer"，中文文案"已跳过本次计划审批。计划已保存，当前仍处于计划模式…"）。不强制结束的话，模型收到普通 reject 会继续思考并**再次调用 exit_plan_mode**，弹窗循环。
@@ -144,7 +144,7 @@ Web revise：`reject` + `custom_input` → `approved=False, feedback=修改意�
 
 ## 5. 执行路径全景
 
-**P1 Web「执行」（deferred 路径）**：模型调 exit_plan_mode → p78 拦截 → 读计划文件 → 审批消息（截断预览）→ interrupt 挂起 → Web 渲染三按钮（载荷增强）→ 用户点「执行」→ interface 映射 `{approved: True, plan_execute: True}` → rail resume：提 plan_execute=True → 父类决策 approve → `ctx.extra[PLAN_EXECUTE_CTX_KEY]=True` → exit_plan_mode 真执行（体内恢复模式）→ AFTER_TOOL_CALL：非挂起 / 未拒绝 / 已执行 → 注销 task_tool → 兜底恢复（如需）→ 压缩正文 → **force_finish 结束本轮** → 前端补发普通消息 → 新一轮执行计划。
+**P1 Web「执行」（deferred 路径）**：模型调 exit_plan_mode → p78 拦截 → 读计划文件 → 审批消息（截断预览）→ interrupt 挂起 → Web 渲染三按钮（载荷增强）→ 用户点「执行」→ interface 映射 `{approved: True, plan_execute: True}` → rail resume：提 plan_execute=True → 父类决策 approve → `ctx.extra[PLAN_EXECUTE_CTX_KEY]=True` → exit_plan_mode 真执行（体内恢复模式）→ AFTER_TOOL_CALL：非挂起 / 未拒绝 / 已执行 → 注销 task_tool → 兜底恢复（如需）→ 压缩正文 → **force_finish 结束本轮** → 服务端幂等续跑（F_02：grace window + 记账去重后代发执行消息）→ 新一轮执行计划。
 
 **P2 Web「跳过」**：同前置 → 用户点「跳过」（框空）→ `{approved: False, feedback: plan_skip_feedback(lang), plan_skip: True}` → rail：RejectResult 分支 → `_plan_rejected` + `_plan_skipped` → force_finish(PLAN_SKIP_TURN_OUTPUT) → exit_plan_mode 未执行、模式未动 → 本轮结束，仍在 plan。
 
@@ -196,6 +196,7 @@ Web revise：`reject` + `custom_input` → `approved=False, feedback=修改意�
 | 意图分类四则（p76 遗留函数，防回归保留） | `tests/unit_tests/agentserver/test_plan_approval.py`（`test_direct_plan_implement_requires_strong_signal` / `test_classify_implement_intent_as_approve` / `test_classify_revision_intent` / `test_classify_mixed_revision_overrides_short_approval` / `test_skills_list_does_not_sync_code_mode`） |
 | 编排接缝：批准退出 resume 识别 / 中断恢复跳过审批准备 | `tests/unit_tests/agentserver/test_plan_mode_orchestration.py::test_approved_plan_exit_resume_is_detected` / `::test_prepare_chat_turn_skips_approval_for_interrupt_resume` |
 | 装配：work/deep 与 team | `tests/unit_tests/test_web_plan_mode.py`（adapter 选择族）+ `tests/agents/swarm/test_swarm_assembly.py` |
+| 服务端幂等续跑：识别真值表 / 幂等去重 / 状态隔离 / grace 取消 / 合成请求字段 / busy 避让 | `tests/unit_tests/agentserver/test_plan_execute_continuation.py`（N3、F_02 契约） |
 
 ## 8. 修改检查单（改动本域必查）
 
@@ -207,12 +208,13 @@ Web revise：`reject` + `custom_input` → `approved=False, feedback=修改意�
 6. **清理 p76 遗留**（建议项）：删除 `code_plan_approval_rail.py` 与 N15 列出的无消费常量/函数时，同步删 `test_plan_approval.py` 中仅服务它们的测试；`PLAN_MODE_EXITED_EVENT_TYPE` 与 `PLAN_REMINDER_ORIGINAL_QUERY_KEY` 有真实消费，**不可**一并删。
 7. **改 AFTER_TOOL_CALL 段序**：Segment 1 的 task_tool 注销依赖"真执行"判定，顺序不可提前到挂起守门之前。
 8. **新增确认类中断选项**：检查取值不与 `PLAN_SKIP_OPTION_VALUES` / `PLAN_EXECUTE_OPTION_VALUES` 撞车（N8）。
+9. **动 Web「执行」续跑链**（`server/runtime/plan_execute_continuation.py` / `_check_post_process_plan_exit` 挂点 / 前端回显分支）：重跑 `test_plan_execute_continuation.py` 全部用例；确认 grace window 取消面（普通 chat.send、显式中断 chat.interrupt（cancel/supplement）、session delete/rewind）仍完整；前端 `useWebSocket` 不得复活 `pendingPlanExecuteRef` 补发（issue 5223 失效面）。
 
 ## 9. 与其它 spec 的关系
 
 - **[[S_01]]**：计划文件本体是 `get_plan_file_path` 指向的会话产物；审批预览只读不写。
 - **[[S_02]]**：`exit_plan_mode` 批准后进入执行轮，执行轮的 todo 生命周期由 task_execution_rail 管；本 spec 的 force_finish 输出（answer 类型）会触发其收口判定（若 plan 执行轮有开放任务）。
-- **[[S_03]]**：Web「执行」补发的新一轮若纯文本收尾且有未收口 todo，走 [[S_03]] 的 nudge 闭环；P1 的 force_finish 空 output 不含正文，不触发 hold/drop。
+- **[[S_03]]**：Web「执行」续跑开启的新一轮若纯文本收尾且有未收口 todo，走 [[S_03]] 的 nudge 闭环；P1 的 force_finish 空 output 不含正文，不触发 hold/drop。
 - **[[S_05]] / [[S_06]]**：各 profile 的 todo 变体与 deepresearch 落盘同属任务规划域，编号连续。
 - **中断交互域**（未归档）：`ConfirmInterruptRail` 父类的中断/恢复协议、`plan_pause_helpers` 的 cancel 恢复路由、auto_confirm 机制。
 - **server 编排域**（未归档）：plan_sub_mode 路由、`_ensure_code_mode_state` 状态同步、`plan.mode_exited` 事件推送链。
