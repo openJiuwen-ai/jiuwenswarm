@@ -50,6 +50,8 @@ function formatSubtaskStatus(status: string): string {
       return "result";
     case "completed":
       return "done";
+    case "cancelled":
+      return "cancelled";
     case "error":
       return "error";
     default:
