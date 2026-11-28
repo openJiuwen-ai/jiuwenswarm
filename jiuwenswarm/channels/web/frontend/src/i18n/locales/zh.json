@@ -8147,6 +8147,7 @@
   "webuiPresentation": {
     "autoStartBusy": "已有应用形态正在使用中。请先关闭，再重新启用悬浮插件。",
     "closeOverlay": "关闭悬浮形态",
+    "hideLauncher": "隐藏应用形态入口",
     "enter": "进入{{title}}",
     "opening": "正在打开应用形态…",
     "desktopRequired": "桌面模式的形态需要桌面客户端",

@@ -8148,6 +8148,7 @@
   "webuiPresentation": {
     "autoStartBusy": "An application form is already in use. Close it, then enable the floating plugin again.",
     "closeOverlay": "Close floating form",
+    "hideLauncher": "Hide application form launcher",
     "enter": "Open {{title}}",
     "opening": "Opening application form…",
     "desktopRequired": "Desktop forms require the desktop app",

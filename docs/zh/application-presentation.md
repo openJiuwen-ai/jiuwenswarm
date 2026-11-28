@@ -22,6 +22,7 @@ root = RenderNode("ApplicationSurface", {
 
 插件须声明 Gateway 域及该槽位。overlay 声明 `autoStart: True` 后，安装或启用会直接显示，禁用会关闭，无需形态切换菜单；应用重载后重新显示。
 `autoStart` 默认 False，两种显示方式均可使用；desktop 仍需要桌面客户端。普通候选继续通过“切换应用形态”菜单或已有 `presentation query/start` 命令显式启动。
+“切换应用形态”悬浮启动器默认位于右下角，支持按住拖动到视口任意位置（受视口边距约束，菜单展开方向按所在象限自动调整），松手后坐标保存在 `localStorage` 并在窗口缩放时重新约束回视口内；悬停、聚焦或触控设备上提供关闭按钮用于临时隐藏入口，隐藏仅影响前端启动器显示，不清除运行时候选也不上报 `ui.closed`，当有新的手动候选加入、候选被清除后重新发布或页面重载时会再次显示。
 同一连接同时只运行一个形态。未声明 mode 的已有资源继续使用 desktop。
 
 插件自行提供启停设置时，使用 `Switch.checked` + `ui.change` 将操作交给插件后端。后端通过 `ops.ui.render` 发布 `autoStart: True` 的形态，禁用时通过同一 Ops 的 CLEAR 清除。DELIVERED 仅表示帧已下发，不表示容器已经 ready；打开失败通过 `ui.closed` 通知插件关闭开关。开启当前会话不离开正在查看的页面。
