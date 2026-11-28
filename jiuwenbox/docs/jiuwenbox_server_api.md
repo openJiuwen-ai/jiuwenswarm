@@ -166,6 +166,8 @@ policy 文件只配置了 `inference_privacy_proxies`、没有沙箱配置时，
 | `last_active_at` | string/null | 最近一次活动时间，无偏移的本地时间。创建、启动、重启成功时写入；`exec`、`exec_background`、终止后台任务、上传、下载、列目录、搜索文件也会刷新。空闲回收（`GET/PUT /api/v1/timeout`）用它判断是否超时，缺失时回退到 `started_at`，再回退到 `created_at`。查询沙箱、列出或查询后台任务不会刷新 |
 | `error_message` | string/null | 错误信息 |
 | `env` | object | 创建沙箱时注入的环境变量 |
+| `stdout` | string | 创建时配置的 stdout 宿主路径，默认空 |
+| `stderr` | string | 创建时配置的 stderr 宿主路径，默认空 |
 | `ip_address` | string/null | 最近一次成功 create/start 后确认的 IPv4 快照。`network.mode=isolated` 时为沙箱 veth 地址；`host` 时为 jiuwenbox 与沙箱共享网络命名空间的出口 IPv4（若服务运行在 Docker/WSL 中，可能是容器或 WSL 地址，不承诺物理宿主机 LAN 地址）。`provisioning`、创建/启动失败的 `error` 为 `null`；`stopped` 保留停止前最后一次有效地址。get/list 不重新探测，只返回该快照 |
 
 示例：
@@ -208,6 +210,8 @@ policy 文件只配置了 `inference_privacy_proxies`、没有沙箱配置时，
 | `running` | boolean/null | 返回时刻进程是否仍在运行 |
 | `exit_code` | integer/null | 返回时刻已退出时的退出码 |
 | `error_message` | string/null | 创建失败原因 |
+| `stdout_redirected` | boolean | Supervisor 后台 stdout 是否继承创建时指定的宿主文件 |
+| `stderr_redirected` | boolean | Supervisor 后台 stderr 是否继承创建时指定的宿主文件 |
 
 ### 健康检查结果
 
@@ -264,6 +268,8 @@ print(resp.json())
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `env` | object | 否 | 沙箱公共环境变量。键 `SANDBOX_IP` 由运行时保留，传入返回 `400` |
+| `stdout` | string | 否 | Supervisor stdout 宿主绝对路径，默认空；后台进程写入该文件 |
+| `stderr` | string | 否 | Supervisor stderr 宿主绝对路径，默认空；后台进程写入该文件 |
 | `policy` | object/null | 否 | 覆盖或追加的 policy 数据 |
 | `policy_mode` | string | 否 | `override` 或 `append`，默认 `override` |
 | `sandbox_id` | string/null | 否 | 可选，指定沙箱 ID。长度 4~40，仅允许小写字母、数字、减号（`-`）和下划线（`_`）。省略或空字符串时服务端取 `uuid4` 前 12 个字符（形如 `6011f5ca-76a`）。格式非法返回 400；与已有 ID 冲突返回 409 |
@@ -566,7 +572,7 @@ print(resp.json())
 | `stdin` | string | 否 | 标准输入文本 |
 | `timeout_seconds` | int | 否 | 预留字段 |
 
-后台任务**不捕获** stdout/stderr（始终丢弃）；需要输出时请使用同步 `exec`。
+后台任务不在状态接口捕获 stdout/stderr。Supervisor 创建请求顶层设置 `stdout` / `stderr` 时，对应后台输出追加到宿主日志。文件必须直接位于 `JIUWENBOX_RUNTIME_LOG_DIR` 下，由管理服务持有，且为无硬链接的普通文件。沙箱继承写描述符。未设置的流仍丢弃。`BackgroundExecResult.stdout_redirected` / `stderr_redirected` 为实际生效确认。同步 `exec` 仍返回捕获的输出。
 
 错误码：`job_id` 格式非法 → **400**；同 sandbox 内 `job_id` 已占用 → **409**；沙箱非 ready → **409**。
 
@@ -625,7 +631,7 @@ print(resp.json())
 
 接口：`GET /api/v1/sandboxes/{sandbox_id}/background/{job_id}`
 
-用途：查询单个后台任务状态。stdout/stderr 恒为空（后台任务不记录输出）。
+用途：查询单个后台任务状态。stdout/stderr 恒为空（后台输出按创建策略写宿主文件或丢弃，不在该接口返回）。
 
 响应体（`BackgroundJobStatus`）含：`job_id`、`sandbox_id`、`command`、`pid`、`running`、`exit_code`、`started_at`、`finished_at`、`stdout`、`stderr`、`workdir`。
 
