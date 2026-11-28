@@ -1462,10 +1462,11 @@ class AgentRuntime:
                 )
             if request.channel_id == "ag-ui":
                 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-                fact = get_session_metadata(request.session_id, enable_writeback=False).get("application_execution", {})
-                if (fact.get("request_id") == target_request_id
-                        and fact.get("state") in {"preparing", "accepted", "waiting_client_tools"}
-                        and (not expected_id or owners)):
+                metadata = get_session_metadata(request.session_id, enable_writeback=False)
+                fact = metadata.get("application_execution", {})
+                can_cancel = fact.get("state") in {"preparing", "accepted", "waiting_client_tools"}
+                execution_matches = not expected_id or bool(owners)
+                if fact.get("request_id") == target_request_id and can_cancel and execution_matches:
                     from jiuwenswarm.runtime.request import cancel_request
                     manager = await self.resolve_manager(request)
                     native_response = await cancel_request(manager, request, allow_create=True)

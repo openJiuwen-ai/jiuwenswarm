@@ -18,7 +18,7 @@ Deploy an agent-gateway version containing the AG-UI route and a JiuwenSwarm ver
 | `AG_UI_ALLOWED_ORIGINS` | Comma-separated browser Origin allowlist |
 | `AG_UI_PROJECT_ID` | Optional host project |
 | `AG_UI_MODEL_NAME` | Optional model selection |
-| `AG_UI_ROLE_INSTRUCTIONS` | Optional application role instructions |
+| `AG_UI_ROLE_INSTRUCTIONS` | Optional application role instructions. Session creation trims surrounding whitespace and allows up to 12,000 characters |
 
 The endpoint reuses WebChannel authentication. Cross-origin browser requests must also pass Origin validation. Application state cannot override server-controlled identity or permissions.
 
@@ -63,6 +63,8 @@ The stream includes `RUN_STARTED`, text events, application tool events, and `RU
 Gateway uses host `execution.status` facts to establish completion or tool waiting. Text completion and connection closure alone do not establish success. Validation failures before streaming return HTTP errors; failures within the stream produce `RUN_ERROR`.
 
 Disconnects and timeouts trigger targeted cancellation of the current host execution. Persisted tool waiting points support subsequent recovery, but SSE reconnection and automatic replay of in-flight execution are unsupported. Reopening a thread checks host history; mismatches must be resolved before continuing.
+
+When cancelling a run that is waiting for tools, the host confirms cancellation after committing the checkpoint and recording the cancelled state. A write failure leaves cancellation unconfirmed.
 
 ## 6. Current scope
 

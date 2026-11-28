@@ -403,9 +403,8 @@ class StreamExecutionService:
             async with aclosing(pipeline.run()) as stream:
                 async for chunk in stream:
                     payload = chunk.payload or {}
-                    if (application and record_user_history
-                            and payload.get("event_type") == "execution.status"
-                            and payload.get("state") == "accepted"):
+                    accepted = payload.get("event_type") == "execution.status" and payload.get("state") == "accepted"
+                    if application and record_user_history and accepted:
                         await persist_user_history()
                     yield chunk
         except (asyncio.CancelledError, GeneratorExit):

@@ -268,9 +268,14 @@ class SDKExecutionDriver:
                 cached = owner._get_cached_session_adapter(request.session_id)
                 if cached is None and request.channel_id == "ag-ui":
                     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-                    fact = get_session_metadata(request.session_id, enable_writeback=False).get("application_execution", {})
-                    if fact.get("request_id") == request.params.get("target_request_id") and fact.get("state") == "waiting_client_tools":
-                        cached = await owner._get_or_create_session_adapter(request.session_id, retain_moa_snapshot=True)
+
+                    metadata = get_session_metadata(request.session_id, enable_writeback=False)
+                    fact = metadata.get("application_execution", {})
+                    target = request.params.get("target_request_id")
+                    if fact.get("request_id") == target and fact.get("state") == "waiting_client_tools":
+                        cached = await owner._get_or_create_session_adapter(
+                            request.session_id, retain_moa_snapshot=True,
+                        )
                 if cached is None:
                     logger.info(
                         "[JiuWenSwarmDeepAdapter] interrupt(%s): no cached session adapter for "
@@ -559,10 +564,12 @@ class SDKExecutionDriver:
         if application_cancel:
             from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
             target = str((request.params or {}).get("target_request_id") or "")
-            fact = get_session_metadata(root_session_id, enable_writeback=False).get("application_execution", {})
-            preparing_active = fact.get("state") == "preparing" and owner._instance.active_round is not None
-            if (not target or fact.get("request_id") != target
-                    or (fact.get("state") not in {"accepted", "waiting_client_tools"} and not preparing_active)):
+            metadata = get_session_metadata(root_session_id, enable_writeback=False)
+            fact = metadata.get("application_execution", {})
+            state = fact.get("state")
+            preparing_active = state == "preparing" and owner._instance.active_round is not None
+            can_cancel = state in {"accepted", "waiting_client_tools"} or preparing_active
+            if not target or fact.get("request_id") != target or not can_cancel:
                 return AgentResponse(
                     request_id=request.request_id, channel_id=request.channel_id, ok=True,
                     payload={"event_type": "chat.interrupt_result", "success": False, "target_request_id": target},
@@ -686,6 +693,7 @@ class SDKExecutionDriver:
             # unwinding; repeat the targeted cancellation as a safety net.
             owner._cancel_scheduler_running_tasks()
         continuation_discarded = True
+        application_cancel_error = None
         if application_cancel:
             stopping_tasks.update(owner._cancel_scheduler_running_tasks())
             if stopping_tasks:
@@ -707,13 +715,19 @@ class SDKExecutionDriver:
                 )
                 cancel_call_completed = cancel_call_completed and cleared
             if cancel_call_completed:
-                session = owner._active_loop_session()
-                if session is not None:
-                    await session.commit()
                 from jiuwenswarm.server.runtime.session.session_metadata import patch_session_metadata
-                patch_session_metadata(root_session_id, {"application_execution": {
-                    "request_id": target, "state": "cancelled",
-                }})
+
+                try:
+                    session = owner._active_loop_session()
+                    if session is not None:
+                        await session.commit()
+                    patch_session_metadata(root_session_id, {"application_execution": {
+                        "request_id": target, "state": "cancelled",
+                    }})
+                except Exception:
+                    cancel_call_completed = False
+                    application_cancel_error = "application_cancellation_persist_failed"
+                    logger.exception("Failed to persist application cancellation session=%s", root_session_id)
         if cutover_handoff is not None:
             try:
                 continuation_discarded = (
@@ -735,6 +749,8 @@ class SDKExecutionDriver:
                 request.session_id
             )
         message = "任务已切换" if intent == "supplement" else "任务已取消"
+        if application_cancel and not (cancel_call_completed and continuation_discarded):
+            message = "任务取消未确认"
 
         payload: dict[str, Any] = {
             "event_type": "chat.interrupt_result",
@@ -745,7 +761,9 @@ class SDKExecutionDriver:
         }
         if cua_cancel_requested:
             payload["cua_cancel_requested"] = True
-        if not continuation_discarded:
+        if application_cancel_error:
+            payload["error"] = application_cancel_error
+        elif not continuation_discarded:
             payload["error"] = "permission_continuation_discard_failed"
         if new_input:
             payload["new_input"] = new_input

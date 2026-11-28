@@ -336,20 +336,21 @@ async def test_npc_team_token_retry_conflict_is_rejected(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_application_create_persists_role_instructions(monkeypatch, tmp_path):
-    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata, patch_session_metadata
 
     state = _State()
     _install_product_hooks(monkeypatch, tmp_path, state)
     provisioner = _provisioner(state)
     prepared = await provisioner.prepare_session_create(_input(
         channel_id="ag-ui",
-        role_instructions="Help with the counter.",
+        role_instructions="  Help with the counter.  ",
     ))
     result = prepared.result
     metadata = get_session_metadata(result.session_id, cache_bust=True)
     assert "execution_policy" not in metadata
     assert "capabilities" not in metadata
     assert metadata["role_instructions"] == "Help with the counter."
+    patch_session_metadata(result.session_id, {"role_instructions": "  Help with the counter.  "})
     reused = await provisioner.prepare_session_create(_input(
         channel_id="ag-ui",
         role_instructions="Help with the counter.",
@@ -359,6 +360,21 @@ async def test_application_create_persists_role_instructions(monkeypatch, tmp_pa
         await provisioner.prepare_session_create(_input(channel_id="ag-ui"))
     await provisioner.abort_session_provision(reused)
     await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
+async def test_application_create_rejects_oversized_role_instructions(monkeypatch, tmp_path):
+    from jiuwenswarm.runtime.app_role import MAX_ROLE_INSTRUCTIONS_CHARS
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    with pytest.raises(SessionProvisionError, match="at most 12000") as error:
+        await provisioner.prepare_session_create(_input(
+            channel_id="ag-ui",
+            role_instructions="x" * (MAX_ROLE_INSTRUCTIONS_CHARS + 1),
+        ))
+    assert error.value.code == "BAD_REQUEST"
 
 
 @pytest.mark.asyncio

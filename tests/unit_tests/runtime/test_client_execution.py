@@ -279,6 +279,34 @@ async def test_target_cancel_clears_wait_and_late_cancel_preserves_next_run(host
 
 
 @pytest.mark.asyncio
+async def test_target_cancel_commit_failure_returns_unconfirmed_and_can_retry(host, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    adapter, model = host
+    model.steps = [[ToolCall(id="pending-call", type="function", name="set_counter", arguments='{"value":3}')]]
+    events = await collect(host, "waiting", query="set", client_tools=[TOOL])
+    assert events[-1]["state"] == "waiting_client_tools"
+    cancel = request("cancel", target_request_id="waiting", intent="cancel")
+    session = adapter._instance.loop_session
+    handoff = await adapter._permission_dispatch.acquire("client-session")
+    with monkeypatch.context() as failure:
+        failure.setattr(session, "commit", AsyncMock(side_effect=OSError("checkpoint unavailable")))
+        failure.setattr(adapter._permission_dispatch, "start_cutover", AsyncMock(return_value=handoff))
+        result = await adapter.process_interrupt(cancel)
+
+    assert result.payload["success"] is False
+    assert result.payload["error"] == "application_cancellation_persist_failed"
+    assert not handoff.lock.locked()
+    assert get_session_metadata("client-session")["application_execution"]["state"] == "waiting_client_tools"
+
+    result = await adapter.process_interrupt(cancel)
+    assert result.payload["success"] is True
+    assert get_session_metadata("client-session")["application_execution"]["state"] == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_target_cancel_waits_for_actual_model_producer(host):
     adapter, model = host
     entered, stopped = asyncio.Event(), asyncio.Event()
@@ -529,6 +557,62 @@ async def test_disconnect_stops_model_and_releases_invocation_data(host):
     assert stopped.is_set()
     assert not _APPLICATION_RUNS
     assert "application.invocation" not in adapter._instance.system_prompt_builder.build()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cleanup_timeout_preserves_cancellation(host, monkeypatch, caplog):
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.runtime.client_tools import APPLICATION_RUN_REF, _APPLICATION_RUNS
+
+    adapter, _ = host
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def producer():
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    async def submitted_stream(req, inputs):
+        reference = inputs["run"]["context"]["extra"][APPLICATION_RUN_REF]
+        _APPLICATION_RUNS[reference]["submitted"] = True
+        yield AgentResponseChunk(request_id=req.request_id, channel_id=req.channel_id, is_complete=False,
+                                 payload={"event_type": "runtime.accepted"})
+        entered.set()
+        await asyncio.Future()
+
+    task = asyncio.create_task(producer())
+    cancel_tasks = adapter._cancel_scheduler_running_tasks
+    monkeypatch.setattr(adapter, "_cancel_scheduler_running_tasks", lambda: cancel_tasks(task))
+    monkeypatch.setattr(adapter, "_process_message_stream_impl", submitted_stream)
+    wait = asyncio.wait
+
+    async def shorten_stop_wait(tasks, *, timeout=None):
+        return await wait(tasks, timeout=0.01 if task in tasks else timeout)
+
+    monkeypatch.setattr(asyncio, "wait", shorten_stop_wait)
+    running = asyncio.create_task(collect(host, "disconnect", query="wait"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(running, 5)
+        assert "Application execution stop unconfirmed" in caplog.text
+        assert not task.done()
+        assert not _APPLICATION_RUNS
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_scheduler_stop_wait_excludes_current_and_finished_tasks(host):
+    adapter, _ = host
+    finished = asyncio.create_task(asyncio.sleep(0))
+    await finished
+    assert adapter._cancel_scheduler_running_tasks(finished) == set()
+    assert adapter._cancel_scheduler_running_tasks(asyncio.current_task()) == set()
 
 
 @pytest.mark.asyncio

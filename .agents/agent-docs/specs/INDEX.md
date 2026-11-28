@@ -296,6 +296,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+| [S_05_ag-ui-host-execution](jiuwenswarm/server/runtime/agent_adapter/S_05_ag-ui-host-execution.md) | S | AG-UI 宿主指令与取消契约 | yukuanj | — |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
@@ -339,6 +340,7 @@ generated: true
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 | [S_04_coding-document-memory](jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
+| [S_05_ag-ui-host-execution](jiuwenswarm/server/runtime/agent_adapter/S_05_ag-ui-host-execution.md) | S | AG-UI 宿主指令与取消契约 | yukuanj | — |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 

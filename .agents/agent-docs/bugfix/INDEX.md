@@ -38,8 +38,8 @@ generated: true
 | [jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket](#module-jiuwenswarm-channels-web-frontend-src-components-ConnectorMarket) |
 | [jiuwenswarm/channels/web/frontend/src/components/SkillPanel](#module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel) |
 | [jiuwenswarm/channels/web/frontend/src/components/ui/EntityHeader](#module-jiuwenswarm-channels-web-frontend-src-components-ui-EntityHeader) |
-| [jiuwenswarm/channels/web/frontend/src/features/reaSetup](#module-jiuwenswarm-channels-web-frontend-src-features-reaSetup) |
 | [jiuwenswarm/channels/web/frontend/src/features/groupChat](#module-jiuwenswarm-channels-web-frontend-src-features-groupChat) |
+| [jiuwenswarm/channels/web/frontend/src/features/reaSetup](#module-jiuwenswarm-channels-web-frontend-src-features-reaSetup) |
 | [jiuwenswarm/channels/web/frontend/src/features/rsi](#module-jiuwenswarm-channels-web-frontend-src-features-rsi) |
 | [jiuwenswarm/channels/web/frontend/src/features/sessionAssets](#module-jiuwenswarm-channels-web-frontend-src-features-sessionAssets) |
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
@@ -282,9 +282,11 @@ generated: true
 | [B_20261126_1940_enterprise-agent-switch-route](jiuwenswarm/channels/web/B_20261126_1940_enterprise-agent-switch-route.md) | B | Open a new conversation after an enterprise Agent switch | linda | 无独立 D：Minimal fix explicitly approved in the task; no separate design document. |
 | [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
+| [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
 | [B_20261127_1515_restore-chat-error-indicator](jiuwenswarm/channels/web/frontend/B_20261127_1515_restore-chat-error-indicator.md) | B | 恢复失败轮次的会话侧栏错误标记 | lizhiyuan | 无独立 D：复用现有 chat.error 事件和侧栏失败状态，修复历史恢复遗漏。 |
 | [B_20261127_1547_webui-slot-capacity](extensions/B_20261127_1547_webui-slot-capacity.md) | B | WebUI 槽位容量与投递回滚修复 | kusanagima | 无独立 D：基于现有 WebUI 槽位和投递契约的缺陷修复，无独立设计文档。 |
 | [B_20261128_0922_external-cli-switch-save-loading](jiuwenswarm/channels/web/frontend/B_20261128_0922_external-cli-switch-save-loading.md) | B | 三方 CLI agent 开关保存往返期间仅置灰无处理中反馈，被读成状态延迟 | yuhaiquan | 无独立 D：由 GitCode issue |
+| [B_20261128_0955_local-app-delete-safeguards](jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
 | [B_20261128_1406_system-plugin-zip-confirmation](jiuwenswarm/extensions_v2/B_20261128_1406_system-plugin-zip-confirmation.md) | B | 上传系统插件 ZIP 时缺少多插件开启提醒 | lizhiyuan | 无独立 D：沿用插件广场已有的启用状态判断与确认弹窗，在上传入口补齐同一交互。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-AgentManagementPanel"></a>
@@ -302,8 +304,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261126_1055_file-size-unit-rounding](jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
-| [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
-| [B_20261128_0955_local-app-delete-safeguards](jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
@@ -321,13 +321,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261120_1024_entity-header-tag-overflow](jiuwenswarm/channels/web/frontend/B_20261120_1024_entity-header-tag-overflow.md) | B | 实体头部标签溢出处理 | 待确认 | 无独立 D：按用户确认的 jiuwenclaw 修复方案迁入同源缺陷修复，无独立设计文档。 |
 
-<a id="module-jiuwenswarm-channels-web-frontend-src-features-reaSetup"></a>
-
-## jiuwenswarm/channels/web/frontend/src/features/reaSetup
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261127_1021_rea-offline-cancel-recovery](jiuwenswarm/channels/web/B_20261127_1021_rea-offline-cancel-recovery.md) | B | REA 断网取消后卡死且重装不可恢复 | zhongxiaotian | 无独立 D：修复现有 REA 安装作业的前端恢复语义，不改变后端安装协议或状态机。 |
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-groupChat"></a>
 
 ## jiuwenswarm/channels/web/frontend/src/features/groupChat
@@ -335,6 +328,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261126_1055_file-size-unit-rounding](jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
+
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-reaSetup"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/reaSetup
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261127_1021_rea-offline-cancel-recovery](jiuwenswarm/channels/web/B_20261127_1021_rea-offline-cancel-recovery.md) | B | REA 断网取消后卡死且重装不可恢复 | zhongxiaotian | 无独立 D：修复现有 REA 安装作业的前端恢复语义，不改变后端安装协议或状态机。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 
@@ -455,8 +456,8 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
-| [B_20261128_1406_system-plugin-zip-confirmation](jiuwenswarm/extensions_v2/B_20261128_1406_system-plugin-zip-confirmation.md) | B | 上传系统插件 ZIP 时缺少多插件开启提醒 | lizhiyuan | 无独立 D：沿用插件广场已有的启用状态判断与确认弹窗，在上传入口补齐同一交互。 |
 | [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
+| [B_20261128_1406_system-plugin-zip-confirmation](jiuwenswarm/extensions_v2/B_20261128_1406_system-plugin-zip-confirmation.md) | B | 上传系统插件 ZIP 时缺少多插件开启提醒 | lizhiyuan | 无独立 D：沿用插件广场已有的启用状态判断与确认弹窗，在上传入口补齐同一交互。 |
 
 <a id="module-jiuwenswarm-extensions_v2-webui"></a>
 
@@ -534,6 +535,7 @@ generated: true
 | [B_20261121_1545_team-pause-teardown-admission-race](jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261121_1817_parked-team-busy-snapshot-reseed](jiuwenswarm/B_20261121_1817_parked-team-busy-snapshot-reseed.md) | B | 暂停后页面持续转圈：挂起团队忙闲快照读到内存名册残留 | zhanglongmin | 无独立 D：依据运行日志与逐跳代码核实定位，无独立设计文档；修复走 Core 既有公开契约，不修改 agent-core。 |
 | [B_20261128_1105_npc-team-attachment-mode](jiuwenswarm/runtime/B_20261128_1105_npc-team-attachment-mode.md) | B | 原生 NPC Team 只读订阅模式错配 | kdgmpw | 无独立 D：修复现有原生 NPC Team 的只读观察契约。 |
+| [B_20261128_1734_ag-ui-cancel-and-role-validation](jiuwenswarm/server/runtime/agent_adapter/B_20261128_1734_ag-ui-cancel-and-role-validation.md) | B | AG-UI 取消确认与会话指令校验 | yukuanj | 无独立 D：本次为现有 AG-UI 接入的检视修复，按宿主检查点和取消响应契约实施。 |
 
 <a id="module-jiuwenswarm-server"></a>
 
@@ -608,8 +610,9 @@ generated: true
 | [B_20261126_1045_ui-lang-over-yaml-zh](jiuwenswarm/enterprise/config/B_20261126_1045_ui-lang-over-yaml-zh.md) | B | 企业版 UI 语言被 AgentServer yaml preferred_language zh 盖过 | whds5279 | 无独立 D：无独立 D；依据 issue |
 | [B_20261126_1052_team-memory-rail-race](jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
-| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 | [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
+| [B_20261128_1734_ag-ui-cancel-and-role-validation](jiuwenswarm/server/runtime/agent_adapter/B_20261128_1734_ag-ui-cancel-and-role-validation.md) | B | AG-UI 取消确认与会话指令校验 | yukuanj | 无独立 D：本次为现有 AG-UI 接入的检视修复，按宿主检查点和取消响应契约实施。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>
 
@@ -629,8 +632,8 @@ generated: true
 | [B_20261126_0954_native-npc-team-first-turn](jiuwenswarm/server/runtime/session/B_20261126_0954_native-npc-team-first-turn.md) | B | 原生 NPC 队伍首轮发言失败 | kdgmpw | 无独立 D：修复现有原生 NPC Team 装配契约。 |
 | [B_20261126_1308_session-metadata-corrupted-marker](jiuwenswarm/server/runtime/session/B_20261126_1308_session-metadata-corrupted-marker.md) | B | 损坏 metadata.json 的会话在列表中伪装成合法旧会话，团队身份字段静默丢失 | zhangpu | 无独立 D：防御性呈现契约修复，复用 _read_metadata 既有读路径补显式失败状态并在合成层打标、投影层透传，无独立设计文档。 |
 | [B_20261126_1628_upload-doc-block-auto-title](jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
-| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 | [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
+| [B_20261127_1615_team-leader-context-usage](jiuwenswarm/server/B_20261127_1615_team-leader-context-usage.md) | B | TokenWeather 在集群会话中缺少主 Agent 上下文用量 | lizhiyuan | 无独立 D：在现有插件用量查询与事件契约上修复集群主 Agent 的归属判断，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 

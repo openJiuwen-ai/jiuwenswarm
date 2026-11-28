@@ -151,7 +151,9 @@ class CuaDelegationApprovalRail(ConfirmInterruptRail):
                 return self.approve()
             from jiuwenswarm.runtime.client_tools import supports_host_approval
             if not supports_host_approval(ctx, self):
-                return self.reject(tool_result="[PERMISSION_DENIED] Desktop delegation requires human approval, unavailable on this channel.")
+                return self.reject(tool_result=(
+                    "[PERMISSION_DENIED] Desktop delegation requires human approval, unavailable on this channel."
+                ))
             language = self._language
             return self.interrupt(
                 InterruptRequest(

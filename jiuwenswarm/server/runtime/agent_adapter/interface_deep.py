@@ -4633,12 +4633,9 @@ class JiuWenSwarmDeepAdapter:
             # Consult the installed mode of this same-class cached session.
             cached is not None and cached._enable_auto_permission  # pylint: disable=protected-access
         )
-        if smart_lifecycle and (
-            self._is_interrupt_resume_dispatch(request.params)
-            and cached is None
-            and not (request.channel_id == "ag-ui" and is_client_tool_resume(request.params))
-        ):
-            raise RootPermissionQueueError("permission_resume_owner_missing")
+        if smart_lifecycle and self._is_interrupt_resume_dispatch(request.params) and cached is None:
+            if request.channel_id != "ag-ui" or not is_client_tool_resume(request.params):
+                raise RootPermissionQueueError("permission_resume_owner_missing")
 
         if not smart_lifecycle or not self._is_host_permission_update_input(request):
             return await self._get_or_create_session_adapter(
@@ -16690,7 +16687,7 @@ class JiuWenSwarmDeepAdapter:
             raise RuntimeError("全双工工具任务正在执行，请等待任务完成后再发送文字消息。")
         if request.channel_id == "ag-ui":
             from jiuwenswarm.runtime.client_tools import (
-                APPLICATION_RUN_REF, _APPLICATION_RUNS, parse_client_tools,
+                APPLICATION_RUN_REF, _APPLICATION_RUNS, application_tool_cards, parse_client_tools,
                 replace_application_tools, validate_complete_client_answers,
             )
             pending = await self.pending_interactions(request.session_id)
@@ -16704,7 +16701,7 @@ class JiuWenSwarmDeepAdapter:
             if data is None:
                 raise ValueError("application invocation context is unavailable")
             data["agent"] = self._instance
-            owned = getattr(self._instance, "_application_client_cards", {})
+            owned = application_tool_cards(self._instance)
             for tool in data["tools"]:
                 existing = self._instance.ability_manager.get(tool.card.name)
                 if existing is not None and existing is not owned.get(tool.card.name):
@@ -16712,7 +16709,8 @@ class JiuWenSwarmDeepAdapter:
             if resume and not owned:
                 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
                 metadata = get_session_metadata(request.session_id, enable_writeback=False)
-                replace_application_tools(self._instance, parse_client_tools(metadata.get("application_client_tools", [])))
+                saved_tools = parse_client_tools(metadata.get("application_client_tools", []))
+                replace_application_tools(self._instance, saved_tools)
             if not resume:
                 replace_application_tools(self._instance, data["tools"])
             from jiuwenswarm.server.runtime.session.session_metadata import patch_session_metadata
@@ -16992,9 +16990,11 @@ class JiuWenSwarmDeepAdapter:
             # scheduler map. Use the exact registered execution in that case.
             if execution_task is not None:
                 executions.add(execution_task)
+            current_task = asyncio.current_task()
+            executions = {task for task in executions if task is not current_task and not task.done()}
             cancelled_count = 0
             for exec_task in executions:
-                if exec_task is not asyncio.current_task() and not exec_task.done() and not exec_task.cancelling():
+                if not exec_task.cancelling():
                     exec_task.cancel()
                     cancelled_count += 1
             if cancelled_count > 0:
@@ -19292,7 +19292,7 @@ class JiuWenSwarmDeepAdapter:
         """Project application execution facts around the existing session stream."""
         import uuid
         from jiuwenswarm.runtime.client_tools import (
-            APPLICATION_RUN_REF, _APPLICATION_RUNS, parse_client_tools,
+            APPLICATION_RUN_REF, _APPLICATION_RUNS, application_tool_cards, parse_client_tools,
         )
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
@@ -19313,7 +19313,7 @@ class JiuWenSwarmDeepAdapter:
             data = {
                 "tools": tools, "data": invocation_data, "agent": self._instance,
                 "role_instructions": metadata.get("role_instructions", ""),
-                "previous_names": set(getattr(self._instance, "_application_client_cards", {})),
+                "previous_names": set(application_tool_cards(self._instance)),
             }
             _APPLICATION_RUNS[reference] = data
             inputs = dict(inputs)
@@ -19331,7 +19331,8 @@ class JiuWenSwarmDeepAdapter:
                     payload = chunk.payload or {}
                     if payload.get("event_type") == "runtime.accepted" and not accepted:
                         accepted = True
-                        current = get_session_metadata(request.session_id, enable_writeback=False).get("application_execution", {})
+                        current_metadata = get_session_metadata(request.session_id, enable_writeback=False)
+                        current = current_metadata.get("application_execution", {})
                         if current.get("state") != "cancelled" or current.get("request_id") != request.request_id:
                             patch_session_metadata(request.session_id, {"application_execution": {
                                 "request_id": request.request_id, "state": "accepted",
@@ -19387,24 +19388,29 @@ class JiuWenSwarmDeepAdapter:
                              for item in pending
                          ]},
             )
-        except (asyncio.CancelledError, GeneratorExit):
-            raise
         except Exception as exc:
+            state = "failed" if accepted or (data and data.get("submitted")) else "rejected"
             yield AgentResponseChunk(
                 request_id=request.request_id, channel_id=request.channel_id, is_complete=True,
                 payload={"event_type": "execution.status", "request_id": request.request_id,
-                         "state": "failed" if accepted or (data and data.get("submitted")) else "rejected", "error": str(exc)},
+                         "state": state, "error": str(exc)},
             )
         finally:
             try:
                 if data is not None and data.get("submitted") and data.get("round_result") is None:
                     stopping = self._cancel_scheduler_running_tasks()
-                    await self._instance.cancel_round(reason="application_stream_closed")
+                    try:
+                        await self._instance.cancel_round(reason="application_stream_closed")
+                    except Exception:
+                        logger.exception("Failed to cancel application round request_id=%s", request.request_id)
                     stopping.update(self._cancel_scheduler_running_tasks())
                     if stopping:
                         _, remaining = await asyncio.wait(stopping, timeout=10)
                         if remaining:
-                            raise RuntimeError("application execution did not stop")
+                            logger.warning(
+                                "Application execution stop unconfirmed request_id=%s pending_tasks=%d",
+                                request.request_id, len(remaining),
+                            )
             finally:
                 _APPLICATION_RUNS.pop(reference, None)
                 builder = getattr(self._instance, "system_prompt_builder", None)

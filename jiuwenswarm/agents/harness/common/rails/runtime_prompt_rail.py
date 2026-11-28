@@ -574,7 +574,6 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder.remove_section("application.invocation")
         application = application_run_data(ctx)
         if application is not None:
-            import json
             text = (
                 "This channel supports text and application tools. Ask questions in text. "
                 "Host approval, Plan/Goal interaction and background dispatch are unavailable.\n"

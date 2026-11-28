@@ -314,3 +314,7 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
+## ⚠ 无法解析（已跳过，请运行 validate 修复）
+
+- `active/D-20261111-1146-ag-ui-existing-execution/design.md` — 文件夹缺少 design.md

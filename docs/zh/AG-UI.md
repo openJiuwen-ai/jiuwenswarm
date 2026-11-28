@@ -18,7 +18,7 @@ Gateway 按调用身份和 `threadId` 关联宿主会话，`runId` 标识一次�
 | `AG_UI_ALLOWED_ORIGINS` | 允许的浏览器 Origin，多个值用逗号分隔 |
 | `AG_UI_PROJECT_ID` | 可选，指定宿主项目 |
 | `AG_UI_MODEL_NAME` | 可选，指定模型 |
-| `AG_UI_ROLE_INSTRUCTIONS` | 可选，设置应用角色指令 |
+| `AG_UI_ROLE_INSTRUCTIONS` | 可选，设置应用角色指令。创建会话时去掉首尾空白，最多 12,000 字符 |
 
 入口复用 WebChannel 的认证；浏览器跨域请求还需通过 Origin 校验。身份与权限由服务端确定，不能通过应用状态覆盖。
 
@@ -65,6 +65,8 @@ Gateway 按调用身份和 `threadId` 关联宿主会话，`runId` 标识一次�
 Gateway 根据宿主 `execution.status` 判断执行成功或进入工具等待，不能仅凭文本结束或连接关闭判断成功。请求校验错误在开始流之前以 HTTP 错误返回，流内失败通过 `RUN_ERROR` 表达。
 
 断线或超时会触发 Gateway 对当前宿主执行的定向取消。已经持久化的工具等待点可用于后续恢复，但不支持断线续传 SSE 或自动重放在途执行。重开线程时 Gateway 会核对宿主历史，历史不匹配需处理后再继续。
+
+取消工具等待时，宿主提交检查点并写入取消状态后才确认成功。写入失败时，宿主返回取消未确认。
 
 ## 6. 当前边界
 

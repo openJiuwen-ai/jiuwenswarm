@@ -42,6 +42,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import ASK_LEVEL
 from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import (
+    build_denied_permission_response,
     build_manual_approval_required_response,
     classify_permission_result,
 )
@@ -139,7 +140,6 @@ class AutoPermissionRuntimeBridgeMixin:
         result_class = classify_permission_result(result)
         from jiuwenswarm.runtime.client_tools import supports_host_approval
         if result_class == "interrupt" and not supports_host_approval(invocation.ctx, self.base_rail):
-            from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import build_denied_permission_response
             result = build_denied_permission_response("This channel has no human approval interface.")
             self._skip_runtime_tool(invocation, result)
             return result

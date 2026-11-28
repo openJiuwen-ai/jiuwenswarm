@@ -22,8 +22,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
+from weakref import WeakKeyDictionary
 
-from openjiuwen.core.foundation.tool import ClientToolResult
+from openjiuwen.core.foundation.tool import ClientToolResult, ToolCard
 from openjiuwen.core.single_agent.interrupt import InterruptKind
 from openjiuwen.core.single_agent.rail.base import AgentRail, AgentCallbackEvent
 from pydantic import ValidationError
@@ -101,6 +102,12 @@ __all__ = [
 # process-local and is released by the existing request owner's finally block.
 APPLICATION_RUN_REF = "jiuwenswarm.application_run_ref"
 _APPLICATION_RUNS: dict[str, dict[str, Any]] = {}
+_APPLICATION_CLIENT_CARDS: WeakKeyDictionary[Any, dict[str, ToolCard]] = WeakKeyDictionary()
+_APPLICATION_WORK_MODES = frozenset({"agent", "agent.work.normal"})
+_APPLICATION_UNSUPPORTED_PARAMS = (
+    "team", "is_swarm", "cron", "run", "activate_response", "goal", "goal_action",
+    "attach_goal", "auto_harness", "eternal_conversation",
+)
 
 
 def validate_application_request(request: Any, metadata: dict[str, Any]) -> None:
@@ -116,41 +123,43 @@ def validate_application_request(request: Any, metadata: dict[str, Any]) -> None
     if request.req_method != ReqMethod.CHAT_SEND:
         return
     params = request.params or {}
-    if (params.get("mode", "agent") not in {"agent", "agent.work.normal"}
-            or metadata.get("mode", "agent") not in {"agent", "agent.work.normal"}
-            or params.get("work_mode", "work") != "work"
-            or metadata.get("work_mode", "work") != "work"
-            or any(params.get(key) for key in (
-                "team", "is_swarm", "cron", "run", "activate_response", "goal", "goal_action",
-                "attach_goal", "auto_harness", "eternal_conversation",
-            ))
-            or params.get("source", "") not in {"", "client_tool_interrupt"}):
-        raise ValueError("AG-UI requires an ordinary Work chat.send")
+    error = "AG-UI requires an ordinary Work chat.send"
+    for settings in (params, metadata):
+        if settings.get("mode", "agent") not in _APPLICATION_WORK_MODES or settings.get("work_mode", "work") != "work":
+            raise ValueError(error)
+    if any(params.get(key) for key in _APPLICATION_UNSUPPORTED_PARAMS):
+        raise ValueError(error)
+    if params.get("source", "") not in {"", CLIENT_TOOL_INTERRUPT_SOURCE}:
+        raise ValueError(error)
 
 
 def parse_client_tools(raw: object) -> list[Any]:
     """Validate application declarations without changing registered abilities."""
     import copy
     import json
-    from openjiuwen.core.foundation.tool import ClientTool, ToolCard, ToolExecution
+    from openjiuwen.core.foundation.tool import ClientTool, ToolExecution
 
     if not isinstance(raw, list):
         raise ValueError("client_tools must be an array")
     json.dumps(raw, allow_nan=False)
     tools, names = [], set()
+    error = "invalid or duplicate client tool declaration"
     for item in raw:
-        if (not isinstance(item, dict) or not isinstance(item.get("name"), str)
-                or not item["name"].strip() or item["name"] in names
-                or not isinstance(item.get("description", ""), str)
-                or not isinstance(item.get("parameters"), dict)
-                or item["parameters"].get("type") != "object"):
-            raise ValueError("invalid or duplicate client tool declaration")
-        names.add(item["name"])
-        if item["name"] in ApplicationInteractionRail.unsupported_tools:
-            raise ValueError(f"client tool conflicts with an interaction tool: {item['name']}")
+        if not isinstance(item, dict):
+            raise ValueError(error)
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise ValueError(error)
+        description = item.get("description", "")
+        parameters = item.get("parameters")
+        if not isinstance(description, str) or not isinstance(parameters, dict) or parameters.get("type") != "object":
+            raise ValueError(error)
+        names.add(name)
+        if name in ApplicationInteractionRail.unsupported_tools:
+            raise ValueError(f"client tool conflicts with an interaction tool: {name}")
         tools.append(ClientTool(ToolCard(
-            name=item["name"], description=item.get("description", ""),
-            input_params=copy.deepcopy(item["parameters"]), execution=ToolExecution.CLIENT,
+            name=name, description=description,
+            input_params=copy.deepcopy(parameters), execution=ToolExecution.CLIENT,
         )))
     return tools
 
@@ -160,10 +169,9 @@ def validate_complete_client_answers(answers: Any, pending: list[dict[str, Any]]
     if not isinstance(answers, list):
         raise ClientToolAnswerMismatch("answers must be an array")
     parsed = client_tool_answers(answers)
-    actual = [(answer.request_id, answer.interrupt_id) for answer in parsed]
+    actual = {(answer.request_id, answer.interrupt_id) for answer in parsed}
     expected = {(entry["request_id"], entry["interrupt_id"]) for entry in pending}
-    if (not expected or len(parsed) != len(answers) or len(set(actual)) != len(actual)
-            or set(actual) != expected):
+    if not expected or len(actual) != len(answers) or actual != expected:
         raise ClientToolAnswerMismatch("answers must match the complete pending client-tool batch")
 
 
@@ -185,10 +193,17 @@ def supports_host_approval(ctx: Any = None, rail: Any = None) -> bool:
             and (context is None or context.supports_permission_approval))
 
 
+def application_tool_cards(agent: Any) -> Mapping[str, ToolCard]:
+    """Read the cards registered by AG-UI for this live Agent."""
+    if agent is None:
+        return {}
+    return _APPLICATION_CLIENT_CARDS.get(agent, {})
+
+
 def replace_application_tools(agent: Any, tools: list[Any]) -> None:
     """Replace only this integration's cards, retaining backend/plugin ownership."""
     manager = agent.ability_manager
-    owned = getattr(agent, "_application_client_cards", {})
+    owned = application_tool_cards(agent)
     for tool in tools:
         existing = manager.get(tool.card.name)
         if existing is not None and existing is not owned.get(tool.card.name):
@@ -200,7 +215,7 @@ def replace_application_tools(agent: Any, tools: list[Any]) -> None:
         manager.remove_ability(name)
     for tool in tools:
         manager.add_ability(tool.card, tool)
-    agent._application_client_cards = {tool.card.name: tool.card for tool in tools}
+    _APPLICATION_CLIENT_CARDS[agent] = {tool.card.name: tool.card for tool in tools}
 
 
 class ApplicationInteractionRail(AgentRail):
@@ -229,11 +244,14 @@ class ApplicationInteractionRail(AgentRail):
         from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
         from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT, RunContext
 
-        # Some child factories install the SDK permission rail rather than the
-        # host subclass. Preserve its engine and bind only the final ASK hook.
+        # Some child factories install the bare SDK permission rail. Its host
+        # has no public rebinding API. Keep custom permission rails untouched.
         for rail in self._agent.find_rails_by_type((PermissionInterruptRail,)):
-            if type(rail) is PermissionInterruptRail:
-                rail._host = replace(rail._host, request_permission_confirmation=self._deny_confirmation)
+            if type(rail) is PermissionInterruptRail:  # pylint: disable=huawei-unidiomatic-typecheck
+                rail._host = replace(  # pylint: disable=protected-access
+                    rail._host,  # pylint: disable=protected-access
+                    request_permission_confirmation=self._deny_confirmation,
+                )
         current = CURRENT_RUN_CONTEXT.get() or RunContext()
         ctx.extra["_application_context_token"] = CURRENT_RUN_CONTEXT.set(
             replace(current, supports_permission_approval=False),
@@ -249,19 +267,19 @@ class ApplicationInteractionRail(AgentRail):
         data = application_run_data(ctx)
         if data is None:
             if not supports_host_approval(ctx):
-                ctx.inputs.tools = [tool for tool in (ctx.inputs.tools or []) if tool.name not in self.unsupported_tools]
+                candidates = ctx.inputs.tools or []
+                ctx.inputs.tools = [tool for tool in candidates if tool.name not in self.unsupported_tools]
             return
-        previous = set(getattr(data["agent"], "_application_client_cards", {}))
-        replace_application_tools(data["agent"], data["tools"])
-        # Preserve filtering performed by existing rails; add only App cards.
-        own = set(data["agent"]._application_client_cards)
+        agent, tools = data["agent"], data["tools"]
+        previous = set(application_tool_cards(agent))
+        replace_application_tools(agent, tools)
         if ctx.extra.get("_finalizing_max_iterations"):
             return
-        ctx.inputs.tools = [
-            tool for tool in (ctx.inputs.tools or [])
-            if tool.name not in self.unsupported_tools and tool.name not in own
-            and tool.name not in data["previous_names"] and tool.name not in previous
-        ] + [tool.card.tool_info() for tool in data["tools"]]
+        # Preserve filtering performed by existing rails; add only App cards.
+        excluded = self.unsupported_tools.union(previous, data["previous_names"], application_tool_cards(agent))
+        candidates = ctx.inputs.tools or []
+        app_tools = [tool.card.tool_info() for tool in tools]
+        ctx.inputs.tools = [tool for tool in candidates if tool.name not in excluded] + app_tools
 
     async def before_tool_call(self, ctx: Any) -> None:
         from dataclasses import replace
@@ -276,7 +294,10 @@ class ApplicationInteractionRail(AgentRail):
         tokens[call_id] = CURRENT_RUN_CONTEXT.set(replace(current, supports_permission_approval=False))
         name = ctx.inputs.tool_name or getattr(ctx.inputs.tool_call, "name", "")
         if name in self.unsupported_tools:
-            text = "[INTERACTION_UNAVAILABLE] This channel supports text and application tools only. Ask questions in text. Background dispatch and Plan/Goal interaction are unavailable."
+            text = (
+                "[INTERACTION_UNAVAILABLE] This channel supports text and application tools only. "
+                "Ask questions in text. Background dispatch and Plan/Goal interaction are unavailable."
+            )
             ctx.extra.setdefault("_skip_tool_calls", {})[call_id] = True
             ctx.inputs.tool_result = text
             ctx.inputs.tool_msg = ToolMessage(content=text, tool_call_id=ctx.inputs.tool_call.id)

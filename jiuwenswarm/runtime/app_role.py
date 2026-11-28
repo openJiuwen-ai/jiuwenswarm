@@ -44,8 +44,13 @@ def normalize_execution_profile(
     if not isinstance(instructions, str):
         raise ValueError("role_instructions must be a string")
     if profile == DEFAULT_EXECUTION_PROFILE:
-        if instructions and channel_id != "ag-ui":
-            raise ValueError("role_instructions requires execution_profile='app_role'")
+        if channel_id != "ag-ui":
+            if instructions:
+                raise ValueError("role_instructions requires execution_profile='app_role'")
+            return profile, ""
+        instructions = instructions.strip()
+        if len(instructions) > MAX_ROLE_INSTRUCTIONS_CHARS:
+            raise ValueError(f"role_instructions must contain at most {MAX_ROLE_INSTRUCTIONS_CHARS} characters")
         return profile, instructions
     instructions = instructions.strip()
     if not instructions or len(instructions) > MAX_ROLE_INSTRUCTIONS_CHARS:
@@ -105,11 +110,15 @@ def normalize_npc_team(value: Any) -> dict[str, Any] | None:
 
 def app_role_instructions(metadata: dict[str, Any]) -> str | None:
     """Read persisted configuration; old sessions retain their ordinary profile."""
-    profile, instructions = normalize_execution_profile(
-        metadata.get("execution_profile", DEFAULT_EXECUTION_PROFILE),
-        metadata.get("role_instructions", ""),
-        channel_id=metadata.get("channel_id", ""),
-    )
+    stored_profile = metadata.get("execution_profile", DEFAULT_EXECUTION_PROFILE)
+    stored_instructions = metadata.get("role_instructions", "")
+    if (
+        stored_profile == DEFAULT_EXECUTION_PROFILE
+        and metadata.get("channel_id") == "ag-ui"
+        and isinstance(stored_instructions, str)
+    ):
+        return None
+    profile, instructions = normalize_execution_profile(stored_profile, stored_instructions)
     return instructions if profile == APP_ROLE_PROFILE else None
 
 
