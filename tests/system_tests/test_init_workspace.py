@@ -318,11 +318,19 @@ class TestInitWorkspaceMain:
         )
         # The root force init deletes, not just the home it is derived from: a stale
         # cache or a data-dir override would aim it elsewhere with the home still right.
-        assert get_user_workspace_dir() == temp_home / ".jiuwenswarm", (
+        workspace_dir = get_user_workspace_dir()
+        assert workspace_dir == temp_home / ".jiuwenswarm", (
             "force init 将要删除的工作区根不在临时目录下"
         )
 
+        workspace_dir.mkdir()
+        old_file = workspace_dir / "old-workspace.txt"
+        old_file.write_text("old workspace data", encoding="utf-8")
+
         from jiuwenswarm.init_workspace import run_init
+
+        # Keep locally running services from blocking this temporary workspace reset.
+        monkeypatch.setattr("jiuwenswarm.instance_manager.config.is_port_available", lambda *_: True)
 
         # Simulate user confirming force init and selecting Chinese
         def mock_input(prompt):
@@ -332,10 +340,8 @@ class TestInitWorkspaceMain:
 
         monkeypatch.setattr("builtins.input", mock_input)
 
-        exit_code = run_init(force=True)
-        if exit_code == 1:
-            pytest.skip("Init was cancelled - may occur in some test environments")
-        assert exit_code == 0
-        assert (temp_home / ".jiuwenswarm" / "config" / "config.yaml").is_file(), (
+        assert run_init(force=True) == 0
+        assert not old_file.exists()
+        assert (workspace_dir / "config" / "config.yaml").is_file(), (
             "工作区没有建在临时目录下"
         )
