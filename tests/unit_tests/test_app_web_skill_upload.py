@@ -21,11 +21,14 @@ from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
 from jiuwenswarm.server.runtime.skill import skill_manager as skill_manager_module
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_ALREADY_EXISTS,
+    ERROR_SKILL_FILE_TOO_LARGE,
     ERROR_SKILL_INVALID_PACKAGE,
+    ERROR_SKILL_UNSAFE_PATH,
     SkillManager,
     SkillRpcError,
 )
 from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+    SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES,
     SKILL_UPLOAD_PREFIX,
     cleanup_stale_skill_uploads,
     discard_skill_upload,
@@ -116,6 +119,22 @@ def _post_upload(
             endpoint,
             body=body,
             headers={"Content-Type": f'multipart/form-data; boundary="{boundary}"'},
+        )
+        response = connection.getresponse()
+        assert response.headers["Content-Type"].startswith("application/json")
+        return response.status, json.loads(response.read())
+    finally:
+        connection.close()
+
+
+def _post_discard(port: int, raw_body: bytes):
+    connection = HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        connection.request(
+            "POST",
+            "/file-api/skills/upload-discard",
+            body=raw_body,
+            headers={"Content-Type": "application/json"},
         )
         response = connection.getresponse()
         assert response.headers["Content-Type"].startswith("application/json")
@@ -242,6 +261,31 @@ def test_discard_rejects_path_outside_upload_root(upload_server, tmp_path):
     assert outside.is_file()
 
 
+def test_upload_discard_rejects_nul_path(upload_server):
+    port, _ = upload_server
+    invalid_path = f"{SKILL_UPLOAD_PREFIX}bad\x00path"
+
+    assert discard_skill_upload(invalid_path) is False
+    status, result = _post_discard(port, json.dumps({"path": invalid_path}).encode())
+    assert status == 200
+    assert result == {"ok": True, "discarded": False}
+
+
+def test_upload_discard_rejects_unprefixed_directory_in_upload_root(upload_server):
+    port, upload_root = upload_server
+    upload_dir = upload_root / "ordinary-directory"
+    upload_dir.mkdir()
+    uploaded = upload_dir / "keep.zip"
+    uploaded.write_bytes(b"keep")
+
+    assert discard_skill_upload(str(uploaded)) is False
+    assert uploaded.is_file()
+    status, result = _post_discard(port, json.dumps({"path": str(uploaded)}).encode())
+    assert status == 200
+    assert result == {"ok": True, "discarded": False}
+    assert uploaded.is_file()
+
+
 def test_stale_dangling_symlink_upload_dirs_are_cleaned(upload_server):
     _, upload_root = upload_server
     link = upload_root / f"{SKILL_UPLOAD_PREFIX}dangling"
@@ -338,3 +382,66 @@ def test_http_import_validates_before_installing(
         assert set(manager.skills_dir.rglob("*")) == before_dirs
         assert {path.relative_to(manager.skills_dir): path.read_bytes()
                 for path in manager.skills_dir.rglob("*") if path.is_file()} == before
+
+
+def test_upload_discard_removes_uploaded_path(upload_server):
+    port, _ = upload_server
+    status, payload = _post_upload(port, "temp.zip", b"zip-content")
+    assert status == 200, payload
+    uploaded = Path(payload["path"])
+    assert uploaded.is_file()
+
+    status, result = _post_discard(port, json.dumps({"path": str(uploaded)}).encode())
+    assert status == 200
+    assert result == {"ok": True, "discarded": True}
+    assert not uploaded.exists()
+    assert not uploaded.parent.exists()
+
+    # 幂等：重复释放仍返回成功
+    status, result = _post_discard(port, json.dumps({"path": str(uploaded)}).encode())
+    assert status == 200
+    assert result == {"ok": True, "discarded": False}
+
+
+def test_upload_discard_rejects_oversized_body(upload_server, monkeypatch):
+    port, _ = upload_server
+    status, payload = _post_upload(port, "keep.zip", b"zip-content")
+    assert status == 200, payload
+    uploaded = Path(payload["path"])
+
+    consumed: list[int] = []
+    original = _SpaStaticHandler._discard_request_body
+
+    def _record(self, length: int) -> None:
+        consumed.append(length)
+        original(self, length)
+
+    monkeypatch.setattr(_SpaStaticHandler, "_discard_request_body", _record)
+
+    oversized = b"{" + b" " * (SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES + 1) + b"}"
+    status, result = _post_discard(port, oversized)
+    assert status == 413
+    assert result["code"] == ERROR_SKILL_FILE_TOO_LARGE
+    # 应答前先读完整段请求体，否则连接复位会让浏览器拿不到 413 JSON
+    assert consumed == [len(oversized)]
+    # 超限请求不产生任何删除副作用
+    assert uploaded.is_file()
+
+
+def test_upload_discard_rejects_malformed_payload(upload_server, tmp_path):
+    port, _ = upload_server
+
+    status, result = _post_discard(port, b"not-json")
+    assert status == 400
+    assert result["code"] == ERROR_SKILL_INVALID_PACKAGE
+
+    status, result = _post_discard(port, b'{"path": 1}')
+    assert status == 400
+    assert result["code"] == ERROR_SKILL_UNSAFE_PATH
+
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes(b"keep")
+    status, result = _post_discard(port, json.dumps({"path": str(outside)}).encode())
+    assert status == 200
+    assert result["discarded"] is False
+    assert outside.is_file()

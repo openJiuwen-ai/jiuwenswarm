@@ -64,6 +64,18 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
   assert.doesNotMatch(installationSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
 });
 
+test('temporary skill upload discard uses gateway transport and observes HTTP failures', () => {
+  const discardSource = sourceBetween(
+    skillPanelSource,
+    'const discardTempFile = useCallback',
+    'const handleSkillUpload = useCallback',
+  );
+
+  assert.match(discardSource, /await gatewayFetch\('\/file-api\/skills\/upload-discard'/);
+  assert.doesNotMatch(discardSource, /await fetch\(/);
+  assert.match(discardSource, /if \(!response\.ok\)/);
+});
+
 test('TeamSkillsHubModal fallback matches the server-side default Hub', () => {
   const modalSource = readFileSync(
     new URL('../src/features/TeamSkillsHubModal/index.tsx', import.meta.url),
