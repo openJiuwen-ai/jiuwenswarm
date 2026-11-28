@@ -258,6 +258,7 @@ class ReqMethod(Enum):
     ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
     ASSETS_EXPORT = "assets.export"
     ASSETS_IMPORT = "assets.import"
+    ASSETS_STAGE_LOCAL = "assets.stage_local"
     ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
     ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
     ASSETS_PUBLISH_STATUS = "assets.publish.status"

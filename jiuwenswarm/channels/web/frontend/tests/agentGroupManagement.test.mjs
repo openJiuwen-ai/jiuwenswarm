@@ -247,10 +247,10 @@ test('Expert Team capability and content come only from detail fields', () => {
   }
 });
 
-test('group upload accepts zip, tar and tar.gz only', () => {
+test('group upload accepts zip only', () => {
   assert.equal(isAgentGroupUploadFilename('team.zip'), true);
-  assert.equal(isAgentGroupUploadFilename('team.tar'), true);
-  assert.equal(isAgentGroupUploadFilename('team.tar.gz'), true);
+  assert.equal(isAgentGroupUploadFilename('team.tar'), false);
+  assert.equal(isAgentGroupUploadFilename('team.tar.gz'), false);
   assert.equal(isAgentGroupUploadFilename('team.json'), false);
 });
 

@@ -263,6 +263,40 @@ def test_pack_rejects_bad_root_name(source, tmp_path):
         pack_directory_single_root(source, tmp_path / "a.zip", root_name="../evil")
 
 
+def test_pack_extra_files_merged_under_root(source, tmp_path):
+    """调用方补充的内存文件写入单根目录，计入文件清单与产物摘要。"""
+    readme = "# 生成说明\n".encode("utf-8")
+    packed = pack_directory_single_root(
+        source,
+        tmp_path / "a.zip",
+        root_name="my-expert",
+        extra_files={"README.md": readme},
+    )
+    assert packed.files == ("my-expert/README.md", "my-expert/SKILL.md")
+    with zipfile.ZipFile(tmp_path / "a.zip") as archive:
+        assert archive.read("my-expert/README.md") == readme
+    assert packed.artifact.size_bytes == (tmp_path / "a.zip").stat().st_size
+    assert packed.artifact.sha256 == hashlib.sha256(
+        (tmp_path / "a.zip").read_bytes()
+    ).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "rel", ["../evil.md", "/abs.md", "a\\b.md", "./x.md", "a//b.md", ""]
+)
+def test_pack_extra_files_reject_bad_rel(source, tmp_path, rel):
+    with pytest.raises(ValueError, match="invalid extra file path"):
+        pack_directory_single_root(source, tmp_path / "a.zip", extra_files={rel: b"x"})
+
+
+def test_pack_extra_files_conflict_with_source_rejected(source, tmp_path):
+    """补充文件与源内已收集条目重名：属调用方错误，拒绝而非覆盖。"""
+    with pytest.raises(ValueError, match="conflicts with source content"):
+        pack_directory_single_root(
+            source, tmp_path / "a.zip", extra_files={"SKILL.md": b"x"}
+        )
+
+
 def test_pack_rejects_symlinked_source(tmp_path):
     real = tmp_path / "real"
     real.mkdir()

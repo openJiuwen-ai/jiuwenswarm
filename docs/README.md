@@ -81,6 +81,11 @@
       <td width="50%">不同角色智能体、工作区创建与管理流程。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>资产导入导出</strong></td>
+      <td width="28%"><a href="zh/资产导入导出.md">资产导入导出</a></td>
+      <td width="50%">专家与专家团资产包的导出、跨环境导入与错误处理。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>会话</strong></td>
       <td width="28%"><a href="zh/会话.md">会话</a></td>
       <td width="50%">Session 信息管理、历史聊天记录查看与恢复、会话历史删除。</td>

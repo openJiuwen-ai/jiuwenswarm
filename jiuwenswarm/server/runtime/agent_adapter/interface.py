@@ -2402,7 +2402,11 @@ class JiuWenSwarm:
         return await self._get_management_requests()._handle_session_asset_request(request)
 
     async def _handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
-        if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
+        if request.req_method not in (
+            ReqMethod.ASSETS_EXPORT,
+            ReqMethod.ASSETS_IMPORT,
+            ReqMethod.ASSETS_STAGE_LOCAL,
+        ):
             return None
         return await self._get_management_requests().handle_assets_package_request(request)
 

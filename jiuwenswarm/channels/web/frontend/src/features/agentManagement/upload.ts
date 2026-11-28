@@ -1,5 +1,7 @@
-const AGENT_ARCHIVE_EXTENSIONS = ['.zip', '.tar'] as const;
-const AGENT_GROUP_ARCHIVE_EXTENSIONS = ['.zip', '.tar', '.tar.gz'] as const;
+// 统一资产包契约仅 .zip（assets.stage_local / upload-temp / assets.import 同一
+// 判定），桌面与浏览器通道一致；历史上桌面通道曾额外放行 .tar(.gz)。
+const AGENT_ARCHIVE_EXTENSIONS = ['.zip'] as const;
+const AGENT_GROUP_ARCHIVE_EXTENSIONS = ['.zip'] as const;
 
 export function isAgentUploadFilename(name: string): boolean {
   const lower = name.toLowerCase();

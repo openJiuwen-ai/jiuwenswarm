@@ -9,6 +9,7 @@
 import { gatewayFetch } from '../services/gatewayFetch';
 import { webRequest } from '../services/webClient';
 import { saveBlobWithResult, type BlobSaveResult } from '../utils/desktopSave';
+import { getWebTransport } from '../utils/env';
 
 export type AssetKind = 'skill' | 'skillpack' | 'agent_template' | 'agent_group' | 'plugin';
 
@@ -22,7 +23,7 @@ export interface AssetExportParams {
 export interface AssetExportInfo {
   /** 短效下载链接（token 600 秒过期，过期后需重新调用 assets.export）。 */
   download_url: string;
-  /** 契约文件名 <id>[-<version>].zip，保存时直接使用。 */
+  /** 下载文件名 <stem>[-<version>].zip（stem 优先 UI 显示名，回退资产 id），保存时直接使用。 */
   filename: string;
   size_bytes?: number;
   sha256?: string;
@@ -68,13 +69,18 @@ const ASSET_ERROR_KEYS = {
   ASSET_LIMIT_EXCEEDED: 'assetTransfer.errors.limitExceeded',
   ASSET_ALREADY_EXISTS: 'assetTransfer.errors.alreadyExists',
   ASSET_BUILTIN_READ_ONLY: 'assetTransfer.errors.builtinReadOnly',
-  // 以下两码仅由前端产生：上传/下载 HTTP 阶段失败且未拿到服务端契约码。
+  // 以下码仅由前端产生：上传/下载 HTTP 阶段失败（未拿到服务端契约码），
+  // HTTP 传输下桌面暂存被前提校验拒绝（stage_local 无 REST 路由），
+  // 以及下载内容与服务端 sha256 不一致的完整性校验失败。
   ASSET_UPLOAD_FAILED: 'assetTransfer.errors.uploadFailed',
   ASSET_DOWNLOAD_FAILED: 'assetTransfer.errors.downloadFailed',
+  ASSET_CHECKSUM_MISMATCH: 'assetTransfer.errors.checksumMismatch',
 } as const;
 
 export type AssetIssueKey =
   | (typeof ASSET_ERROR_KEYS)[keyof typeof ASSET_ERROR_KEYS]
+  | 'assetTransfer.errors.alreadyExistsAgent'
+  | 'assetTransfer.errors.alreadyExistsGroup'
   | 'assetTransfer.errors.requestFailed';
 
 function readErrorCode(value: unknown): string {
@@ -96,6 +102,19 @@ export function assetIssueKey(value: unknown): AssetIssueKey {
   return ASSET_ERROR_KEYS[normalized as keyof typeof ASSET_ERROR_KEYS] ?? 'assetTransfer.errors.requestFailed';
 }
 
+/** ALREADY_EXISTS 文案按导入 kind 细化：专家/专家团页签直接点名资产类型，
+ * 比笼统的「资产」更可读；其余错误码与未知 kind 回落 assetIssueKey 通用映射。 */
+export function assetIssueKeyForKind(
+  value: unknown,
+  kind: 'agent' | 'group' | AssetKind,
+): AssetIssueKey {
+  const key = assetIssueKey(value);
+  if (key !== 'assetTransfer.errors.alreadyExists') return key;
+  if (kind === 'group' || kind === 'agent_group') return 'assetTransfer.errors.alreadyExistsGroup';
+  if (kind === 'agent' || kind === 'agent_template') return 'assetTransfer.errors.alreadyExistsAgent';
+  return key;
+}
+
 /** assets.export：取短效下载信息，不触发保存（供自定义下载流程复用）。 */
 export async function requestAssetExport(
   params: AssetExportParams,
@@ -107,7 +126,21 @@ export async function requestAssetExport(
   return request<AssetExportInfo>('assets.export', query);
 }
 
-/** 导出并保存到本地：assets.export → fetch 短效链接 → 双路径保存；返回保存结果（含用户取消）。 */
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/** Blob 的 sha256 十六进制摘要；crypto.subtle 不可用（纯 HTTP 非安全上下文）或计算失败时返回 null。 */
+async function computeSha256Hex(blob: Blob): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  try {
+    const digest = await subtle.digest('SHA-256', await blob.arrayBuffer());
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
+}
+
+/** 导出并保存到本地：assets.export → fetch 短效链接 → sha256 校验 → 双路径保存；返回保存结果（含用户取消）。 */
 export async function exportAssetToLocalFile(
   params: AssetExportParams,
   deps: AssetTransferDeps = {},
@@ -127,8 +160,18 @@ export async function exportAssetToLocalFile(
   if (!response.ok) {
     throw new AssetTransferError('ASSET_DOWNLOAD_FAILED', `download failed: HTTP ${response.status}`, response.status);
   }
+  const blob = await response.blob();
+  // 完整性校验：仅当服务端给出规范 64 位十六进制 sha256 时执行；摘要缺失、
+  // 形态非法或本机无 crypto.subtle（纯 HTTP 部署）时静默跳过，不阻断下载。
+  const expected = (info.sha256 ?? '').trim().toLowerCase();
+  if (SHA256_HEX_RE.test(expected)) {
+    const actual = await computeSha256Hex(blob);
+    if (actual && actual !== expected) {
+      throw new AssetTransferError('ASSET_CHECKSUM_MISMATCH', `sha256 mismatch: expected ${expected}, got ${actual}`);
+    }
+  }
   const saveBlob = deps.saveBlob ?? saveBlobWithResult;
-  return saveBlob(await response.blob(), info.filename);
+  return saveBlob(blob, info.filename);
 }
 
 /** 上传资产包到受控暂存目录（TTL 1 小时），返回供 assets.import 使用的服务端路径。 */
@@ -158,6 +201,49 @@ export async function uploadAssetPackage(file: File, deps: AssetTransferDeps = {
   return data.path;
 }
 
+/** 桌面通道暂存单步：服务端把本机绝对路径复制进受控上传根（assets.stage_local），
+ *  换回与 upload-temp 同构的暂存路径（防护一致：仅 .zip、体积上限、TTL 回收），
+ *  调用方随后统一走 assets.import。
+ *  仅 WS 入口：服务端有意不声明 REST 路由（webHttpClient ROUTES 亦有意无
+ *  此条目，取舍依据链见该处注释）。调用前提 desktopReady 由桌面壳 pywebview
+ *  桥决定（见 useDesktopLocalFilePickerReady），纯浏览器部署恒为 false；
+ *  桌面壳传输方式由 app_web._runtime_web_transport 注入，个人版默认 websocket。
+ *  该传输前提不只写在注释里，函数体在发请求前做运行时校验（见下）。 */
+export async function stageLocalAssetPackage(path: string, deps: AssetTransferDeps = {}): Promise<string> {
+  // 运行时前提校验（声明与实现一致）：stage_local 有意无 REST 路由，http
+  // 传输下发起必失败，就地收敛为 ASSET_UPLOAD_FAILED 契约码（对话框映射
+  // uploadFailed 文案），替代路由装配层的晦涩报错。受支持链路零影响：
+  // 桌面壳默认 websocket 恒通过；纯浏览器 http 部署 desktopReady 为 false，
+  // 不会走到本函数。回退 uploadAssetPackage 不可行——桌面通道只有路径
+  // 字符串，没有 File 对象可供 multipart 上传。
+  if (getWebTransport() === 'http') {
+    throw new AssetTransferError(
+      'ASSET_UPLOAD_FAILED',
+      'assets.stage_local requires websocket transport; the desktop staging channel has no REST route',
+    );
+  }
+  const request = deps.request ?? webRequest;
+  const result = await request<{ path?: string }>('assets.stage_local', { path });
+  if (typeof result?.path !== 'string' || !result.path) {
+    throw new AssetTransferError('ASSET_UPLOAD_FAILED', 'assets.stage_local response missing path');
+  }
+  return result.path;
+}
+
+/** 导入单步：对已有服务端包路径直接调 assets.import；kind 缺省时由服务端嗅探。
+ *  两步导入的第二步：浏览器 File 经 uploadAssetPackage、桌面本机路径经
+ *  stageLocalAssetPackage 换取暂存路径后调用。 */
+export async function importAssetFromPath(
+  path: string,
+  kind?: AssetKind,
+  deps: AssetTransferDeps = {},
+): Promise<AssetImportResult> {
+  const request = deps.request ?? webRequest;
+  const query: Record<string, unknown> = { path };
+  if (kind) query.kind = kind;
+  return request<AssetImportResult>('assets.import', query);
+}
+
 /** 上传 + 导入：本地选包 → upload-temp → assets.import；kind 缺省时由服务端嗅探。 */
 export async function importAssetFromFile(
   file: File,
@@ -165,8 +251,5 @@ export async function importAssetFromFile(
   deps: AssetTransferDeps = {},
 ): Promise<AssetImportResult> {
   const path = await uploadAssetPackage(file, deps);
-  const request = deps.request ?? webRequest;
-  const query: Record<string, unknown> = { path };
-  if (kind) query.kind = kind;
-  return request<AssetImportResult>('assets.import', query);
+  return importAssetFromPath(path, kind, deps);
 }

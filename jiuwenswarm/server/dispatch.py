@@ -235,6 +235,10 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SESSION_ASSETS_RENAME: handle_session_assets_request,
     # 统一资产导入导出（技能/专家/专家团/插件共用）。HTTP 北向经本表；
     # WS 入口在 agent_adapter/interface.py，两条入口共用编排层与错误收敛。
+    # assets.stage_local 有意不在此注册：桌面本机路径暂存仅走 WS 入口
+    # （pod_rest_map 未声明 REST 路由，HTTP 北向不可达），使 HTTP 面在
+    # 构造上不具备「按服务端任意路径复制 .zip」能力，与被它替代的旧
+    # agent_templates.import_local（同为 WS-only）暴露面一致。
     ReqMethod.ASSETS_EXPORT: handle_assets_export,
     ReqMethod.ASSETS_IMPORT: handle_assets_import,
     # 企业版 HTTP：与 WS ``_handle_lifecycle_request`` 同契约，否则

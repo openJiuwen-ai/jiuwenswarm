@@ -2413,12 +2413,25 @@
       "unsafePath": "The package contains symlinks or unsafe paths and was rejected",
       "credentialDetected": "Plaintext credentials detected in package files; remove them and retry",
       "limitExceeded": "File count, single file, or archive size exceeds the limit",
-      "alreadyExists": "An asset with the same id already exists; overwriting is not supported",
+      "alreadyExists": "An asset with the same id already exists. Delete or rename it first",
+      "alreadyExistsAgent": "An Expert with the same id already exists. Delete or rename it first",
+      "alreadyExistsGroup": "An Expert Team with the same id already exists. Delete or rename it first",
       "builtinReadOnly": "Conflicts with a built-in asset; overwriting is not allowed",
       "uploadFailed": "File upload failed, please try again",
       "downloadFailed": "Failed to download the export package; export again or retry later",
+      "checksumMismatch": "Export file failed the integrity check and may be corrupted; export again",
       "saveFailed": "Failed to save the file, please try again",
       "requestFailed": "Request failed, please try again"
+    },
+    "actions": {
+      "export": "Export",
+      "exporting": "Exporting…"
+    },
+    "messages": {
+      "exportSavedDesktop": "Saved to your computer",
+      "exportSavedBrowser": "Saved to the selected location",
+      "exportStartedBrowser": "Download started; check your browser downloads",
+      "exportCancelled": "Save cancelled"
     }
   },
   "artifacts": {
@@ -5078,10 +5091,11 @@
       "personaLabel": "Persona",
       "personaPlaceholder": "Keep Markdown and line breaks in the persona",
       "personaPreview": "Persona Markdown preview",
-      "uploadHint": "Supports .zip and .tar files; once extracted, the folder must include manifest.json, persona files, and README.md, and the .json file must declare package_type.",
+      "uploadHint": "Supports .zip files; once extracted, the folder must include manifest.json and persona files, and the .json file must declare package_type. A missing README.md is synthesized from the manifest.",
       "uploadPlaceholder": "Click or drag a file here",
-      "webUploadPlaceholder": "Click to upload a file",
-      "uploadInvalidType": "Only .zip and .tar files are supported",
+      "webUploadPlaceholder": "Click to choose or drag a .zip file here",
+      "webUploadInvalidType": "Browser upload only supports .zip asset packages",
+      "uploadInvalidType": "Only .zip files are supported",
       "uploadDirectoryUnsupported": "Folders cannot be dragged here. Compress the folder into a .zip or .tar file before uploading.",
       "uploadVirtualFileUnsupported": "Files cannot be dragged directly from WinRAR or another archive app. Extract or copy the file to a local folder before uploading.",
       "uploadPickerUnsupported": "Local file selection is not supported in this environment",
@@ -5212,8 +5226,8 @@
         "uploadKindLabel": "Category",
         "uploadGroupTab": "Expert Team",
         "uploadAgentTab": "Expert",
-        "uploadHint": "Supports uploading .zip and .tar Expert Team packages. The extracted package root must contain manifest.json, declare package_type: \"agent_group\", and configure the Expert Team name, Leader, and expert members. The package must include the member definitions, personas, and other files referenced by the configuration; README.md documentation is recommended.",
-        "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
+        "uploadHint": "Supports uploading .zip Expert Team packages. The extracted package root must contain manifest.json, declare package_type: \"agent_group\", and configure the Expert Team name, Leader, and expert members. The package must include the member definitions, personas, and other files referenced by the configuration; README.md documentation is recommended.",
+        "uploadInvalidType": "Only .zip Expert Team packages are supported",
         "errors": {
           "nameRequired": "Enter an Expert Team name",
           "descriptionRequired": "Enter an Expert Team capability description",

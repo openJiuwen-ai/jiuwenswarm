@@ -7,7 +7,9 @@
   ``<id>`` 必须与压缩包顶层目录名严格一致，不含路径分隔符或特殊字符；
 - ``assets.export`` 入参 ``{kind, local_id, version?}``（``items?``
   协议层预留批量导出），出参 ``{download_url, filename, size_bytes, sha256}``；
-  ``assets.import`` 入参 ``{path, kind?}``，出参 ``{kind, id, pending_connectors?}``。
+  ``assets.import`` 入参 ``{path, kind?}``，出参 ``{kind, id, pending_connectors?}``；
+  ``assets.stage_local`` 入参 ``{path}``（桌面壳给出的本机绝对路径），出参
+  ``{path}``（受控上传暂存根内路径，供 ``assets.import`` 使用）。
 
 本模块只依赖标准库：入口 handler、各 kind 适配器与前端契约测试共享同一份
 定义，且不引入循环依赖。解析失败一律抛 ``ValueError``，由入口层收敛为
@@ -18,7 +20,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -110,6 +112,25 @@ def sanitize_export_stem(value: str) -> str:
     return cleaned.strip(" ._")
 
 
+# Windows 保留设备名：文件名首个点号前的片段命中即非法（大小写不敏感、
+# 与其后扩展名无关），如 NUL.zip / CON.txt.zip；此类名字在 Windows 上落盘
+# 抛 OSError。保留段取经典集合（CON/PRN/AUX/NUL/COM0-9/LPT0-9）。
+_WINDOWS_RESERVED_STEM_RE = re.compile(
+    r"^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)", re.IGNORECASE
+)
+
+
+def is_windows_reserved_stem(stem: str) -> bool:
+    """判断文件名主干是否命中 Windows 保留设备名（跨平台保守口径）。
+
+    只看首个点号前的片段：``NUL`` / ``con.txt`` 命中；``CONN`` / ``con-v1``
+    不命中。命中时调用方应回退到其他主干而不是照常落盘——否则 Windows
+    部署上导出到写盘才失败（OSError 非 AssetError，被兜底成
+    INTERNAL_ERROR），非 Windows 部署则产出无法在 Windows 使用的文件名。
+    """
+    return bool(_WINDOWS_RESERVED_STEM_RE.match(stem))
+
+
 def build_export_filename(asset_id: str, version: str | None = None) -> str:
     """构造导出文件名 ``<id>[-<version>].zip``。
 
@@ -168,6 +189,49 @@ def _validate_import_path(path: str) -> None:
         raise ValueError(
             f"assets.import path must not contain '..' segments: {path!r}"
         )
+
+
+def is_illegal_filename(filename: Any) -> bool:
+    """暂存落盘文件名合法性：须为非空常规名，不含路径分隔符或 NUL，非 Windows 保留名。"""
+    if not isinstance(filename, str) or filename in {"", ".", ".."}:
+        return True
+    if any(char in filename for char in "/\\:\x00"):
+        return True
+    return PureWindowsPath(filename).is_reserved()
+
+
+def parse_stage_local_params(params: Any) -> dict[str, str]:
+    """校验并归一化 ``assets.stage_local`` 入参，返回 ``{path}``。
+
+    ``path`` 是桌面壳原生选择器/拖拽给出的本机绝对路径。与
+    :func:`parse_import_params` 不同，这里允许反斜杠（Windows 本机路径的
+    正常形态）；契约层挡控制字符、``..`` 段与相对路径——相对路径按服务
+    进程 CWD 解析会指向不可预期位置，一律拒绝。文件真实存在性、symlink
+    与体量判定由服务层在复制前收敛（分层防御同 ``assets.import``）。
+
+    有意不加「允许根白名单」：桌面原生选择器的合法返回本就包括外置卷与
+    网络盘（``/Volumes/…``、``/media/…``、非系统盘符），家目录/工作空间
+    枚举无法穷尽，白名单轴会打断主场景；来源门控才是正确轴，且须覆盖
+    整个 WS 管理面（基线上 ``agent_templates``/``agent_groups`` 的
+    ``import_local`` 同样接受任意路径）统一实施。取舍详见
+    :func:`jiuwenswarm.server.runtime.assets.service.stage_local_asset`。
+    """
+    if not isinstance(params, dict):
+        raise ValueError("assets.stage_local params must be an object")
+    raw_path = params.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("assets.stage_local requires a non-empty path")
+    path = raw_path.strip()
+    if any(ord(ch) < 32 for ch in path):
+        raise ValueError(f"assets.stage_local path contains unsafe characters: {path!r}")
+    pure = PurePath(path)
+    if ".." in pure.parts:
+        raise ValueError(
+            f"assets.stage_local path must not contain '..' segments: {path!r}"
+        )
+    if not pure.is_absolute():
+        raise ValueError(f"assets.stage_local path must be absolute: {path!r}")
+    return {"path": path}
 
 
 def parse_import_params(params: Any) -> dict[str, Any]:

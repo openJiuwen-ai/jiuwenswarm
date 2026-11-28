@@ -6,6 +6,11 @@
 收敛由 ``errors.converge_error_payload`` 统一实现（AssetError 透传 →
 内部码查表 → 参数非法 → INTERNAL_ERROR 兜底），WS 适配器入口
 （agent_adapter/interface.py）复用同一函数，保证同错同码。
+
+``assets.stage_local`` 有意不设 HTTP 北向 handler：桌面本机路径暂存
+仅走 WS 入口（pod_rest_map 未声明 REST 路由，HTTP 北向不可达），
+避免 HTTP 面获得「按服务端任意路径复制 .zip」的能力；信任模型
+论证见服务层 ``stage_local_asset`` docstring。
 """
 
 from __future__ import annotations

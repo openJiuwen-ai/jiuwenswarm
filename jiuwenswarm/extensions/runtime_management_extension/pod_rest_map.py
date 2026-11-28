@@ -214,6 +214,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("plugins.disable", "POST", "/plugins/{name}/actions/disable"),
     # 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
     # /file-api/download 短效链接下载，此处只登记控制面 RPC。
+    # assets.stage_local 有意不声明：桌面本机路径暂存为 WS 专用入口，
+    # 不向 HTTP 北向暴露「按服务端任意路径复制 .zip」能力。前提有运行时
+    # 校验兜底：前端 stageLocalAssetPackage 发请求前检查传输方式，http
+    # 传输直接按 ASSET_UPLOAD_FAILED 契约码拒绝（见 features/assetTransfer）。
     ("assets.export", "POST", "/assets/export"),
     ("assets.import", "POST", "/assets/import"),
     ("schedule.check_config", "GET", "/schedule/config"),

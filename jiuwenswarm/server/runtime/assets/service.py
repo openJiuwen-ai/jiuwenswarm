@@ -6,7 +6,11 @@
   返回 ``{download_url, filename, size_bytes, sha256}``；
 - 导入：path 必须来自 ``/file-api/assets/upload-temp`` 的受控暂存 →
   安全解包 → 缺省 kind 时按适配器注册顺序嗅探 → 分发导入 → 返回
-  ``{kind, id, pending_connectors?}``。
+  ``{kind, id, pending_connectors?}``；
+- 桌面暂存：``assets.stage_local`` 把桌面壳给出的本机绝对路径复制进
+  与 upload-temp 相同的受控暂存根（同防护），返回 ``{path}``，前端
+  两通道统一走 ``assets.import``；仅 WS 入口，有意不注册 HTTP 北向
+  （见 ``stage_local_asset`` docstring）。
 
 本层向上抛出的异常由入口 handler 收敛：``AssetError`` 透传、带 ``.code``
 的内部异常（SafeArchiveError 等）查表映射、无内部码的 ``ValueError``
@@ -27,14 +31,18 @@ from jiuwenswarm.common.file_download_token import (
     build_file_download_info,
 )
 from jiuwenswarm.common.safe_archive import (
+    ArchiveLimits,
     extract_archive_safely,
     pack_directory_single_root,
 )
 from jiuwenswarm.server.runtime.assets.contract import (
     AssetKind,
     build_export_filename,
+    is_windows_reserved_stem,
     parse_export_params,
     parse_import_params,
+    parse_stage_local_params,
+    sanitize_export_stem,
     validate_asset_id,
 )
 from jiuwenswarm.server.runtime.assets.errors import AssetError, AssetErrorCode
@@ -46,6 +54,7 @@ from jiuwenswarm.server.runtime.assets.staging import (
     assets_export_root,
     assets_upload_root,
     prune_stale_entries,
+    store_staged_package,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +76,22 @@ _install_default_adapters()
 # 导出下载 token 有效期（秒）：导出后应立即完成下载，短时效缩小
 # token 泄露后的可用窗口。
 EXPORT_DOWNLOAD_EXPIRES_S = 600
+
+# 下载文件名显示名主干的上限（UTF-8 字节）。文件名单段受文件系统
+# NAME_MAX（常见 255 字节）约束，而显示名是用户自由输入、可能很长；
+# 不截断会让 zip 落盘时才抛 OSError（非 AssetError，被兜底成
+# INTERNAL_ERROR）。取 120 字节为版本后缀与 ".zip" 留足余量。只截显示
+# 名，回退的 asset_id 不截（其长度由包命名约束，且 skill 导出走该回退，
+# 行为须逐字节不变）。
+_MAX_EXPORT_STEM_BYTES = 120
+
+
+def _truncate_export_stem(stem: str, budget: int = _MAX_EXPORT_STEM_BYTES) -> str:
+    """把已清洗的文件名主干按字节预算截断，不切断多字节字符。"""
+    encoded = stem.encode("utf-8")
+    if len(encoded) <= budget:
+        return stem
+    return encoded[:budget].decode("utf-8", "ignore")
 
 
 def export_asset(
@@ -92,7 +117,20 @@ def export_asset(
 
     export_root = assets_export_root()
     prune_stale_entries(export_root)
-    filename = build_export_filename(asset_id, source.version or version)
+    # 下载文件名主干优先取 UI 显示名（与界面列表一致），缺省回退 asset_id；
+    # 显示名先经 sanitize 清洗、再按字节预算截断，产物不含路径分隔符与文件名
+    # 特殊字符、不超文件名单段长度上限，必然通过 build_export_filename 内部的
+    # 安全校验。显示名命中 Windows 保留设备名（NUL、CON.txt 等）时视同不可
+    # 用：否则 Windows 部署到落盘才抛 OSError（非 AssetError，兜底成
+    # INTERNAL_ERROR）；asset_id 是既有包目录名，在当前文件系统必然可写。
+    # 包内顶层目录仍为 asset_id（root_name 单独传入），不受下载文件名影响。
+    display_stem = _truncate_export_stem(sanitize_export_stem(source.display_name))
+    filename_stem = (
+        asset_id
+        if not display_stem or is_windows_reserved_stem(display_stem)
+        else display_stem
+    )
+    filename = build_export_filename(filename_stem, source.version or version)
     # 每次导出落独立子目录：并发导出同一资产不互相覆盖；子目录名随机，
     # 包文件 basename 保持契约文件名（下载端按 basename 生成
     # Content-Disposition）。
@@ -105,6 +143,7 @@ def export_asset(
             zip_path,
             root_name=asset_id,
             exclude_paths=source.exclude_paths,
+            extra_files=source.extra_files,
         )
         info = build_file_download_info(
             str(zip_path),
@@ -160,6 +199,59 @@ def import_asset(params: Any) -> dict[str, Any]:
         return payload
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def stage_local_asset(params: Any, *, limits: ArchiveLimits = ArchiveLimits()) -> dict[str, Any]:
+    """执行 assets.stage_local：把本机绝对路径的资产包复制进受控上传暂存根。
+
+    桌面壳原生选择器/拖拽只给出本机路径，不经 HTTP multipart；本入口只做
+    来源侧校验（本机真实文件、非符号链接、绝对路径），文件名/格式/体积
+    防护与暂存落位走 ``staging.store_staged_package``——与 upload-temp
+    同一实现、同一暂存根，返回 ``{path}`` 供前端统一调 ``assets.import``。
+
+    接受任意本机绝对路径是有意设计，不视为越权面扩大：本 RPC 与被它替代
+    的旧 ``agent_templates.import_local`` 同属本机管理面信任模型（详情页
+    文件读取等既有 RPC 同样按客户端给出的路径读服务端文件），未引入既有
+    RPC 面之外的新能力；且此处只收紧不放松——仅 .zip、拒符号链接、限额、
+    复制入受控暂存根后 ``assets.import`` 只读暂存根，不再触碰原路径。
+    暴露面在构造上收敛为 WS-only：本方法有意不注册 dispatch.HANDLERS、
+    pod_rest_map 不声明 REST 路由，HTTP 北向不可达（旧
+    ``agent_templates.import_local`` 同为 WS-only，暴露面持平）。
+    远程部署若需收口「任意路径」类入参，应作为覆盖整个管理面 RPC 的
+    统一加固任务（来源门控/白名单），不在本入口单点处理。
+
+    检视曾建议在本入口加「允许根白名单」，未采纳，三点依据：其一，
+    白名单轴会改坏桌面通道主场景——原生选择器/拖拽的合法返回包括外置卷
+    与网络盘（``/Volumes/…``、``/media/…``、非系统盘符），按家目录或
+    工作空间枚举无法穷尽；其二，它不解决所担心的问题——若远端调用方
+    真能触达 WS 管理面，家目录白名单内（含本暂存根与导出产物）的
+    全部 zip 依然暴露，正确轴是来源门控，而请求上下文今日没有可验证的
+    本机来源锚点（回环地址/桌面壳认证），属跨模块管道工程；其三，单点
+    加白名单不缩小暴露面——基线上 ``agent_templates.import_local`` 与
+    ``agent_groups.import_local`` 仍注册于同一 WS 面、同样接受任意路径，
+    本入口只收紧不放松，加固必须在管理面层面统一做。
+    """
+    parsed = parse_stage_local_params(params)
+    source = Path(parsed["path"])
+    if source.is_symlink():
+        raise AssetError(AssetErrorCode.UNSAFE_PATH, "导入路径不得为符号链接")
+    if not source.is_file():
+        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件不存在或不可读")
+    try:
+        size = source.stat().st_size
+    except OSError:
+        raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件不存在或不可读") from None
+
+    def _copy(dest: Path) -> None:
+        try:
+            shutil.copyfile(source, dest)
+        except OSError:
+            raise AssetError(AssetErrorCode.INVALID_PACKAGE, "本地文件读取失败") from None
+
+    dest = store_staged_package(
+        filename=source.name, size_bytes=size, write=_copy, limits=limits
+    )
+    return {"path": dest.as_posix()}
 
 
 def _resolve_upload_path(raw_path: Path) -> Path:

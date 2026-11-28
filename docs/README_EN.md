@@ -81,6 +81,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Agents with different roles, workspace creation, and workspace management flows.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Asset Export &amp; Import</strong></td>
+      <td width="28%"><a href="en/AssetExportImport.md">Asset Export &amp; Import</a></td>
+      <td width="50%">Export expert and expert-team asset packages, import them across environments, and handle errors.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Session</strong></td>
       <td width="28%"><a href="en/Session.md">Session</a></td>
       <td width="50%">Session information management, viewing and restoring historical chats, and deleting session history.</td>

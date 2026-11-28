@@ -816,7 +816,8 @@ class ManagementRequests:
 
 
     async def handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
-        """Handle unified asset import and export requests.
+        """Handle unified asset transfer requests (assets.export / assets.import /
+        assets.stage_local).
 
         Args:
             request: The incoming asset transfer request.
@@ -825,15 +826,21 @@ class ManagementRequests:
             The transfer response, or None for an unrelated request method.
         """
         host = self._host
-        if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
+        if request.req_method not in (
+            ReqMethod.ASSETS_EXPORT,
+            ReqMethod.ASSETS_IMPORT,
+            ReqMethod.ASSETS_STAGE_LOCAL,
+        ):
             return None
         from jiuwenswarm.server.runtime.assets import service
         from jiuwenswarm.server.runtime.assets.errors import converge_error_payload
 
         params = dict(request.params) if isinstance(request.params, dict) else {}
         try:
-            # 打包/解包为同步磁盘操作，移出事件循环；与 HTTP 北向
-            # （dispatch.HANDLERS → handlers/assets.py）共用同一编排层。
+            # 打包/解包为同步磁盘操作，移出事件循环；assets.export /
+            # assets.import 另有 HTTP 北向入口（dispatch.HANDLERS →
+            # handlers/assets.py）共用同一编排层，assets.stage_local
+            # 仅有本 WS 入口（有意不注册 HTTP 北向，见 dispatch.py 注释）。
             if request.req_method == ReqMethod.ASSETS_EXPORT:
                 payload = await asyncio.to_thread(
                     service.export_asset,
@@ -841,8 +848,10 @@ class ManagementRequests:
                     session_id=str(request.session_id or ""),
                     user_id=str(request.user_id or ""),
                 )
-            else:
+            elif request.req_method == ReqMethod.ASSETS_IMPORT:
                 payload = await asyncio.to_thread(service.import_asset, params)
+            else:
+                payload = await asyncio.to_thread(service.stage_local_asset, params)
         except Exception as exc:  # noqa: BLE001 入口统一收敛，异常不出栈
             err_payload = converge_error_payload(exc)
             log = logger.error if err_payload.get("code") == "INTERNAL_ERROR" else logger.warning

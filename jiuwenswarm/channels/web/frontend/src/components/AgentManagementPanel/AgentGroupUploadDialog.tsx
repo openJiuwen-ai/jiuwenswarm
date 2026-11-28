@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { FileArchive, Info, Loader2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import UpFileIcon from '../../assets/upFile.svg?react';
@@ -12,6 +12,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { isAgentGroupUploadFilename, isAgentUploadFilename } from '../../features/agentManagement';
+import { assetIssueKey, stageLocalAssetPackage, uploadAssetPackage } from '../../features/assetTransfer';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { useDialogFocusTrap } from '../ui';
 
@@ -56,12 +57,15 @@ export function DefinitionUploadDialog({
   const { t } = useTranslation();
   const [kind, setKind] = useState<'agent' | 'group'>(initialKind);
   const [filePick, setFilePick] = useState<LocalFilePick | null>(null);
+  // 纯浏览器环境选中的 File：确认时先经统一 upload-temp 换成暂存路径，再走既有导入链。
+  const [browserFile, setBrowserFile] = useState<File | null>(null);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const desktopReady = useDesktopLocalFilePickerReady();
   const dialogRef = useRef<HTMLElement>(null);
+  const browserInputRef = useRef<HTMLInputElement>(null);
   const dropAcceptUntilRef = useRef(0);
   const lastDropIdRef = useRef<string | null>(null);
 
@@ -71,6 +75,7 @@ export function DefinitionUploadDialog({
       const valid = kind === 'group' ? isAgentGroupUploadFilename(pick.filename) : isAgentUploadFilename(pick.filename);
       if (!valid) {
         setFilePick(null);
+        setBrowserFile(null);
         setPickerError(
           t(
             kind === 'group'
@@ -80,20 +85,50 @@ export function DefinitionUploadDialog({
         );
         return;
       }
+      // 桌面路径选中必须清掉残留的浏览器 File：desktopReady 可能在弹窗存活期
+      // 由 false 翻转为 true，否则确认时 browserFile 分支优先，误传旧文件。
       setPickerError(null);
+      setBrowserFile(null);
       setFilePick(pick);
     },
     [kind, t],
   );
 
+  // 两通道统一只收 .zip：统一资产包契约限定（服务端 upload_http.py /
+  // assets.stage_local / assets.import 同一判定）。filePick.path 置空作浏览器
+  // 态哨兵，展示与确认按钮复用 filePick，实际暂存路径在确认时换取。
+  const acceptBrowserFile = (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setFilePick(null);
+      setBrowserFile(null);
+      setPickerError(t('agentManagement.form.webUploadInvalidType'));
+      return;
+    }
+    setPickerError(null);
+    setBrowserFile(file);
+    setFilePick({
+      path: '',
+      filename: file.name,
+      size: file.size,
+      mime_type: file.type || 'application/octet-stream',
+      kind: 'document',
+    });
+  };
+
   const handleKindChange = (nextKind: 'agent' | 'group') => {
     setKind(nextKind);
     setFilePick(null);
+    setBrowserFile(null);
     setPickerError(null);
   };
 
   const handleBrowse = async () => {
     if (browsing || submitting || filePick) return;
+    if (!desktopReady) {
+      // 纯浏览器环境：走隐藏的 <input type="file">，不依赖桌面选择器桥。
+      browserInputRef.current?.click();
+      return;
+    }
     setBrowsing(true);
     try {
       const result = await selectLocalFiles(false);
@@ -104,6 +139,13 @@ export function DefinitionUploadDialog({
     } finally {
       setBrowsing(false);
     }
+  };
+
+  const handleBrowserFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // 清空 value，保证移除后再次选择同一文件也能触发 change。
+    event.target.value = '';
+    if (file) acceptBrowserFile(file);
   };
 
   useEffect(() => {
@@ -165,8 +207,30 @@ export function DefinitionUploadDialog({
   const handleConfirm = async () => {
     if (!filePick || submitting) return;
     setSubmitting(true);
+    let stagedPath: string;
     try {
-      await onConfirm(filePick.path, kind);
+      // 两通道统一先换受控暂存路径：浏览器 File 走 HTTP multipart 上传
+      // （upload-temp），桌面本机路径由服务端复制进同一暂存根
+      // （assets.stage_local），防护一致。
+      stagedPath = browserFile
+        ? await uploadAssetPackage(browserFile)
+        : await stageLocalAssetPackage(filePick.path);
+    } catch (error) {
+      // 只就地收敛上传/暂存阶段失败（服务端契约码 → i18n 通用映射）。
+      setPickerError(t(assetIssueKey(error)));
+      setSubmitting(false);
+      return;
+    }
+    // 暂存成功：清掉此前失败尝试残留的暂存文案，防止直接重试确认的场景下
+    // 陈旧 pickerError 盖住父组件经 error 属性回传的细化文案（渲染优先级
+    // pickerError > error）。
+    setPickerError(null);
+    try {
+      // 导入阶段交给父组件既有的 import + install + 回滚链：其失败由父组件
+      // 自行捕获并按页签细化文案（assetIssueKeyForKind）经 error 属性回传；
+      // 此处不 catch，避免通用映射的 pickerError 覆盖细化文案（渲染时
+      // pickerError 优先于 error 属性）。
+      await onConfirm(stagedPath, kind);
     } finally {
       setSubmitting(false);
     }
@@ -261,10 +325,6 @@ export function DefinitionUploadDialog({
           onDragOver={(event) => {
             if (filePick || !Array.from(event.dataTransfer.types).includes('Files')) return;
             event.preventDefault();
-            if (!desktopReady) {
-              event.dataTransfer.dropEffect = 'none';
-              return;
-            }
             event.dataTransfer.dropEffect = 'copy';
             setDragActive(true);
           }}
@@ -274,7 +334,14 @@ export function DefinitionUploadDialog({
             event.preventDefault();
             setDragActive(false);
             const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined;
-            acceptPick(file ? pickFromDroppedFile(file) : undefined);
+            if (!file) return;
+            if (desktopReady) {
+              // 桌面壳：File.path 可用，本机路径经 assets.stage_local 复制入暂存。
+              acceptPick(pickFromDroppedFile(file));
+              return;
+            }
+            // 纯浏览器：无 path，收下 File 对象走统一上传通道（仅 .zip）。
+            acceptBrowserFile(file);
           }}
         >
           {filePick ? (
@@ -291,6 +358,7 @@ export function DefinitionUploadDialog({
                 onClick={(event) => {
                   event.stopPropagation();
                   setFilePick(null);
+                  setBrowserFile(null);
                   setPickerError(null);
                 }}
                 disabled={submitting}
@@ -307,6 +375,16 @@ export function DefinitionUploadDialog({
             </>
           )}
         </div>
+        <input
+          ref={browserInputRef}
+          type="file"
+          accept=".zip"
+          hidden
+          tabIndex={-1}
+          aria-hidden="true"
+          data-testid="agent-management-group-upload-browser-file-input"
+          onChange={handleBrowserFileChange}
+        />
         {pickerError || error ? (
           <p className="agent-management-upload-dialog__error" role="alert">
             {pickerError || error}

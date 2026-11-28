@@ -305,6 +305,17 @@ const ROUTES: Record<string, RouteRow> = {
   // 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
   // /file-api/download 短效链接下载，此处只登记控制面 RPC，
   // 路径与服务端 pod_rest_map 的声明一致。
+  // assets.stage_local 有意不登记，依据链：唯一调用方是上传对话框的桌面
+  // 通道，其前置 desktopReady 要求桌面壳 pywebview 桥（hooks/
+  // useDesktopLocalFilePickerReady → localFilePicker.isDesktopShell），
+  // 纯浏览器部署（含企业版默认 HTTP 传输）不存在该桥，触达不到此 RPC；
+  // 桌面壳页面的传输方式由 app_web._runtime_web_transport 注入，个人版
+  // 默认 websocket。该前提不止是注释断言：features/assetTransfer 的
+  // stageLocalAssetPackage 在发请求前做运行时校验，http 传输直接抛
+  // ASSET_UPLOAD_FAILED 契约码，不会落到路由装配层的晦涩失败。若未来
+  // 出现 WEB_TRANSPORT=http 显式覆盖的桌面形态，须先在服务端
+  // pod_rest_map 声明 REST 路由并过安全评审（HTTP 北向不得获得「按服务端
+  // 任意路径复制 .zip」能力），再移除该校验，只补本映射会 404。
   'assets.export': { verb: 'POST', path: '/assets/export', kind: 'unary' },
   'assets.import': { verb: 'POST', path: '/assets/import', kind: 'unary' },
 };

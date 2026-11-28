@@ -98,6 +98,10 @@ const groupUploadSource = readFileSync(
 );
 const inputAreaSource = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+// 真实语言包全量内容：下方 init 的内联 resources 只覆盖 agentManagement 骨架键；
+// 涉及其他命名空间的用例（如导出按钮的 assetTransfer.actions.export）在用例内
+// 经 addResourceBundle 全量合入后断言，文案以真实语言包为准。勿把这类键误判为
+// 「测试资源未覆盖」而复制进内联 resources。
 const zhLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const enLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 
@@ -410,6 +414,115 @@ for (const [source, installed, expected] of [
   });
 }
 
+// 导出按钮可见性与服务端解析口径一致：专家仅覆盖已落地的包（本地包或已安装
+// 的内置/Hub 副本），未安装的货架与 Hub 资产无本地物料；专家团发布目录解析
+// 额外覆盖内置与货架包，仅 Hub 未安装资产隐藏。
+for (const [source, installed, visible] of [
+  ['local', true, true],
+  ['local', false, true],
+  ['builtin', true, true],
+  ['builtin', false, false],
+  ['hub', true, true],
+  ['hub', false, false],
+]) {
+  test(`expert export button for ${source} installed=${installed} is ${visible ? 'visible' : 'hidden'}`, async () => {
+    const { DefinitionDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    // 文案断言（assetTransfer.actions.export）以真实语言包为准：用例内合入，不依赖执行顺序。
+    i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+    i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+    const detail = {
+      id: 'test',
+      runtimePackageName: 'test',
+      displayName: 'Test',
+      description: '',
+      source,
+      installed,
+      connectionState: 'connected',
+      tags: [],
+      avatarUrl: null,
+      skills: [],
+      tools: [],
+      rails: [],
+      mcps: [],
+      suggestedPrompts: [],
+      pendingConnectors: [],
+      details: '',
+      prompt: '',
+    };
+    const markup = renderToStaticMarkup(
+      React.createElement(DefinitionDetailPage, {
+        detail,
+        detailStatus: 'ready',
+        detailTab: 'content',
+        fileEntries: [],
+        onBack() {},
+        onUninstall() {},
+      }),
+    );
+    const button = new JSDOM(markup).window.document.querySelector(
+      '[data-testid="agent-management-agent-template-export"]',
+    );
+    assert.equal(Boolean(button), visible);
+    if (button) assert.equal(button.textContent, '导出');
+  });
+}
+
+for (const [source, installed, visible] of [
+  ['local', false, true],
+  ['builtin', false, true],
+  ['hub', true, true],
+  ['hub', false, false],
+]) {
+  test(`group export button for ${source} installed=${installed} is ${visible ? 'visible' : 'hidden'}`, async () => {
+    const { AgentGroupDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    // 文案断言（assetTransfer.actions.export）以真实语言包为准：用例内合入，不依赖执行顺序。
+    i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+    i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+    const detail = {
+      id: 'team-test',
+      displayName: 'Team Test',
+      description: '',
+      source,
+      installed,
+      category: '',
+      avatarUrl: null,
+      tags: [],
+      skills: [],
+      members: [],
+      quickInputs: [],
+      details: '',
+      capabilities: {},
+    };
+    const markup = renderToStaticMarkup(
+      React.createElement(AgentGroupDetailPage, {
+        detail,
+        loadingSummary: null,
+        detailStatus: 'success',
+        detailTab: 'content',
+        files: [],
+        onBack() {},
+        onUninstall() {},
+      }),
+    );
+    const button = new JSDOM(markup).window.document.querySelector(
+      '[data-testid="agent-management-agent-group-export"]',
+    );
+    assert.equal(Boolean(button), visible);
+    if (button) assert.equal(button.textContent, '导出');
+  });
+}
+
+test('create menu keeps upload-create as the only import entry', () => {
+  // 导入资产包复用既有「上传文件创建」入口，不再另设统一导入菜单项
+  assert.match(panelSource, /data-variant="create-by-upload"/);
+  assert.doesNotMatch(panelSource, /import-asset-package/);
+  assert.doesNotMatch(panelSource, /AssetImportDialog/);
+});
+
 test('unsupported expert files remain selectable and show the unsupported preview state', async () => {
   const { DefinitionDetailPage } =
     await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
@@ -571,9 +684,27 @@ test('group card actions keep uninstall in the detail page and install created g
     panelSource,
     /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/,
   );
-  assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
+  // Upload import goes through the unified assets.import entry (explicit
+  // kind) for both channels — the dialog hands over a staged path either way
+  // (browser: upload-temp; desktop: assets.stage_local). Install/rollback
+  // unchanged; legacy per-kind imports are gone.
+  assert.match(
+    panelSource,
+    /importAssetFromPath\(path, kind === 'group' \? 'agent_group' : 'agent_template'\)[\s\S]*groupClient\.installGroup\(result\.id\)/,
+  );
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
-  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/);
+  assert.match(
+    panelSource,
+    /importAssetFromPath\(path, kind === 'group'[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/,
+  );
+  assert.doesNotMatch(panelSource, /groupClient\.importGroup\(path\)|client\.importAgentTemplate\(path\)/);
+  assert.doesNotMatch(panelSource, /source: 'staged' \| 'local'/);
+  // Contract-coded import failures show precise guidance copy; uncoded errors
+  // keep the generic uploadError fallback with details.
+  assert.match(
+    panelSource,
+    /const issueKey = assetIssueKeyForKind\(error, kind\);[\s\S]*formatActionError\(error, t\(kind === 'group'/,
+  );
 });
 
 test('failed expert upload install rolls back the import and shows the error in the upload dialog', () => {
@@ -938,6 +1069,33 @@ test('Expert Team upload dialog puts Expert first and removes the reference link
     /const typeHint = kind === 'group' \? t\('agentManagement\.group\.form\.uploadHint'\) : t\('agentManagement\.form\.uploadHint'\)/,
   );
   assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
+});
+
+test('Expert Team upload dialog wires both channels through unified staging', () => {
+  // 纯浏览器环境：隐藏 .zip 文件输入 + 拖拽收下 File 对象，确认时经统一
+  // uploadAssetPackage 换暂存路径；桌面本机路径经 stageLocalAssetPackage
+  // （assets.stage_local）复制入同一暂存根。两通道随后共用 onConfirm 链；
+  // 上传/暂存失败就地收敛为 pickerError，导入失败不由对话框 catch（父组件
+  // 按页签细化文案经 error 属性回传，pickerError 渲染优先，不得覆盖）。
+  assert.match(
+    groupUploadSource,
+    /<input\s*\n?\s*ref=\{browserInputRef\}\s*\n?\s*type="file"\s*\n?\s*accept="\.zip"\s*\n?\s*hidden/,
+  );
+  assert.match(groupUploadSource, /data-testid="agent-management-group-upload-browser-file-input"/);
+  assert.match(
+    groupUploadSource,
+    /stagedPath = browserFile[\s\S]*?uploadAssetPackage\(browserFile\)[\s\S]*?stageLocalAssetPackage\(filePick\.path\);[\s\S]*?await onConfirm\(stagedPath, kind\);/,
+  );
+  // 暂存 catch 以 return 收口 → onConfirm 在其 try 之外，导入错误不落 pickerError。
+  assert.match(
+    groupUploadSource,
+    /setPickerError\(t\(assetIssueKey\(error\)\)\);\s*\n\s*setSubmitting\(false\);\s*\n\s*return;/,
+  );
+  assert.match(groupUploadSource, /if \(desktopReady\) \{[\s\S]*?acceptPick\(pickFromDroppedFile\(file\)\);[\s\S]*?acceptBrowserFile\(file\);/);
+  assert.match(groupUploadSource, /setPickerError\(t\(assetIssueKey\(error\)\)\);/);
+  // 新文案中英文齐备
+  assert.ok(zhLocale.agentManagement.form.webUploadInvalidType);
+  assert.ok(enLocale.agentManagement.form.webUploadInvalidType);
 });
 
 test('concurrent Expert installs keep every affected card busy', async () => {

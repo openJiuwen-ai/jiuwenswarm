@@ -1,19 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import {
   AssetTransferError,
   assetIssueKey,
+  assetIssueKeyForKind,
   exportAssetToLocalFile,
   importAssetFromFile,
+  importAssetFromPath,
   requestAssetExport,
+  stageLocalAssetPackage,
   uploadAssetPackage,
 } from '../node_modules/.cache/asset-transfer/assetTransfer.mjs';
+
+// 与测试用 Blob 内容一致的真实摘要，供 sha256 校验通过路径使用。
+const ZIP_SHA256 = createHash('sha256').update('zip-bytes').digest('hex');
 
 const EXPORT_INFO = {
   download_url: '/file-api/download?token=tok&user_id=u1',
   filename: 'expert-1-1.2.0.zip',
   size_bytes: 9,
-  sha256: 'a'.repeat(64),
+  sha256: ZIP_SHA256,
 };
 
 function fakeResponse(overrides = {}) {
@@ -83,6 +90,63 @@ test('download failures converge to ASSET_DOWNLOAD_FAILED', async () => {
   assert.equal(assetIssueKey(await netFail.catch((e) => e)), 'assetTransfer.errors.downloadFailed');
 });
 
+test('sha256 check: mismatch rejects; malformed/missing digest or absent crypto.subtle skip', async () => {
+  const blob = new Blob(['zip-bytes']);
+  const depsFor = (info, saved) => ({
+    request: async () => info,
+    fetchImpl: async () => fakeResponse({ blob: async () => blob }),
+    saveBlob: async () => {
+      saved.push(blob);
+      return { outcome: 'saved', transport: 'browser-download' };
+    },
+  });
+
+  // 摘要不一致 → 前端本地码 ASSET_CHECKSUM_MISMATCH，不落盘
+  const mismatch = exportAssetToLocalFile(
+    { kind: 'skill', local_id: 's1' },
+    depsFor({ ...EXPORT_INFO, sha256: 'b'.repeat(64) }, []),
+  );
+  await assert.rejects(
+    mismatch,
+    (err) => err instanceof AssetTransferError && err.code === 'ASSET_CHECKSUM_MISMATCH',
+  );
+  assert.equal(assetIssueKey(await mismatch.catch((e) => e)), 'assetTransfer.errors.checksumMismatch');
+
+  // 非法形态（非 64 位十六进制）→ 跳过校验正常保存
+  const savedMalformed = [];
+  await exportAssetToLocalFile(
+    { kind: 'skill', local_id: 's1' },
+    depsFor({ ...EXPORT_INFO, sha256: 'x' }, savedMalformed),
+  );
+  assert.equal(savedMalformed.length, 1);
+
+  // 摘要缺失（契约中 sha256 可选）→ 跳过校验正常保存
+  const savedMissing = [];
+  await exportAssetToLocalFile(
+    { kind: 'skill', local_id: 's1' },
+    depsFor(
+      {
+        download_url: EXPORT_INFO.download_url,
+        filename: EXPORT_INFO.filename,
+        size_bytes: EXPORT_INFO.size_bytes,
+      },
+      savedMissing,
+    ),
+  );
+  assert.equal(savedMissing.length, 1);
+
+  // 无 crypto.subtle（纯 HTTP 部署的非安全上下文）→ 优雅降级，不阻断下载
+  const originalCrypto = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true });
+  try {
+    const savedNoSubtle = [];
+    await exportAssetToLocalFile({ kind: 'skill', local_id: 's1' }, depsFor(EXPORT_INFO, savedNoSubtle));
+    assert.equal(savedNoSubtle.length, 1);
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', { value: originalCrypto, configurable: true });
+  }
+});
+
 test('upload success returns the staged server path', async () => {
   const captured = [];
   const path = await uploadAssetPackage(zipFile(), {
@@ -141,6 +205,82 @@ test('import chain: upload then assets.import with optional kind', async () => {
   assert.deepEqual(calls[1], ['assets.import', { path: '/data/uploads/assets/y.zip', kind: 'agent_template' }]);
 });
 
+test('importAssetFromPath calls assets.import directly with no upload fetch', async () => {
+  const calls = [];
+  const request = async (method, params) => {
+    calls.push([method, params]);
+    return { kind: 'agent_template', id: 'expert-1' };
+  };
+  const fetchImpl = async () => {
+    throw new Error('upload must not be triggered for a staged path');
+  };
+  const explicit = await importAssetFromPath('/data/uploads/assets/z.zip', 'agent_template', { request, fetchImpl });
+  assert.deepEqual(explicit, { kind: 'agent_template', id: 'expert-1' });
+  assert.deepEqual(calls[0], ['assets.import', { path: '/data/uploads/assets/z.zip', kind: 'agent_template' }]);
+  // kind 缺省时不带 kind 字段，由服务端按适配器注册顺序嗅探。
+  await importAssetFromPath('/data/uploads/assets/z.zip', undefined, { request, fetchImpl });
+  assert.deepEqual(calls[1], ['assets.import', { path: '/data/uploads/assets/z.zip' }]);
+});
+
+test('stageLocalAssetPackage swaps a desktop local path into the staged root', async () => {
+  const calls = [];
+  const request = async (method, params) => {
+    calls.push([method, params]);
+    return { path: '/data/uploads/assets/local.zip' };
+  };
+  const fetchImpl = async () => {
+    throw new Error('HTTP upload must not be triggered for a local path');
+  };
+  const staged = await stageLocalAssetPackage('/home/user/pack.zip', { request, fetchImpl });
+  assert.equal(staged, '/data/uploads/assets/local.zip');
+  assert.deepEqual(calls, [['assets.stage_local', { path: '/home/user/pack.zip' }]]);
+  // 响应缺 path → 本地兜底码（与 upload 非 JSON 响应同一兜底）
+  await assert.rejects(
+    stageLocalAssetPackage('/home/user/pack.zip', { request: async () => ({}) }),
+    (err) => err instanceof AssetTransferError && err.code === 'ASSET_UPLOAD_FAILED',
+  );
+});
+
+test('stageLocalAssetPackage rejects under HTTP transport before touching the request channel', async () => {
+  // 前提校验：assets.stage_local 有意不登记 REST 路由，http 传输下应就地
+  // 收敛为 ASSET_UPLOAD_FAILED 契约码，且不落到 request 通道（注入的
+  // request 不得被调用）。
+  const originalWindow = globalThis.window;
+  Object.defineProperty(globalThis, 'window', {
+    value: { __JIUWEN_WEB_TRANSPORT__: 'http' },
+    configurable: true,
+    writable: true,
+  });
+  try {
+    let called = false;
+    await assert.rejects(
+      stageLocalAssetPackage('/home/user/pack.zip', {
+        request: async () => {
+          called = true;
+          return { path: '/data/uploads/assets/local.zip' };
+        },
+      }),
+      (err) => err instanceof AssetTransferError && err.code === 'ASSET_UPLOAD_FAILED',
+    );
+    assert.equal(called, false);
+    assert.equal(
+      assetIssueKey(await stageLocalAssetPackage('/home/user/pack.zip').catch((e) => e)),
+      'assetTransfer.errors.uploadFailed',
+    );
+  } finally {
+    Object.defineProperty(globalThis, 'window', {
+      value: originalWindow,
+      configurable: true,
+      writable: true,
+    });
+  }
+  // 恢复后（node 环境默认 websocket）守卫放行，正常发起请求。
+  const staged = await stageLocalAssetPackage('/home/user/pack.zip', {
+    request: async () => ({ path: '/data/uploads/assets/local.zip' }),
+  });
+  assert.equal(staged, '/data/uploads/assets/local.zip');
+});
+
 test('eight contract codes map to i18n keys; unknown codes fall back to requestFailed', () => {
   const expected = {
     ASSET_NOT_FOUND: 'notFound',
@@ -163,4 +303,21 @@ test('eight contract codes map to i18n keys; unknown codes fall back to requestF
     assetIssueKey({ payload: { error: 'exists', code: 'ASSET_ALREADY_EXISTS' } }),
     'assetTransfer.errors.alreadyExists',
   );
+});
+
+test('assetIssueKeyForKind narrows the duplicate-id copy per tab kind', () => {
+  const dup = { payload: { error: 'exists', code: 'ASSET_ALREADY_EXISTS' } };
+  // 专家/专家团页签（'agent'|'group' 与契约 kind 两种写法都识别）
+  assert.equal(assetIssueKeyForKind(dup, 'agent'), 'assetTransfer.errors.alreadyExistsAgent');
+  assert.equal(assetIssueKeyForKind(dup, 'agent_template'), 'assetTransfer.errors.alreadyExistsAgent');
+  assert.equal(assetIssueKeyForKind(dup, 'group'), 'assetTransfer.errors.alreadyExistsGroup');
+  assert.equal(assetIssueKeyForKind(dup, 'agent_group'), 'assetTransfer.errors.alreadyExistsGroup');
+  // 其余错误码不受 kind 影响
+  assert.equal(
+    assetIssueKeyForKind({ payload: { code: 'ASSET_UNSAFE_PATH' } }, 'group'),
+    'assetTransfer.errors.unsafePath',
+  );
+  // 未知 kind（如 skill）回落通用文案
+  assert.equal(assetIssueKeyForKind(dup, 'skill'), 'assetTransfer.errors.alreadyExists');
+  assert.equal(assetIssueKeyForKind(undefined, 'agent'), 'assetTransfer.errors.requestFailed');
 });

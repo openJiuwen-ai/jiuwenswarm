@@ -9,6 +9,7 @@ import pytest
 from jiuwenswarm.server.runtime.assets.contract import (
     AssetKind,
     build_export_filename,
+    is_windows_reserved_stem,
     normalize_asset_kind,
     parse_export_params,
     parse_import_params,
@@ -69,7 +70,7 @@ def test_normalize_asset_kind_rejects_unknown(raw) -> None:
 
 
 @pytest.mark.parametrize(
-    "asset_id", ["my-expert", "bond_analyst", "债券投研专家", "v1.2", "a b"]
+    "asset_id", ["my-expert", "data_analyst", "中文专家名", "v1.2", "a b"]
 )
 def test_validate_asset_id_accepts_plain_names(asset_id) -> None:
     assert validate_asset_id(asset_id) == asset_id
@@ -115,6 +116,19 @@ def test_build_export_filename() -> None:
     assert sanitize_export_stem("lead..trail..") == "lead..trail"
 
 
+def test_is_windows_reserved_stem() -> None:
+    """保留设备名只看首个点号前片段，大小写不敏感。"""
+    assert is_windows_reserved_stem("NUL")
+    assert is_windows_reserved_stem("con")
+    assert is_windows_reserved_stem("Con.txt")  # 点号前片段命中，扩展名无关
+    assert is_windows_reserved_stem("com1")
+    assert is_windows_reserved_stem("LPT9")
+    assert not is_windows_reserved_stem("CONN")
+    assert not is_windows_reserved_stem("con-v1")
+    assert not is_windows_reserved_stem("专家")
+    assert not is_windows_reserved_stem("")
+
+
 def test_build_export_filename_rejects_degenerate() -> None:
     with pytest.raises(ValueError):
         build_export_filename("***")  # id 含特殊字符，直接拒绝
@@ -126,11 +140,11 @@ def test_build_export_filename_rejects_degenerate() -> None:
 
 def test_parse_export_params_normalizes() -> None:
     parsed = parse_export_params(
-        {"kind": "agent_templates", "local_id": " bond-analyst ", "version": " 1.0 "}
+        {"kind": "agent_templates", "local_id": " data-analyst ", "version": " 1.0 "}
     )
     assert parsed == {
         "kind": AssetKind.AGENT_TEMPLATE,
-        "local_id": "bond-analyst",
+        "local_id": "data-analyst",
         "version": "1.0",
     }
     parsed = parse_export_params({"kind": "skill", "local_id": "web-search"})

@@ -11,28 +11,27 @@
 - 每次上传落独立子目录（同名不冲突），路径仅位于受控上传根内；
 - 上传前顺带对上传根做 TTL 回收（兜底清理孤儿文件）；
 - 包体大小按安全归档层 zip 上限复核（HTTP 层已按 Content-Length 预检）。
+
+文件名/格式/体积防护与暂存落位由 ``staging.store_staged_package`` 与
+``assets.stage_local``（桌面本机路径复制）共享同一实现，本模块只保留
+multipart 解包与 HTTP 状态码映射。
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
-import uuid
-from pathlib import PureWindowsPath
 from typing import Any
 
 from jiuwenswarm.common.multipart_form import MultipartParseError, parse_multipart_form
 from jiuwenswarm.common.safe_archive import ArchiveLimits
 from jiuwenswarm.server.runtime.assets.contract import normalize_asset_kind
 from jiuwenswarm.server.runtime.assets.errors import (
+    AssetError,
     AssetErrorCode,
     asset_http_error_body,
     asset_http_error_status,
 )
-from jiuwenswarm.server.runtime.assets.staging import (
-    assets_upload_root,
-    prune_stale_entries,
-)
+from jiuwenswarm.server.runtime.assets.staging import store_staged_package
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +42,6 @@ MAX_ASSETS_UPLOAD_BYTES = ArchiveLimits().zip_bytes + 2 * 1024 * 1024
 
 def _reject(code: str, message: str) -> tuple[int, dict[str, Any]]:
     return asset_http_error_status(code), asset_http_error_body(code, message)
-
-
-def _is_illegal_filename(filename: Any) -> bool:
-    """上传文件名合法性：须为非空常规名，不含路径分隔符或 NUL，非 Windows 保留名。"""
-    if not isinstance(filename, str) or filename in {"", ".", ".."}:
-        return True
-    if any(char in filename for char in "/\\:\x00"):
-        return True
-    return PureWindowsPath(filename).is_reserved()
 
 
 def handle_assets_upload_temp_http(
@@ -79,26 +69,21 @@ def handle_assets_upload_temp_http(
             file_field.get("content"), (bytes, bytearray)
         ):
             return _reject(AssetErrorCode.INVALID_PACKAGE, "缺少 file 字段")
-        filename = file_field.get("filename")
-        if _is_illegal_filename(filename):
-            return _reject(AssetErrorCode.UNSAFE_PATH, "文件名非法")
-        if not filename.lower().endswith(".zip"):
-            return _reject(AssetErrorCode.INVALID_PACKAGE, "资产包仅支持 .zip 格式")
+        # 防护与落位走公共暂存核心（与 assets.stage_local 同一实现）；
+        # 契约拒绝在此映射状态码，写入故障仍由外层兜底为 500。
         content = bytes(file_field["content"])
-        if len(content) > limits.zip_bytes:
-            return _reject(AssetErrorCode.LIMIT_EXCEEDED, "压缩包体积超限")
-
-        upload_root = assets_upload_root()
-        prune_stale_entries(upload_root)
-        upload_dir = upload_root / uuid.uuid4().hex
-        upload_dir.mkdir(parents=True)
-        dest = upload_dir / filename
         try:
-            dest.write_bytes(content)
-        except OSError:
-            shutil.rmtree(upload_dir, ignore_errors=True)
-            raise
-        return 200, {"path": str(dest)}
+            dest = store_staged_package(
+                filename=file_field.get("filename"),
+                size_bytes=len(content),
+                write=lambda target: target.write_bytes(content),
+                limits=limits,
+            )
+        except AssetError as exc:
+            return _reject(exc.code, exc.message)
+        # as_posix：Windows 服务端的暂存路径也统一正斜杠形态，契约层
+        # （parse_import_params）按反斜杠非法拒绝，POSIX 上两者等价。
+        return 200, {"path": dest.as_posix()}
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         logger.exception("[assets_upload_http] temporary upload failed: %s", exc)
         return 500, asset_http_error_body("INTERNAL_ERROR", str(exc))
