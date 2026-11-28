@@ -232,6 +232,8 @@ datas += collect_data_files("jiuwenswarm.common.i18n", includes=["catalog/*.yaml
 datas += collect_data_files("agent_gateway", include_py_files=False)
 # Portal HTML is read through importlib.resources and is not a Python import.
 datas += collect_data_files("jiuwen_memory_entry.portal", include_py_files=False)
+# The HTTP entry adds core to sys.path and imports files such as config_loader by bare name.
+datas += collect_data_files("jiuwen_memory_entry.core", include_py_files=True, includes=["**/*.py"])
 # Gateway reads the product version from the frozen WorkSwarm distribution metadata.
 datas += copy_metadata("workswarm")
 datas += copy_metadata("agent-gateway", recursive=True)
