@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Inject role-split team cost discipline into the system prompt."""
+"""Inject team execution-quality + role-split cost discipline into the system prompt."""
 
 from __future__ import annotations
 
@@ -10,16 +10,20 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
 from jiuwenswarm.agents.harness.team.accel.prompts import (
     cost_discipline_section,
+    execution_quality_section,
     normalize_team_role,
 )
 
 
 class AccelPromptRail(DeepAgentRail):
-    """Role-split cost rules for every team member.
+    """Team-only prompt extras for every member.
+
+    Injects:
+    1. Shared execution-quality principles (fact/template fidelity).
+    2. Role-split cost discipline (leader vs teammate).
 
     ResponsePromptRail already supplies thinking discipline (including the
-    write-file turn). This rail adds one short leader or member cost section
-    that also covers minimal messaging and batched writes.
+    write-file turn). This rail does not replace Deep/Flash identity prompts.
 
     ``role`` should be ``leader`` or ``teammate`` (other labels normalize to
     teammate). Swarm assembly passes it from ``BuildContext.role``; the legacy
@@ -44,6 +48,9 @@ class AccelPromptRail(DeepAgentRail):
         del agent
         if self.system_prompt_builder is not None:
             self.system_prompt_builder.remove_section(
+                LocalSectionName.EXECUTION_QUALITY
+            )
+            self.system_prompt_builder.remove_section(
                 LocalSectionName.TEAM_COST_DISCIPLINE
             )
         self.system_prompt_builder = None
@@ -53,4 +60,5 @@ class AccelPromptRail(DeepAgentRail):
         builder = self.system_prompt_builder
         if builder is None:
             return
+        builder.add_section(execution_quality_section())
         builder.add_section(cost_discipline_section(self._role))
