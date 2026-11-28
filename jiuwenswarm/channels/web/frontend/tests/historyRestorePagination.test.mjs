@@ -26,6 +26,10 @@ await build({
 
 globalThis.window = globalThis;
 globalThis.window.location = { protocol: 'http:', host: 'localhost:18180' };
+const windowEvents = new EventTarget();
+globalThis.window.addEventListener = windowEvents.addEventListener.bind(windowEvents);
+globalThis.window.removeEventListener = windowEvents.removeEventListener.bind(windowEvents);
+globalThis.window.dispatchEvent = windowEvents.dispatchEvent.bind(windowEvents);
 
 class Socket {
   static OPEN = 1;

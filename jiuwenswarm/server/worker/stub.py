@@ -76,7 +76,7 @@ async def serve_stub(
                     instance=instance,
                     code_identity_value=worker_code_identity,
                 )
-            except (OSError, asyncio.IncompleteReadError):
+            except (OSError, RuntimeError, asyncio.IncompleteReadError):
                 runtime_loaded = True
                 if session_source is not None and not session_source.reconnectable:
                     return
@@ -114,8 +114,7 @@ async def _serve_one(
 
     send = getattr(conn, "send")
     recv = getattr(conn, "recv")
-    await send(
-        {
+    hello = {
             "kind": KIND_HELLO,
             "protocol": PROTOCOL_VERSION,
             "pid": os.getpid(),
@@ -130,7 +129,10 @@ async def _serve_one(
             **process_fields,
             "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
-    )
+    await send(hello)
+    from jiuwenswarm.server.ipc.startup import await_startup_acceptance
+
+    await await_startup_acceptance(conn, hello)
     if ready_delay > 0:
         await asyncio.sleep(ready_delay)
     await send({"kind": KIND_READINESS, "state": "AGENT_READY", "reason": ""})

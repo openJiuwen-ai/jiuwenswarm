@@ -2,6 +2,7 @@
 
 import copy
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -11,21 +12,30 @@ from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
 
 
 class AgentOSWebCompatibilityTest(unittest.TestCase):
-    def test_web_send_projects_only_for_agentos_router(self):
+    def test_web_send_projects_only_for_managed_routing(self):
         from agent_gateway.channel_manager.web.web_connect import WebChannel
         from agent_gateway.routing.base_ws_channel import BaseWsChannel
 
         router_type = type("AgentOSRouterClient", (), {
             "__module__": "agent_gateway.extensions.agentos.agentos_router.router_client",
+            "managed_routing": True,
         })
+        unmanaged_router = router_type()
+        unmanaged_router.managed_routing = False
         frame = {"type": "res", "payload": {"sessions": [
             {"session_id": "s", "mode": "team.code.normal", "work_mode": "code"},
         ]}}
         original = copy.deepcopy(frame)
         channel = object.__new__(WebChannel)
         ws = object()
-        for client, expected in ((object(), "team.code.normal"), (router_type(), "team")):
-            with self.subTest(mode=expected), patch.object(BaseWsChannel, "_enqueue_send") as send:
+        for client, expected in (
+            (object(), "team.code.normal"),
+            (router_type(), "team"),
+            (unmanaged_router, "team.code.normal"),
+            (SimpleNamespace(managed_routing=True), "team"),
+            (SimpleNamespace(managed_routing="true"), "team.code.normal"),
+        ):
+            with self.subTest(client=client, mode=expected), patch.object(BaseWsChannel, "_enqueue_send") as send:
                 channel.agent_client = client
                 channel._enqueue_send(ws, frame)
                 sent = send.call_args.args[1]

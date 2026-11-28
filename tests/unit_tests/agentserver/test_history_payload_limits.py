@@ -7,6 +7,9 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 
+from jiuwenswarm.server.handlers import session as owner_history
+from jiuwenswarm.server.handlers import team as owner_team
+
 
 class FakeWebSocket:
     def __init__(self) -> None:
@@ -92,7 +95,8 @@ async def test_team_history_get_paginates_and_bounds_large_records(monkeypatch):
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.team.read_team_history_records",
+        owner_team,
+        "read_team_history_records",
         lambda session_id: records,
     )
 
@@ -123,7 +127,8 @@ async def test_team_history_get_cursor_continues_next_page(monkeypatch):
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.team.read_team_history_records",
+        owner_team,
+        "read_team_history_records",
         lambda session_id: records,
     )
 
@@ -232,7 +237,8 @@ async def test_team_history_get_preserves_too_large_first_record_as_placeholder(
     ]
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.team.read_team_history_records",
+        owner_team,
+        "read_team_history_records",
         lambda session_id: records,
     )
 
@@ -254,3 +260,7 @@ async def test_team_history_get_preserves_too_large_first_record_as_placeholder(
     assert payload["records"][0]["truncated"] is True
     assert payload["records"][0]["id"].startswith("tool-result-too-large-")
     assert payload["records"][0]["event_type"] == "chat.tool_result"
+
+
+
+

@@ -26,6 +26,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue i
 )
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+from jiuwenswarm.server.worker import execution_requests
 
 
 def _chat_request(
@@ -99,7 +100,7 @@ async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> Non
         "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         return_value={},
     ), patch.object(
-        agent_ws_server_module,
+        execution_requests,
         "_sync_chat_request_metadata",
         return_value="/tmp/code-project",
     ):
@@ -160,7 +161,7 @@ async def test_prepare_chat_without_mode_restores_locked_session_mode() -> None:
             return_value={"mode": "code.normal"},
         ),
         patch.object(
-            agent_ws_server_module,
+            execution_requests,
             "_sync_chat_request_metadata",
             return_value=None,
         ),
@@ -215,7 +216,7 @@ async def test_prepare_heartbeat_chat_without_mode_restores_locked_team_session(
             return_value={"mode": "team.work.normal", "work_mode": "work"},
         ),
         patch.object(
-            agent_ws_server_module,
+            execution_requests,
             "_sync_chat_request_metadata",
             return_value=None,
         ) as sync_metadata,
@@ -271,7 +272,7 @@ async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -
             return_value={"mode": "agent"},
         ),
         patch.object(
-            agent_ws_server_module,
+            execution_requests,
             "_sync_chat_request_metadata",
             return_value=None,
         ),
@@ -319,7 +320,7 @@ async def test_prepare_chat_uses_locked_persist_session_metadata() -> None:
         "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         return_value=metadata,
     ), patch.object(
-        agent_ws_server_module,
+        execution_requests,
         "_sync_chat_request_metadata",
         return_value="",
     ):
@@ -378,7 +379,7 @@ async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
     request.metadata = {"member_name": "reviewer", "project_dir": "/tmp/stale"}
 
     with patch.object(
-        agent_ws_server_module,
+        execution_requests,
         "_sync_chat_request_metadata",
         return_value=" /tmp/locked-project ",
     ):

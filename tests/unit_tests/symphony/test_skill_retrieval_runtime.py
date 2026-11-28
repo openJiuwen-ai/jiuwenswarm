@@ -600,7 +600,8 @@ async def test_manager_build_status_and_search_use_configured_global_collection(
     assert started["success"] and started["background"] and started["build_id"]
     queued = await manager.handle_skills_retrieval_status({"build_id": started["build_id"]})
     assert queued["build_id"] == started["build_id"]
-    assert (await finished(manager._skill_taxonomy_runtime()))["status"] == "success"
+    completion = await finished(manager._skill_taxonomy_runtime())
+    assert completion["status"] == "success", completion
     status = await manager.handle_skills_retrieval_status({})
     assert status["fresh"] and status["indexed_count"] == 1
     assert status["build_id"] == started["build_id"]

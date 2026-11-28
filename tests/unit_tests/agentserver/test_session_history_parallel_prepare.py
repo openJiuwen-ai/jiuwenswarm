@@ -211,9 +211,12 @@ async def test_overlapping_cold_builds_share_only_the_same_structural_failure(st
     monkeypatch.setattr(migration, "migrate_history_context", run_migration)
 
     follower_cleanup, release_follower = asyncio.Event(), asyncio.Event()
+    cleanup_calls = 0
 
     async def cleanup():
-        if change == "none" and asyncio.current_task() is second:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if change == "none" and cleanup_calls == 2:
             follower_cleanup.set()
             await release_follower.wait()
         if change == "rewrite":

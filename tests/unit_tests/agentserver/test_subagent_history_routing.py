@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -14,7 +13,7 @@ from jiuwenswarm.server.runtime.session import session_history, session_metadata
 def test_subagent_history_writes_use_dedicated_child_bucket(monkeypatch) -> None:
     persisted = []
     monkeypatch.setattr(
-        interface_deep,
+        session_history,
         "append_history_record",
         lambda **kwargs: persisted.append(kwargs),
     )

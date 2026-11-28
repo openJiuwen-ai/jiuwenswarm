@@ -13,9 +13,11 @@ import textwrap
 import time
 
 import pytest
+import psutil
 
 from jiuwenswarm import debug_launcher
 from jiuwenswarm.server.ipc.client import connect_with_retry
+from jiuwenswarm.server.ipc.startup import startup_acceptance
 
 SOURCE = Path(__file__).resolve().parents[3]
 test_logger = logging.getLogger("test_logger.debug_shutdown_budget")
@@ -102,10 +104,19 @@ async def test_debug_stop_observes_persistence_and_actual_worker_exit(
                 stderr=log,
             )
             connection = None
+            worker = None
             try:
                 connection = await connect_with_retry(socket_path, timeout=15)
                 hello = await asyncio.wait_for(connection.recv(), 10)
-                assert hello["pid"] == process.pid and hello["deployment_scope"]
+                assert hello["deployment_scope"]
+                worker = psutil.Process(hello["pid"])
+                if worker.pid != process.pid:
+                    # Windows virtualenv launchers can spawn the real Python
+                    # interpreter. Verify ancestry and the private data root.
+                    assert worker.pid in {p.pid for p in psutil.Process(process.pid).children(recursive=True)}
+                    assert worker.environ()["JW_SHUTDOWN_TEST_ROOT"] == str(root)
+                    assert "jiuwenswarm.server.worker.main" in worker.cmdline()
+                await connection.send(startup_acceptance(hello))
                 while True:
                     frame = await asyncio.wait_for(connection.recv(), 10)
                     if frame.get("state") == "AGENT_READY":
@@ -116,9 +127,11 @@ async def test_debug_stop_observes_persistence_and_actual_worker_exit(
                 stop_command = Path(sys.executable).parent / (
                     "jiuwenswarm-stop.exe" if os.name == "nt" else "jiuwenswarm-stop"
                 )
+                command = ([str(stop_command)] if stop_command.is_file() else
+                           [sys.executable, "-c", "from jiuwenswarm.debug_launcher import main; main()"])
                 stopped = await asyncio.to_thread(
                     subprocess.run,
-                    [str(stop_command), *options],
+                    [*command, *options],
                     cwd=SOURCE,
                     env=env,
                     capture_output=True,
@@ -126,7 +139,10 @@ async def test_debug_stop_observes_persistence_and_actual_worker_exit(
                     check=False,
                     timeout=45,
                 )
-                exit_code = await asyncio.to_thread(process.wait, 5)
+                try:
+                    exit_code = await asyncio.to_thread(process.wait, 5)
+                except subprocess.TimeoutExpired as exc:
+                    raise AssertionError(stopped.stdout + stopped.stderr) from exc
                 test_logger.info("delay=%ss options=%s elapsed=%.2fs CLI=%s Worker=%s",
                                  delay, options, time.monotonic() - started, stopped.returncode, exit_code)
                 assert (root / "saving").exists()
@@ -140,5 +156,11 @@ async def test_debug_stop_observes_persistence_and_actual_worker_exit(
                 if connection is not None:
                     await connection.close()
                 if process.poll() is None:
+                    if worker is not None:
+                        try:
+                            worker.kill()
+                            await asyncio.to_thread(worker.wait, 5)
+                        except psutil.NoSuchProcess:
+                            pass
                     process.kill()
                 await asyncio.to_thread(process.wait, 5)

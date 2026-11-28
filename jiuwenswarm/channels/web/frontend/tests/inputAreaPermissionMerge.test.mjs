@@ -1645,6 +1645,12 @@ test('paused Owner retains its pause state while organization work exposes stop 
 
 
 test('actual Owner composer remains disabled after stop and metadata refresh while child runs', async () => {
+  const { maySnapshotRelightProcessing } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/interruptSettleGuard.js'
+  );
+  const { shouldKeepLocalCronProcessing } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/cron/cronProcessingGuard.js'
+  );
   const { startExpertRequest, clearOrganizationRequests, setOrganizationOwnerStopped,
     isOrganizationOwnerStopped, organizationOwnerStateRevision } = await import(
     '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
@@ -1656,6 +1662,12 @@ test('actual Owner composer remains disabled after stop and metadata refresh whi
     const chat = useChatStore.getState();
     const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
       useChatStore,
+      browserClientCapabilities: { getEpoch: () => 0 },
+      metadataDowngradeAllowedRef: { current: new Set() },
+      useCronStore: { getState: () => ({ lastRunSessionId: {} }) },
+      webClient,
+      maySnapshotRelightProcessing,
+      shouldKeepLocalCronProcessing,
       request: async () => ({ session_id: sessionId, is_processing: true, status: 'processing' }),
       sessionIdRef: { current: 'other-session' },
       upsertSessionMetadata() {},
@@ -1680,7 +1692,7 @@ test('actual Owner composer remains disabled after stop and metadata refresh whi
       t: key => key,
     });
     const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
-      interrupt, organizationOwnerStopTarget,
+      interrupt, organizationOwnerStopTarget, useChatStore,
       useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: () => assert.fail('child cancelled') }) },
       onErrorRef: { current: error => assert.fail(error) }, t: key => key,
     });

@@ -59,6 +59,7 @@ def _isolate_a4p_runtime_files(
     tmp_path,
 ):
     monkeypatch.setattr(a4p_runtime, "get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(a4p_runtime, "_session_a4p_gates", {})
     AUTHORIZATION_EXECUTION_CONTEXTS.clear()
     a4p_runtime.reset_a4p_runtime_for_tests()
     yield

@@ -248,3 +248,22 @@ async def test_native_assistant_with_explicit_none_event_type_gets_final_mapping
     row = _rows(sessions)[0]
     assert row["event_type"] == "chat.final"
     assert row["transcript_message"]["type"] == "assistant" and row["native_message"]["content"] == "answer"
+
+
+@pytest.mark.asyncio
+async def test_durable_platform_output_option_keeps_the_real_extension_chain(history_host, tmp_path, monkeypatch):
+    """The caller's disk barrier never enters the canonical message fields."""
+    output = await _install_policy(history_host, tmp_path, monkeypatch)
+    _, sessions = history_host
+    await run_history_io(
+        append_history_record, wait_for_write=True,
+        session_id="hist-a", request_id="durable-tool", channel_id="web",
+        role="assistant", content="phone=13800138000", timestamp=123.0, event_type="chat.tool_result",
+        extra={"tool_call_id": "durable-call", "name": "lookup", "result": {"phone": "13800138000"}, "rendered_result": "phone=13800138000"},
+    )
+    row = _rows(sessions)[0]
+    assert row["tool_call_id"] == "durable-call"
+    assert row["content"] == "phone=[phone]"
+    observed = json.loads(output.read_text(encoding="utf-8"))
+    assert observed["uuid"] == row["uuid"]
+    assert "wait_for_write" not in row

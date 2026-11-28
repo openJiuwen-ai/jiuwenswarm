@@ -630,4 +630,4 @@ def test_session_fork_handler_keeps_transport_and_runtime_boundary() -> None:
         assert forbidden not in source
     assert "prepare_session_fork" in source
     assert "commit_session_provision" in source
-    assert "send_response" in source
+    assert "ctx.sink.send_response" in source

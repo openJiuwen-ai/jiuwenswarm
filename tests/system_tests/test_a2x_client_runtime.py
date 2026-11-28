@@ -178,9 +178,16 @@ async def _create_adapter_and_run_chat(config_base: dict) -> SimpleNamespace:
         card=SimpleNamespace(id="jiuwenswarm", name="main_agent"),
         ensure_initialized=AsyncMock(),
         start=AsyncMock(),
+        stop=AsyncMock(),
+        configured_rails=lambda: [],
+        is_invoke_active=False,
+        active_round=None,
         register_rail=AsyncMock(),
         unregister_rail=AsyncMock(),
-        react_agent=SimpleNamespace(register_callback=AsyncMock()),
+        react_agent=SimpleNamespace(
+            register_callback=AsyncMock(),
+            context_engine=SimpleNamespace(get_context=lambda **_: None),
+        ),
         attach_output=AsyncMock(return_value=_FakeInteractionStream()),
         send_input=AsyncMock(),
         goal_manager=None,
@@ -258,8 +265,9 @@ async def test_a2x_teamleader_skips_blank_agent_registration(
 
     await _create_adapter_and_run_chat(_make_config("teamleader"))
 
-    assert len(_FakeAsyncA2XRegistryClient.instances) == 1
-    assert _FakeAsyncA2XRegistryClient.instances[0].blank_registrations == []
+    # Leaders prepare a lazy lease, so a chat without registry access must not
+    # construct a client or register a blank teammate service.
+    assert _FakeAsyncA2XRegistryClient.instances == []
 
 
 @pytest.mark.asyncio

@@ -138,7 +138,8 @@ async def test_import_upload_missing_file_has_detail_key(
 
 
 @pytest.mark.asyncio
-async def test_skills_request_propagates_detail_key() -> None:
+@pytest.mark.parametrize("detail_params", [{}, {"path": "missing.zip"}])
+async def test_skills_request_propagates_detail_key(detail_params: dict[str, str]) -> None:
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     swarm = interface_module.JiuWenSwarm()
@@ -148,6 +149,7 @@ async def test_skills_request_propagates_detail_key() -> None:
             ERROR_SKILL_INVALID_PACKAGE,
             "缺少上传文件路径",
             detail_key="skills.errors.uploadMissingPath",
+            detail_params=detail_params,
         )
     )
     request = AgentRequest(
@@ -162,6 +164,10 @@ async def test_skills_request_propagates_detail_key() -> None:
     assert resp.ok is False
     assert resp.payload["code"] == ERROR_SKILL_INVALID_PACKAGE
     assert resp.payload["detail_key"] == "skills.errors.uploadMissingPath"
+    if detail_params:
+        assert resp.payload["detail_params"] == detail_params
+    else:
+        assert "detail_params" not in resp.payload
 
 
 def test_skill_rpc_error_defaults_keep_compat() -> None:

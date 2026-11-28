@@ -1,3 +1,4 @@
+requires_sdk: false
 id: app_market
 name: App Market
 version: 0.1.0

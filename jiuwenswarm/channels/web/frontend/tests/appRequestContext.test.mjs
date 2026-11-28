@@ -23,7 +23,8 @@ const metadataDependencies = [
   'navigate', 'upsertSessionMetadata', 'setProcessing', 'setThinking', 'restoreSessionEquipment',
   'setMissingSessionId', 'parseModelSelection', 'normalizeTeamLeaderIdentity', 'normalizeTeamDispatchMode', 'console',
   'organizationOwnerStateRevision', 'isOrganizationOwnerStopped', 'setOrganizationOwnerStopped',
-  'restoreSessionModelSelection',
+  'restoreSessionModelSelection', 'normalizeTeamBootstrapMode',
+  'resolveRestoredTeamDispatchMode', 'restoredGitIdentity',
 ];
 await build({
   stdin: {
@@ -41,11 +42,17 @@ await build({
       }
       export function RecoveryProbe({ isConnected, fetchConfig, setInitialDataLoaded,
         routeSessionId, loadSessionMetadata, setMissingSessionId }) {
+        const configRequestRevisionRef = useRef(0);
+        const modelsRequestRevisionRef = useRef(0);
+        const metadataDowngradeAllowedRef = useRef(new Set());
+        const setConfigReady = () => {};
+        const setConfigError = () => {};
+        const handleModelsRefresh = () => {};
         ${extract('const clientRequestContext = useSyncExternalStore(',
           'const clientRequestContextReady = !browserClientCapabilities.isChanging() && !browserClientCapabilities.isUnavailable();', true)}
         ${extract('const configInitializationRef = useRef<',
-          '}, [clientRequestContext, clientRequestContextReady, fetchConfig, isConnected]);', true)}
-        ${extract('useEffect(() => {\n    setMissingSessionId(null);\n    if (!isConnected || !routeSessionId || !clientRequestContextReady) return;',
+          '}, [clientRequestContext, clientRequestContextReady, fetchConfig, handleModelsRefresh, isConnected]);', true)}
+        ${extract('const prevConnectedRef = useRef(isConnected);',
           '}, [clientRequestContext, clientRequestContextReady, isConnected, loadSessionMetadata, routeSessionId]);', true)}
         return null;
       }
@@ -94,7 +101,7 @@ async function fixture() {
       const result = deferred(); requests.push({ ...result, params }); return result.promise;
     },
     sessionIdRef: { current: 'saved-session' },
-    useChatStore: { getState: () => ({ beginQueuedSessionMessageSnapshot: () => ({}),
+    useChatStore: { getState: () => ({ getRuntime: () => undefined, beginQueuedSessionMessageSnapshot: () => ({}),
       setCanContinueQueuedSessionMessages: () => {} }) },
     useSessionStore: { getState: () => ({ setTeamLeaderIdentity: () => {}, setTeamGroupIdentity: () => {} }) },
     useWorkspaceStore: { getState: () => ({ upsertSession: (session) => writes.push(session) }) },
@@ -103,6 +110,8 @@ async function fixture() {
     normalizeTeamLeaderIdentity: (value) => value, normalizeTeamDispatchMode: () => null,
     organizationOwnerStateRevision: () => 0, isOrganizationOwnerStopped: () => false,
     setOrganizationOwnerStopped: () => {}, restoreSessionModelSelection: () => {},
+    normalizeTeamBootstrapMode: () => null, resolveRestoredTeamDispatchMode: () => null,
+    restoredGitIdentity: () => undefined,
     console: { warn: () => {} },
   };
   const fetch = createMetadataFetch(dependencies);
@@ -187,9 +196,9 @@ test('App rereads configuration and route metadata once the new context is ready
     assert.deepEqual(metadataReads, ['saved-session', 'saved-session']);
     await act(async () => root.render(createElement(RecoveryProbe, { ...props, fetchConfig: props.fetchConfig.bind(null) })));
     assert.equal(reads.length, 2, 'callback updates share the initialization already in flight');
-    await act(async () => reads[0].resolve());
+    await act(async () => reads[0].resolve(true));
     assert.deepEqual(loaded, [], 'an obsolete initialization cannot mark the new one complete');
-    await act(async () => reads[1].resolve());
+    await act(async () => reads[1].resolve(true));
     assert.deepEqual(loaded, [true]);
     await act(async () => root.render(createElement(RecoveryProbe, props)));
     assert.equal(reads.length, 2, 'retain completed initialization within the same context');

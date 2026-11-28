@@ -26,6 +26,8 @@ from jiuwenswarm.server.handlers.session import handle_history_get_stream
 from jiuwenswarm.server.runtime.session.session_history import HistorySnapshotChanged
 from jiuwenswarm.server.wire_truncate import _HISTORY_WIRE_RECORD_MAX_BYTES
 
+from jiuwenswarm.server.handlers import session as history_handler
+
 
 class FakeWebSocket:
     def __init__(self) -> None:

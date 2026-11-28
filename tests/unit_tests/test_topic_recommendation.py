@@ -1350,6 +1350,7 @@ def test_outcome_signal_rejects_not_interested() -> None:
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -1369,6 +1370,7 @@ from agent_gateway.channel_manager.web.web_connect import (  # pylint: disable=w
     WebChannelConfig,
 )
 
+
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
@@ -1383,6 +1385,18 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
     TopicService,
 )
+
+
+@pytest.fixture
+async def recommendation_web_channel(enabled_recommendation_consent: None) -> AsyncIterator[WebChannel]:
+    """Close the channel and its lazy extension runtime after each test."""
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel.on_message(lambda _msg: False)
+    try:
+        yield channel
+    finally:
+        await channel.stop()
+
 
 CHANNEL_NOW = 1_700_000_000.0
 CHANNEL_REQUEST_IDS = (
@@ -1713,17 +1727,14 @@ def _register_panel(channel, *, service, store, queue) -> None:
 @pytest.mark.asyncio
 async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
     tmp_path: Any,
-    enabled_recommendation_consent,
+    recommendation_web_channel,
 ) -> None:
     store = TopicStarterStore(tmp_path / "wiring.sqlite3")
     _install_manifest_and_card(store)
     service = _TopicServiceStub(store)
     queue = NewPageOutcomeQueue()
     assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
-    channel = WebChannel(
-        WebChannelConfig(enabled=True), RobotMessageRouter()
-    )
-    channel.on_message(lambda _msg: False)
+    channel = recommendation_web_channel
     _register_panel(channel, service=service, store=store, queue=queue)
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
@@ -1842,7 +1853,7 @@ async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
 
 @pytest.mark.asyncio
 async def test_webchannel_rebuilds_product_lane_when_free_search_is_off(
-    enabled_recommendation_consent,
+    recommendation_web_channel,
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1850,10 +1861,7 @@ async def test_webchannel_rebuilds_product_lane_when_free_search_is_off(
 
     monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "false")
-    channel = WebChannel(
-        WebChannelConfig(enabled=True), RobotMessageRouter()
-    )
-    channel.on_message(lambda _msg: False)
+    channel = recommendation_web_channel
     store = TopicStarterStore(tmp_path / "webchannel-free-search-off.db")
     # Simulate a prior build that left the product lane empty; ensure_services
     # must recreate it even while both free-search engines are off.
@@ -1908,7 +1916,7 @@ def _save_profile_with_dismissals(store: TopicStarterStore, times: tuple[float, 
 @pytest.mark.asyncio
 async def test_not_interested_event_is_rejected_without_refill(
     tmp_path: Any,
-    enabled_recommendation_consent,
+    recommendation_web_channel,
 ) -> None:
     store = TopicStarterStore(tmp_path / "dismiss.sqlite3")
     _install_manifest_and_card(store)
@@ -1916,8 +1924,7 @@ async def test_not_interested_event_is_rejected_without_refill(
     service = _TopicServiceStub(store)
     queue = NewPageOutcomeQueue()
     assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
-    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
-    channel.on_message(lambda _msg: False)
+    channel = recommendation_web_channel
     _register_panel(channel, service=service, store=store, queue=queue)
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
@@ -4910,7 +4917,7 @@ async def test_rebind_reports_success_when_recommendation_hook_fails(monkeypatch
             raise RuntimeError("sqlite locked")
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.get_session_metadata",
+        "jiuwenswarm.server.management.sessions.get_session_metadata",
         metadata,
     )
     monkeypatch.setattr(

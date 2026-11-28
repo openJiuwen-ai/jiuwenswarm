@@ -76,18 +76,22 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
         while True:
             conn = await server.accept()
             _install_heartbeat_fast_path(conn, beat)
-            generation = holder.open_session(
-                conn, generation=session_source.generation if session_source is not None else None,
+            generation = holder.begin_session(
+                generation=session_source.generation if session_source is not None else None,
             )
             try:
-                await _send_hello(
+                hello = await _send_hello(
                     conn,
                     runtime_loaded=loaded["runtime"] is not None,
                     generation=generation,
                     instance=instance,
                     code_identity_value=worker_code_identity,
                 )
-            except (OSError, RuntimeError) as exc:
+                from jiuwenswarm.server.ipc.startup import await_startup_acceptance
+
+                await await_startup_acceptance(conn, hello)
+                holder.activate_session(conn, generation)
+            except (OSError, RuntimeError, asyncio.IncompleteReadError) as exc:
                 from jiuwenswarm.server.worker.diagnostics import write_worker_failure
 
                 write_worker_failure(exc, stage="HELLO")
@@ -352,7 +356,7 @@ async def _send_hello(
     generation: int,
     instance: str,
     code_identity_value: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
     from jiuwenswarm.common.process_identity import process_identity_fields
     import psutil
@@ -363,8 +367,7 @@ async def _send_hello(
         logger.exception("[Worker] HELLO pid=%s process identity failed: %s", os.getpid(), exc)
         raise RuntimeError(f"Worker HELLO pid={os.getpid()} process identity failed: {exc}") from exc
     identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
-    await conn.send(
-        {
+    hello = {
             "kind": KIND_HELLO,
             "protocol": PROTOCOL_VERSION,
             "pid": os.getpid(),
@@ -379,7 +382,8 @@ async def _send_hello(
             **process_fields,
             "code_identity": identity,
         }
-    )
+    await conn.send(hello)
+    return hello
 
 
 async def _read_session(conn: IpcConnection, dispatcher: WorkerDispatcher) -> bool:

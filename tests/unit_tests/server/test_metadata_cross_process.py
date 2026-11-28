@@ -17,6 +17,35 @@ import time
 import pytest
 
 
+@pytest.mark.parametrize("module_name", ["jiuwenswarm.server.runtime.session.session_metadata"])
+def test_external_replacement_during_read_never_stamps_stale_cache(monkeypatch, tmp_path, module_name):
+    metadata = importlib.import_module(module_name)
+    monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(metadata, "_METADATA_CACHE", {})
+    monkeypatch.setattr(metadata, "_CACHE_DISK_STAMPS", {})
+    monkeypatch.setattr(metadata, "_PENDING_FIELDS", {})
+    path = tmp_path / "race-session/metadata.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"session_id": "race-session", "title": "old"}), encoding="utf-8")
+    original = Path.read_text
+    replaced = False
+
+    def replace_after_read(current, *args, **kwargs):
+        nonlocal replaced
+        value = original(current, *args, **kwargs)
+        if current == path and not replaced:
+            replaced = True
+            replacement = path.with_suffix(".replacement")
+            replacement.write_text(json.dumps({"session_id": "race-session", "title": "external"}), encoding="utf-8")
+            os.replace(replacement, path)
+        return value
+
+    monkeypatch.setattr(Path, "read_text", replace_after_read)
+    result = metadata._read_metadata("race-session", lifecycle_state={"generation": 0}, archived=False)
+    assert result["title"] == "external"
+    assert metadata._read_metadata("race-session", lifecycle_state={"generation": 0}, archived=False)["title"] == "external"
+
+
 def test_front_fields_survive_worker_cache_and_queued_updates(tmp_path):
     env = os.environ.copy()
     env["JIUWENSWARM_HOME"] = str(tmp_path / "home")
@@ -55,6 +84,37 @@ patch_session_metadata('same-session', {'accent_color':'blue', 'title':'renamed 
         if worker.poll() is None:
             worker.kill()
         worker.communicate()
+
+
+def test_external_replacement_after_decode_cannot_pin_an_old_snapshot(tmp_path, monkeypatch):
+    """A later file version must not validate bytes decoded before its write."""
+    metadata = importlib.import_module("jiuwenswarm.server.runtime.session.session_metadata")
+    monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    for name in ("_METADATA_CACHE", "_METADATA_CACHE_GENERATIONS", "_CACHE_DISK_STAMPS", "_PENDING_FIELDS"):
+        monkeypatch.setattr(metadata, name, {})
+    path = tmp_path / "decode-window/metadata.json"
+    path.parent.mkdir()
+    original_text = json.dumps({"session_id": "decode-window", "title": "old"})
+    path.write_text(original_text, encoding="utf-8")
+    loads = json.loads
+    replaced = False
+
+    def decode_and_replace(value, *args, **kwargs):
+        nonlocal replaced
+        decoded = loads(value, *args, **kwargs)
+        if value == original_text and not replaced:
+            replaced = True
+            replacement = path.with_suffix(".replacement")
+            replacement.write_text(json.dumps({"session_id": "decode-window", "title": "external"}), encoding="utf-8")
+            os.replace(replacement, path)
+        return decoded
+
+    monkeypatch.setattr(metadata.json, "loads", decode_and_replace)
+    state = {"generation": 0}
+    first = metadata._read_metadata("decode-window", lifecycle_state=state, archived=False)
+    assert first["title"] == "old"
+    second = metadata._read_metadata("decode-window", lifecycle_state=state, archived=False)
+    assert second["title"] == "external"
 
 
 @pytest.mark.parametrize("side,field,original,concurrent", [

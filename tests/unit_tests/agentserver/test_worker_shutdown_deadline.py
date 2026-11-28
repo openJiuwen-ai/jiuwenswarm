@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock
 
 from jiuwenswarm.server.lifecycle import Readiness
+from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
@@ -170,6 +171,7 @@ async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path
     release = asyncio.Event()
     children = []
     monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity", AsyncMock(return_value=("a" * 64, None)))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
 
     async def lookup(*args, **kwargs):
@@ -197,7 +199,7 @@ async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path
         raise TimeoutError("IPC unavailable")
 
     monkeypatch.setattr(supervisor_module, "try_connect", lookup)
-    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: False)
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: phase == "lookup")
     monkeypatch.setattr(supervisor_module, "connect_with_retry", slow_connect)
     monkeypatch.setattr(supervisor_module, "WorkerProcess", ObservedWorker)
     monkeypatch.setattr(worker_module, "build_worker_command", lambda *a, **kw: [
@@ -251,12 +253,14 @@ async def test_published_pid_retains_the_identity_checked_during_hello(monkeypat
             cmdline=lambda: [sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", str(tmp_path / "worker")],
             wait=lambda **kw: 0, kill=killed)
 
-    hello = {"kind": "hello", "protocol": 2, "pid": pid, "process_created": 1,
+    hello = {"kind": "hello", "protocol": PROTOCOL_VERSION, "pid": pid, "process_created": 1,
              "deployment_scope": identity.deployment_scope(), "data_scope": identity.data_scope(),
              "code_identity": "a" * 64, "stub": True}
     peer = SimpleNamespace(recv=AsyncMock(return_value=hello), send=AsyncMock(), close=AsyncMock())
     monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity", AsyncMock(return_value=("a" * 64, None)))
     monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=peer))
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _path: True)
     monkeypatch.setattr(psutil, "Process", lookup)
     front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True)
     monkeypatch.setattr(front, "_start_side_tasks", Mock())
