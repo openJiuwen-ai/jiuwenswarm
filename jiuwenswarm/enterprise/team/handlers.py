@@ -63,13 +63,41 @@ def _params(ctx: RequestContext) -> dict[str, Any]:
 
 
 def request_identity(request: AgentRequest) -> OwnerIdentity:
-    """Routing identity of the caller (``user_id`` + ``metadata.routing``)."""
+    """Routing identity of the caller (``user_id`` + ``metadata.routing``).
+
+    ``group_id`` and ``bot_id`` fall back to the metadata top level the same way
+    ``user_id`` does, so the org-team quota check is not silently skipped when
+    ``metadata.routing`` is absent but the routing fields are carried at the top
+    level (issue #110).
+    """
     metadata = request.metadata if isinstance(request.metadata, dict) else {}
     identity = web_routing_identity(metadata)
     params = request.params if isinstance(request.params, dict) else {}
-    user_id = str(identity.get("user_id") or params.get("user_id") or metadata.get("user_id") or "").strip()
-    group_id = str(identity.get("group_id") or params.get("group_id") or "").strip()
-    bot_id = str(identity.get("bot_id") or params.get("bot_id") or "").strip()
+    return owner_from_metadata(metadata, identity, params)
+
+
+def owner_from_metadata(
+    metadata: dict[str, Any],
+    identity: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+) -> OwnerIdentity:
+    """Build an ``OwnerIdentity`` from session/request metadata with full fallback.
+
+    ``group_id``/``bot_id`` fall back to the metadata top level the same way
+    ``user_id`` does, so the org-team quota check is not silently skipped when
+    ``metadata.routing`` is absent but the routing fields are carried at the
+    top level (issue #110). Used by ``request_identity`` and by session-metadata
+    owner reconstruction in member_limits / team_helpers.
+    """
+    ident = identity if isinstance(identity, dict) else {}
+    p = params if isinstance(params, dict) else {}
+    user_id = str(ident.get("user_id") or p.get("user_id") or metadata.get("user_id") or "").strip()
+    group_id = str(
+        ident.get("group_id") or p.get("group_id") or metadata.get("group_id") or ""
+    ).strip()
+    bot_id = str(
+        ident.get("bot_id") or p.get("bot_id") or metadata.get("bot_id") or ""
+    ).strip()
     return OwnerIdentity(user_id=user_id, group_id=group_id, bot_id=bot_id)
 
 

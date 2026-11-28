@@ -1159,6 +1159,15 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                                 limit=int(org_limit),
                                 default=int(org_default),
                             )
+                    elif kind == KIND_TEAM_CREATE and gid and int(org_limit) <= 0:
+                        # Only warn when gid is non-empty but the org cap is
+                        # configured as "no limit" (Z=0): that is the issue-110
+                        # silent-skip signal. An empty gid is the personal-edition
+                        # by-design path and stays quiet.
+                        logger.warning(
+                            "[TeamQuota] org check skipped: gid=%r org_limit=%r identity=%s",
+                            gid, org_limit, identity.as_dict(),
+                        )
                     conn.execute(
                         "INSERT OR IGNORE INTO team_quota_account "
                         "(user_id, group_id, bot_id, created_at, updated_at) VALUES (?,?,?,?,?)",
@@ -1461,6 +1470,15 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                                 limit=int(org_limit),
                                 default=int(org_default),
                             )
+                    elif kind == KIND_TEAM_CREATE and gid and int(org_limit) <= 0:
+                        # Only warn when gid is non-empty but the org cap is
+                        # configured as "no limit" (Z=0): that is the issue-110
+                        # silent-skip signal. An empty gid is the personal-edition
+                        # by-design path and stays quiet.
+                        logger.warning(
+                            "[TeamQuota] org check skipped: gid=%r org_limit=%r identity=%s",
+                            gid, org_limit, identity.as_dict(),
+                        )
                     await conn.execute(
                         text(
                             _insert_ignore_sql(
