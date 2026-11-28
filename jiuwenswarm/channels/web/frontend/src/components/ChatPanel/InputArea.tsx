@@ -3084,6 +3084,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 placeholder="/Users/name/work/project"
               />
             ) : null}
+            {projectDirError ? <div className="chat-work-dialog__error">{projectDirError}</div> : null}
             <div className="chat-work-dialog__actions">
               <button
                 type="button"
@@ -3103,7 +3104,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 {t('multiSession.project.confirm')}
               </button>
             </div>
-            {projectDirError ? <div className="chat-work-dialog__error">{projectDirError}</div> : null}
           </form>
         </div>
       ) : null}
