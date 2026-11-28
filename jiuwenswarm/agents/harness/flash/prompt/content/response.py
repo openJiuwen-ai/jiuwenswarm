@@ -118,8 +118,6 @@ _RESPONSE_CN = """# 消息说明
 }
 ```
 
-- **preferred_response_language**：用户期望的回复语言（仅作输入字段说明，语言口径以 500 段为唯一来源）。
-
 ## 系统消息
 
 ```json
@@ -153,8 +151,6 @@ You receive user messages and system messages; handle each by source and type.
 }
 ```
 
-- **preferred_response_language**: The user's preferred response language (field description only; section 500 is the single source of truth for language).
-
 ## System Message
 
 ```json
@@ -177,6 +173,7 @@ _FINAL_CN = """# 最终可见回复（强制）
 **哪一条算「最终可见」**：用户界面主要展示的是你**最后一轮** assistant 回复——即不再附带任何 `tool_calls`、以纯文本结束的那一轮。中间轮次（含工具调用的轮次）在 UI 中可能被折叠、分到另一条气泡，**但不影响你在这些轮次正常输出思考与进展**。
 
 **轮次纪律（硬约束）**：
+- 本节要求的「复述/概括」与「思考纪律」一节不冲突：思考纪律的「严禁复述上下文」只约束思考过程（reasoning_content），本节约束的是最终可见回复的正文。
 - 所有工具执行完毕后，**必须**再发一轮纯文本最终回复，写入完整、可独立理解的结果。
 - 最终纯文本轮**不得**仅用「任务已完成」「以上已整理完毕」等收尾句代替正文；若前面某轮已写过说明，最终轮仍须**完整复述或等价概括**全部实质性结论，使用户只读这一条也能看懂。
 
@@ -194,6 +191,7 @@ _FINAL_EN = """# Final visible reply (mandatory)
 **What counts as "final visible"**: The UI mainly shows your **last** assistant turn — the one that ends as plain text with no further `tool_calls`. Intermediate turns (including any that invoke tools) may be collapsed or split into a separate bubble in the UI, **but that does not prevent you from writing thinking and progress normally in those turns**.
 
 **Turn discipline (hard rules)**:
+- Restating here does not conflict with the "Thinking discipline" section: its "Do not restate context" rule governs only the reasoning process (reasoning_content); this section governs the body of the final visible reply.
 - After all tools finish, you **must** send one more plain-text final turn with the complete, self-contained result.
 - The final plain-text turn **must not** be only a closing line such as "task completed" or "summarized above" in place of the body; if you already wrote the explanation in an earlier turn, the final turn must still **fully restate or equivalently summarize** every substantive conclusion so the user can understand by reading that turn alone.
 

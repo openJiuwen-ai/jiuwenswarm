@@ -4,13 +4,15 @@
 
 锁定：
 1. ``_strip_relay_duplicates`` 剥除 ``request_system_prompt`` 末尾的 ``[文件输出约束]`` 块，
-   保留 ``[Personality Override]`` 等前序与 ``[记忆纠正规则]``（记忆域已回退 deep 原样）；
+   保留 ``[Personality Override]`` 等前序与 ``[记忆纠正规则]``（纯函数层不碰后者）；
 2. 守卫：``[文件输出约束]`` 锚点缺失 / 空内容 → 返回 None（整体回退不盲切）；
-3. 剥除结果无尾部空白；``[记忆纠正规则]`` 保留其旧工具名 read_memory/edit_memory/write_memory
-   （与 stock MemoryRail 五件套一致）；
+3. 剥除结果无尾部空白；纯函数保留 ``[记忆纠正规则]`` 原块（工具名改写在其后的 rail 层）；
 4. rail 每轮**无条件** remove + 重加：段号收敛到 ``_PRIO_REQUEST``（999 静态末位），
    解除与 refusal_behavior@110 的撞号——即使守卫命中或无重复块可剥也一样重排；
 5. 幂等安全：已剥净的内容不再改动；守卫命中用原内容重加、不盲切。
+6. 冲突修复（relay 注入内容）：
+   - ``[记忆纠正规则]`` 第 6 条（删除=回收站）删除（120 已覆盖且更精确）；
+   - 旧记忆工具名按 FlashMemoryRail 映射表改写为 ``memory(mode=…)``。
 """
 
 from __future__ import annotations
@@ -19,8 +21,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.agents.harness.flash.prompt.content.relay import _PRIO_REQUEST
-from jiuwenswarm.agents.harness.flash.rails.flash_relay_merge_rail import (
+from flash_offline_stub import install_offline_import_stubs
+
+# 必须在 import 任何 flash 子模块之前执行：flash 包 ``__init__`` 会 eager import
+# rails，缺 agent_shield 时直接拉起 openjiuwen.harness.security 而断链。
+install_offline_import_stubs()
+
+from jiuwenswarm.agents.harness.flash.prompt.content.relay import (  # noqa: E402
+    _PRIO_REQUEST,
+    _memory_block_span,
+    _rewrite_memory_tool_names,
+    _strip_memory_rule6,
+)
+from jiuwenswarm.agents.harness.flash.rails.flash_relay_merge_rail import (  # noqa: E402
     FlashRelayMergeRail,
     _strip_relay_duplicates,
 )
@@ -62,6 +75,11 @@ _HINTS = "## 文件生成任务的开头规范\n开头规范内容\n## 再改改
 _PDF = "## PDF 转 Markdown 硬规则\n禁止自己写脚本"
 _WS = "[文件输出约束]\n生成或写出文件时，一律写入当前工作目录内并使用相对路径。\n当前工作目录：/workspace/2026"
 _MC = "[记忆纠正规则]\n1. 本轮一律按用户当前指令执行。\n2. 用 read_memory 定位旧条目，再用 edit_memory 改写。\n6. 用户要求删除文件时，移入回收站即为合规的软删除。"
+_DELETION = (
+    "## 删除规范\n"
+    "- 用户要求“删除”文件时，默认优先移入系统回收站（即为合规的软删除）；"
+    "不得擅自将“删除”指令曲解为业务上的“整理/归档”而移入用户的归档或已处理文件夹。"
+)
 
 
 def _full() -> str:
@@ -78,12 +96,13 @@ class TestStripRelayDuplicates:
         assert "[文件输出约束]" not in stripped
         assert "[记忆纠正规则]" in stripped
 
-    def test_keeps_legacy_memory_tool_names(self) -> None:
-        # 记忆域已回退 deep 原样：stock 五件套工具名 read_memory/edit_memory/write_memory
-        # 与 relay [记忆纠正规则] 原块一致，故保留（不再被 640 归并剥除）。
+    def test_pure_strip_keeps_memory_block_verbatim(self) -> None:
+        # 纯函数层只管 [文件输出约束]；[记忆纠正规则] 原块（含旧工具名、第 6 条）保留，
+        # 由 rail 层再做工具名改写与第 6 条删除（见 TestConflictFixes）。
         stripped = _strip_relay_duplicates(_full())
         assert "read_memory" in stripped
         assert "edit_memory" in stripped
+        assert "移入回收站即为合规的软删除" in stripped
 
     def test_no_trailing_whitespace(self) -> None:
         stripped = _strip_relay_duplicates(_full())
@@ -106,6 +125,17 @@ class TestStripRelayDuplicates:
 
     def test_empty_returns_none(self) -> None:
         assert _strip_relay_duplicates("") is None
+
+    def test_persona_mention_does_not_shadow_workspace_anchor(self) -> None:
+        # 人格正文 inline 提到 [文件输出约束] 不得抢块起点：人格与后续内容逐字保留，
+        # 只删真正的 relay [文件输出约束] 块（锚点按独占一行的分区标题定位）。
+        persona = "[Personality Override]\n注意 [文件输出约束] 里的路径规则也适用。"
+        stripped = _strip_relay_duplicates("\n\n".join([persona, _HINTS, _PDF, _WS, _MC]))
+        assert stripped is not None
+        assert stripped.startswith(persona)
+        assert "## 文件生成任务" in stripped and "## PDF 转 Markdown" in stripped
+        assert "\n[文件输出约束]\n" not in stripped
+        assert "[记忆纠正规则]" in stripped
 
 
 class TestRail:
@@ -155,3 +185,169 @@ class TestRail:
         sec = agent.system_prompt_builder.get_section("request_system_prompt")
         assert sec.content["cn"] == content
         assert sec.priority == _PRIO_REQUEST
+
+
+class TestConflictFixes:
+    """relay 注入内容与 flash 自有段的冲突修复（纯函数层）。"""
+
+    def test_strip_memory_rule6(self) -> None:
+        text, hit = _strip_memory_rule6(_MC)
+        assert hit
+        assert "移入回收站即为合规的软删除" not in text
+        assert "1. 本轮一律按用户当前指令执行。" in text
+
+    def test_strip_memory_rule6_renumbered(self) -> None:
+        text, hit = _strip_memory_rule6(
+            "[记忆纠正规则]\n7. 用户要求删除时，移入回收站即为合规的软删除。",
+        )
+        assert hit
+        assert "软删除" not in text
+        assert "[记忆纠正规则]" in text
+
+    def test_rewrite_memory_tool_names(self) -> None:
+        text, hit = _rewrite_memory_tool_names(
+            "[记忆纠正规则]\n用 read_memory 定位，再用 edit_memory 改写。",
+            (("read_memory", "memory(mode=read)"), ("edit_memory", "memory(mode=edit)")),
+        )
+        assert hit
+        assert "read_memory" not in text and "edit_memory" not in text
+        assert "memory(mode=read)" in text and "memory(mode=edit)" in text
+
+    def test_rewrite_memory_tool_names_ignores_text_outside_block(self) -> None:
+        # 人格段里的 read_memory.md 是文件名，不是工具引用；只改 [记忆纠正规则] 块内。
+        text, hit = _rewrite_memory_tool_names(
+            "人格：错误报告须保留文件名 read_memory.md\n\n"
+            "[记忆纠正规则]\n用 read_memory 定位旧条目。",
+            (("read_memory", "memory(mode=read)"),),
+        )
+        assert hit
+        assert "read_memory.md" in text
+        assert "用 memory(mode=read) 定位旧条目" in text
+
+    def test_memory_block_span_ignores_persona_anchor_mention(self) -> None:
+        # 块起点只认独占一行的 [记忆纠正规则] 标题；人格正文里的同名提及不抢边界。
+        text = (
+            "人格：如需解释 [记忆纠正规则]，请引用 read_memory.md。\n\n"
+            "[记忆纠正规则]\n2. 用 read_memory 定位旧条目。\n"
+            "6. 用户要求删除文件时，移入回收站即为合规的软删除。"
+        )
+        span = _memory_block_span(text)
+        assert span is not None
+        start, end = span
+        assert text[start:].startswith("[记忆纠正规则]")
+        assert "read_memory.md" not in text[start:end]  # 块内不含人格文件名的段落
+
+    def test_rewrite_memory_tool_names_ignores_persona_anchor_mention(self) -> None:
+        # 人格正文提到 [记忆纠正规则] 时，文件名原样、真块工具名照常改写。
+        text = (
+            "人格：如需解释 [记忆纠正规则]，请引用 read_memory.md。\n\n"
+            "[记忆纠正规则]\n用 read_memory 定位旧条目。"
+        )
+        out, hit = _rewrite_memory_tool_names(text, (("read_memory", "memory(mode=read)"),))
+        assert hit
+        assert "请引用 read_memory.md" in out
+        assert "用 memory(mode=read) 定位旧条目" in out
+        assert "用 read_memory 定位旧条目" not in out
+
+    def test_strip_memory_rule6_ignores_persona_anchor_mention(self) -> None:
+        # 人格正文提到 [记忆纠正规则] 时，第 6 条仍在真块内被删除。
+        text = (
+            "人格：如需解释 [记忆纠正规则]，请引用 read_memory.md。\n\n"
+            "[记忆纠正规则]\n1. 本轮一律按用户当前指令执行。\n"
+            "6. 用户要求删除文件时，移入回收站即为合规的软删除。"
+        )
+        out, hit = _strip_memory_rule6(text)
+        assert hit
+        assert "移入回收站即为合规的软删除" not in out
+        assert "请引用 read_memory.md" in out
+
+    def test_rewrite_memory_tool_names_noop(self) -> None:
+        text, hit = _rewrite_memory_tool_names(
+            "已统一", (("read_memory", "memory(mode=read)"),),
+        )
+        assert not hit and text == "已统一"
+
+
+class TestRailConflictFixes:
+    @pytest.mark.asyncio
+    async def test_drops_rule6_and_rewrites_names(self) -> None:
+        # 120 删除规范已生成（含「回收站 + 已处理」约束）→ 可删 relay 第 6 条。
+        agent = _FakeAgent([
+            _sec("request_system_prompt", 110, _full()),
+            _sec("deletion_protocol", 120, _DELETION),
+        ])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert "[记忆纠正规则]" in text  # 块本身保留（1–5 条 flash 无对应物）
+        assert "移入回收站即为合规的软删除" not in text
+        assert "read_memory" not in text and "edit_memory" not in text
+        assert "memory(mode=read)" in text and "memory(mode=edit)" in text
+
+    @pytest.mark.asyncio
+    async def test_keeps_rule6_without_deletion_protocol(self) -> None:
+        # safety 域关闭 / 拆分回退时 120 不存在，relay 第 6 条是唯一来源：保留该条；
+        # 工具名改写不受影响（仍限定在记忆块内）。
+        agent = _FakeAgent([_sec("request_system_prompt", 110, _full())])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert "移入回收站即为合规的软删除" in text
+        assert "read_memory" not in text and "memory(mode=read)" in text
+
+    @pytest.mark.asyncio
+    async def test_guard_fallback_skips_memory_rewrites(self) -> None:
+        # 缺 [文件输出约束] → 整体回退：内容原样，第 6 条与旧工具名都不动。
+        content = "\n\n".join([_PERSONA, _MC])
+        agent = _FakeAgent([
+            _sec("request_system_prompt", 110, content),
+            _sec("deletion_protocol", 120, _DELETION),
+        ])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert text == content
+
+    @pytest.mark.asyncio
+    async def test_rewrites_only_within_memory_block(self) -> None:
+        # 人格段中的 read_memory.md 是文件名，不是工具引用，必须原样保留。
+        persona = "[Personality Override]\n错误报告须保留文件名 `read_memory.md`。"
+        content = "\n\n".join([persona, _HINTS, _WS, _MC])
+        agent = _FakeAgent([
+            _sec("request_system_prompt", 110, content),
+            _sec("deletion_protocol", 120, _DELETION),
+        ])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert "`read_memory.md`" in text
+        assert "用 read_memory 定位旧条目" not in text
+        assert "memory(mode=read)" in text
+
+    @pytest.mark.asyncio
+    async def test_persona_anchor_mention_does_not_shadow_memory_block(self) -> None:
+        # 人格正文提前提到 [记忆纠正规则]（de4 行评场景）：人格文件名原样保留，
+        # 真记忆块的工具名照常改写，第 6 条在已生成 120 时照常删除。
+        persona = "[Personality Override]\n如需解释 [记忆纠正规则]，请引用 read_memory.md。"
+        content = "\n\n".join([persona, _HINTS, _WS, _MC])
+        agent = _FakeAgent([
+            _sec("request_system_prompt", 110, content),
+            _sec("deletion_protocol", 120, _DELETION),
+        ])
+        rail = FlashRelayMergeRail()
+        rail.init(agent)
+        await rail.before_model_call(_FakeCtx(agent))
+
+        text = agent.system_prompt_builder.get_section("request_system_prompt").content["cn"]
+        assert "请引用 read_memory.md" in text
+        assert "移入回收站即为合规的软删除" not in text
+        assert "用 memory(mode=read) 定位旧条目" in text
+        assert "用 read_memory 定位旧条目" not in text
