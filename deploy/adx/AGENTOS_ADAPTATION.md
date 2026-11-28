@@ -21,6 +21,12 @@ ADX 运行控制、文件传输、网络策略及连接适配位于
 Gateway 将节点连接、凭据映射及工具启动方式作为通用运行配置传给 AgentServer；
 AgentServer 使用通用 `SysOperation` 与 Core provider，保留已有用户的静态工具参数及 Team 共享范围。
 
+**远端工具沙箱 / Remote ADX tools**
+
+AgentOS 工具沙箱使用 `sandbox.type: adx-environment`。部署阶段准备运行时、rootfs、挂载和网络策略，AgentServer 启动时接入当前节点地址和凭据。若配置了工具用户和组，AgentServer 会先解析 UID 和 GID，再下发给 ADX。已有 workspace 文件的属主保持不变。
+
+AgentOS tool sandboxes use `sandbox.type: adx-environment`. Deployment prepares the runtime, rootfs, mounts and network policy. AgentServer supplies the current node endpoint and credentials and resolves configured user and group names to numeric IDs before dispatch. Existing workspace files retain their ownership.
+
 AgentServer 与工具沙箱分别通过 `gateway.adx.restart_policy`、
 `sandbox.restart_policy` 配置异常退出后的原节点重拉。两侧省略时默认最多重拉 3 次，
 初始等待 1 秒，等待上限 30 秒；显式 `null` 关闭。策略用于新创建的 Environment，
