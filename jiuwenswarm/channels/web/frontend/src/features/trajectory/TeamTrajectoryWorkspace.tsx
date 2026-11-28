@@ -113,6 +113,8 @@ export interface TeamTrajectoryWorkspaceProps {
   };
 }
 
+type DisplayLane = TeamMemberLaneModel & { ordinal?: number };
+
 const EMPTY_WORKER_NAME_INDEX: ReadonlyMap<string, string> = new Map();
 
 /** `sha256(text)[:12]` — the ident the backend mints worker member names with. */
@@ -140,7 +142,7 @@ function MemberToolbarControl({
   canSelectAll,
   selectAllActive,
 }: {
-  lane: TeamMemberLaneModel;
+  lane: DisplayLane;
   expanded: boolean;
   onClick: () => void;
   included?: boolean;
@@ -151,9 +153,11 @@ function MemberToolbarControl({
   selectAllActive?: boolean;
 }) {
   const { t } = useTranslation();
-  const fullLabel = 'fullLabel' in lane && typeof lane.fullLabel === 'string'
+  const baseLabel = 'fullLabel' in lane && typeof lane.fullLabel === 'string'
     ? lane.fullLabel
     : lane.label;
+  const ordinal = lane.ordinal === undefined ? '' : `#${lane.ordinal}`;
+  const fullLabel = ordinal ? `${baseLabel} ${ordinal}` : baseLabel;
   const scheduledLane = 'taskId' in lane ? lane as ScheduledReviewerLane : undefined;
   const decision = scheduledLane?.decision;
   const pendingDecisionLabel = scheduledLane?.reviewer.toLowerCase().includes('inspector')
@@ -187,6 +191,9 @@ function MemberToolbarControl({
     >
       <span className={`${css.statusDot} ${css[`status_${lane.status}`]}`} aria-hidden="true" />
       <span className={css.memberName} title={fullLabel}>{lane.label}</span>
+      {ordinal && (
+        <span className={css.workflowGroupShortId} data-testid="team-trajectory-lane-ordinal">{ordinal}</span>
+      )}
       {decisionLabel === undefined ? null : (
         <span
           className={css.reviewDecision}
@@ -436,7 +443,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     return () => observer.disconnect();
   }, [groups.groups, scheduledMode, selectedRowKey]);
 
-  const renderLane = (lane: TeamMemberLaneModel, rowKey = lane.subjectId) => {
+  const renderLane = (lane: DisplayLane, rowKey = lane.subjectId) => {
     // Scheduled lanes carry their own fullLabel; swarmflow worker lanes get
     // the engine member id (call key) so same-label operators stay
     // distinguishable on hover.
@@ -697,6 +704,17 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     // selection never points at a hidden lane.
     const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
     const expanded = expandedGroups.has(group.runId) || selected;
+    const labelTotals = new Map<string, number>();
+    for (const lane of group.lanes) {
+      labelTotals.set(lane.label, (labelTotals.get(lane.label) ?? 0) + 1);
+    }
+    const labelOrdinals = new Map<string, number>();
+    const displayLanes = group.lanes.map((lane) => {
+      if (labelTotals.get(lane.label) === 1) return lane;
+      const ordinal = (labelOrdinals.get(lane.label) ?? 0) + 1;
+      labelOrdinals.set(lane.label, ordinal);
+      return { ...lane, ordinal };
+    });
     const toggle = () => {
       const next = !expanded;
       if (!next && selected) onSelectSubject(null);
@@ -748,7 +766,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         </button>
         {expanded ? (
           <div className={css.workflowGroupLanes} role="list">
-            {group.lanes.map(lane => renderLane(lane))}
+            {displayLanes.map(lane => renderLane(lane))}
           </div>
         ) : null}
       </div>
