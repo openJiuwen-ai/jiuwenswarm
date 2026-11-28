@@ -12,6 +12,7 @@ Tests for:
 - InstanceLock concurrency control
 """
 
+import errno
 import json
 import multiprocessing
 import multiprocessing.queues
@@ -473,6 +474,78 @@ class TestPidFileManagement:
         assert data["pid"] == pid
         assert data["name"] == "test"
         assert "started_at" in data
+
+    @staticmethod
+    def test_write_pid_file_overwrites_without_leaving_temp_files(tmp_path):
+        """Rewriting the PID file replaces the old one and leaves no temp file."""
+        config = InstanceConfig(
+            name="test",
+            workspace=tmp_path,
+            ports={},
+        )
+        write_pid_file(config, 111)
+        write_pid_file(config, 222)
+
+        data = read_pid_file(config)
+        assert data is not None
+        assert data["pid"] == 222
+        assert [path.name for path in tmp_path.iterdir() if path.name.endswith(".tmp")] == []
+
+    @staticmethod
+    def test_write_pid_file_retries_while_the_target_is_held(tmp_path, monkeypatch):
+        """A reader holding the PID file must not fail the write."""
+        config = InstanceConfig(
+            name="test",
+            workspace=tmp_path,
+            ports={},
+        )
+        write_pid_file(config, 111)
+        real_replace = os.replace
+        attempts = []
+
+        def flaky_replace(source, destination):
+            attempts.append(source)
+            if len(attempts) < 3:
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+            real_replace(source, destination)
+
+        monkeypatch.setattr(os, "replace", flaky_replace)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        write_pid_file(config, 222)
+
+        data = read_pid_file(config)
+        assert data is not None
+        assert data["pid"] == 222
+        assert len(attempts) == 3
+
+    @staticmethod
+    def test_write_pid_file_keeps_the_previous_pid_and_cleans_temp_on_failure(tmp_path, monkeypatch):
+        """When every replace attempt fails, the old PID file survives and no temp file leaks."""
+        config = InstanceConfig(
+            name="test",
+            workspace=tmp_path,
+            ports={},
+        )
+        write_pid_file(config, 111)
+        attempts = []
+
+        def busy_replace(source, destination):
+            attempts.append(source)
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+
+        monkeypatch.setattr(os, "replace", busy_replace)
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        with pytest.raises(PermissionError):
+            write_pid_file(config, 222)
+
+        assert len(attempts) == 10
+
+        data = read_pid_file(config)
+        assert data is not None
+        assert data["pid"] == 111
+        assert [path.name for path in tmp_path.iterdir() if path.name.endswith(".tmp")] == []
 
     @staticmethod
     def test_read_nonexistent_pid_file(tmp_path):
