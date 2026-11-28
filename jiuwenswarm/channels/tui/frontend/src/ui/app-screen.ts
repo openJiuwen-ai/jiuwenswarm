@@ -3828,7 +3828,7 @@ export class AppScreen implements Component, Focusable {
       this.didEagerFetchSkills = true;
       void this.commands.refreshSkills(this.state.getCommandContext());
     }
-    // Hide /sandbox subcommand inline hints when sandbox.type=yuanrong.
+    // Hide /sandbox subcommand hints for read-only sandbox providers.
     if (!this.didEagerFetchSandboxMeta && snapshot.connectionStatus === "connected") {
       this.didEagerFetchSandboxMeta = true;
       void import("../core/commands/builtins/sandbox.js")

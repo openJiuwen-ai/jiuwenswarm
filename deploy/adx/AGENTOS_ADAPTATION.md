@@ -10,23 +10,51 @@
 
 ## 启动与隔离
 
-YuanRong 部署脚本在 systemd 和 nohup 两种 Gateway 启动方式中设置
+### AgentOS Router 后端
+
+Gateway 统一使用 `gateway.agent_client.type: agentos_router`。
+AgentOS Router 通过 `gateway.adx` 使用 ADX。历史 workspace 配置由 Enterprise
+在部署或升级时迁移；Gateway 不再提供 YuanRong 后端。
+
+ADX 运行控制、文件传输、网络策略及连接适配位于
+`agent_gateway/extensions/adx/`，扩展注册统一由 AgentOS Router 完成。
+Gateway 将节点连接、凭据映射及工具启动方式作为通用运行配置传给 AgentServer；
+AgentServer 使用通用 `SysOperation` 与 Core provider，保留已有用户的静态工具参数及 Team 共享范围。
+
+AgentServer 与工具沙箱分别通过 `gateway.adx.restart_policy`、
+`sandbox.restart_policy` 配置异常退出后的原节点重拉。两侧省略时默认最多重拉 3 次，
+初始等待 1 秒，等待上限 30 秒；显式 `null` 关闭。策略用于新创建的 Environment，
+不会修改已有实例，也不会重放正在执行的工具命令。
+
+```yaml
+gateway:
+  adx:
+    restart_policy: {maxAttempts: 3, initialBackoffSeconds: 1, maxBackoffSeconds: 30}
+sandbox:
+  restart_policy: {maxAttempts: 3, initialBackoffSeconds: 1, maxBackoffSeconds: 30}
+```
+
+工具实例失败时由 ADX 执行有限次重拉，provider 不另建实例来重置次数。
+重拉期间调用可返回失败；恢复后的新调用继续使用原实例。次数耗尽后需检查并明确处理
+失败实例。工具空闲回收仍由独立的 idle timeout 控制。
+
+应用部署脚本在 systemd 和 nohup 两种 Gateway 启动方式中设置
 `JIUWENSWARM_RUNTIME_PROFILE=agentos`。Router 为内置 AgentServer 容器注入同一标识；
 内部启动的 JiuwenBox 子进程得到 `JIUWENBOX_RUNTIME_PROFILE=agentos`。
 外部 JiuwenBox 服务需自行设置该标识及 `JIUWENBOX_ETCD_ENDPOINTS`。
 
 AgentOS 运行期跳过包内 `resources/config.yaml` 的配置模板迁移，Gateway 使用部署脚本
-从已安装 `agent-gateway` 包的 `resources/config.agentos.yaml` 渲染出的
-`<workspace>/infra/config/config.yaml`；AS 使用 `<workspace>/config/config.yaml`。
+从 `conf/gateway-config.template.yaml` 渲染出的
+`<workspace>/infra/config/config.yaml`，AS 使用 `<workspace>/config/config.yaml`。
 Gateway 和 AS 共用 `<workspace>/config/.env`，Gateway 在 AgentOS profile 下
-自动读取该文件，不再单独维护 `infra/config/.env`。
+自动读取该文件。
 MCP 预置包补齐或升级时也保留已有配置文件；新增配置项由部署模板管理。
 个人版继续执行既有版本迁移。
 
-旧版一体机只有一份共享 `config/config.yaml`。升级时部署脚本先调用
-`jiuwenswarm.agentos_migration`：保留旧用户配置，用新部署值覆盖
-VIP / etcd / function ID 等 deploy-owned 字段，再把 Gateway 配置写入
-`infra/config/config.yaml`。AS 配置由不带 `-f` 的 `jiuwenswarm-init` 保留。
+升级时部署脚本先调用 `jiuwenswarm.agentos_migration`。已有独立 Gateway 配置时只刷新部署字段。
+首次拆分时从旧版共享的 `config/config.yaml` 复制用户配置。
+用户配置写入 `infra/config/config.yaml`，VIP、etcd 和 ADX 连接等字段采用本次部署值。
+AS 配置由不带 `-f` 的 `jiuwenswarm-init` 保留。
 
 Gateway 的 Web mode 兼容和数据面监听还以实际使用 AgentOS Router 为条件；
 个人版选择本地 AgentClient 时不会启用。运行标识由部署设置，不接受客户端请求参数。
@@ -154,7 +182,7 @@ CONCH_TEMPLATE_NAME="agentos-code"
 CONCH_SDK_CONFIG="/etc/conch/sdk.yaml"
 ```
 
-工具沙箱配置与 YuanRong 部署容器的 `SANDBOX_TYPE` 是两层不同配置。
+工具沙箱配置与 AgentServer 的运行时配置分别管理。
 模板默认仍为 jiuwenbox/bubblewrap，Conch 必须显式选择。SDK 配置路径必须在 Agent 运行镜像中存在。
 Gateway 将有限部署默认值传入内置容器，容器内显式本地配置优先。
 已有用户的 config.yaml 若已显式选择另一个 sandbox.type，需按用户/镜像配置策略调整，避免强制覆盖用户选择。
@@ -219,32 +247,6 @@ SDK rail 接线的注入验证、Conch 分派、策略存储、配置热更新�
 这不构成真实 Code Graph/Conch/YuanRong 集成验证，也不替代个人版的完整回归。
 真实 SDK 和集群验证未完成前，不应将本分支视为已完成上线验收。
 
-## YuanRong 多用户挂载与身份模型（2026-10-09 对齐 agent_os）
-
-在 `JIUWENSWARM_RUNTIME_PROFILE=agentos` 下对齐 agent_os `722c3c8f1` /
-`b92008d5f` / `ba4e86016` / `0efb93f7a` / `8719af53f` 的 YuanRong 挂载与身份模型。
-个人版保留 develop 的 agent_root 身份挂载、yaml mounts 合并及原默认工作目录。
-
-- AgentOS 的 `_build_yuanrong_extra_params` 使用 workspace + `~/workspace` 项目目录挂载；
-  `JIUWENSWARM_USER_DIRECTORY`（Router 创建内置容器时注入）存在时，
-  workspace 挂载源映射为 `<user_dir>/.jiuwenswarm/agent/workspace`、
-  项目目录映射为 `<user_dir>/workspace`（宿主真实路径 → 容器内路径）。
-- `sandbox.user` / `sandbox.group` 透传（`get_sandbox_endpoint` yuanrong 可选键），
-  sysop_builder 解析为数字 `uid:gid`（名称经 pwd/grp 查找）写入 extra_params.user，
-  交给 YuanRong 作为容器运行身份；多用户身份的实际消费在 YuanRong 侧，
-  本仓库只负责透传。user/group 必须同时设置才生效，数值或字符串的 `0` 均为合法值。
-- AgentOS 的 `_resolve_project_dir` 与自动管理路径视图跳过 jiuwenswarm 数据根
-  （`.jiuwenswarm` / `JIUWENSWARM_DATA_DIR`），该树已由 workspace 专属挂载覆盖。
-- AgentOS 的 `build_yuanrong_sandbox_status_view` 异常回落空挂载列表；个人版仍回落 yaml mounts。
-- deploy/yuanrong 模板 sandbox 段补 `cpu` / `memory` / `user` / `group` 占位符
-  （TOOL_SANDBOX_CPU/MEMORY/USER/GROUP，默认留空；这些是工具沙箱的静态部署配置，
-  Gateway etcd 数据面不会覆盖 sandbox.cpu/memory）。
-
-Conch 的挂载构造（`jiuwenbox-conch` 分支的内联后处理、单文件 config 省略、
-run_as_user/run_as_group）是本分支的既有实现，与 agent_os 的
-`share_mounts_only` 方案等价，run_as 的数值 `0` 同样保留。个人版即使显式使用
-YuanRong，也保持原有 `sandbox.mounts` / `rootfs.mounts` 合并、挂载去重、默认及
-显式 workdir。YuanRong 的新增运行身份传递限定于 AgentOS 场景。
 
 ## 冻结客户端对齐审计（2026-10-09）
 

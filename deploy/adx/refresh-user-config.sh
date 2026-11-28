@@ -11,10 +11,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python${YR_PYTHON_VERSION:-3.11}}"
+PYTHON_BIN="${PYTHON_BIN:-python${PYTHON_VERSION:-3.11}}"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-    echo "❌ 找不到 Python 解释器: ${PYTHON_BIN}（可用 PYTHON_BIN 或 YR_PYTHON_VERSION 覆盖）" >&2
+    echo "❌ 找不到 Python 解释器: ${PYTHON_BIN}（可用 PYTHON_BIN 或 PYTHON_VERSION 覆盖）" >&2
     exit 1
 fi
 

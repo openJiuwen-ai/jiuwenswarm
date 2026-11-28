@@ -220,13 +220,34 @@ into per-sandbox **audit log** persistence. Files are **kept after the
 sandbox is gone**, which is the shape you want for offline inspection,
 log shipping, or postmortem debugging.
 
-> Note: the historical per-sandbox `runtime.log` and `runtime.bg-N.log`
-> files (raw daemon and background-exec stdout/stderr) were removed.
-> The audit log already carries the truncated per-command stdout/stderr,
-> which has proven to be enough for routine debugging while letting us
-> drop a class of "two files for the same thing" foot-guns. If you do
-> need the full raw byte stream, run the container with `docker run -it`
-> so the bwrap output streams to your terminal.
+Supervisor raw daemon and background-process output can be redirected through
+top-level `stdout` / `stderr` fields on `POST /api/v1/sandboxes`:
+
+```json
+{
+  "stdout": "/opt/adx/logs/runtime/agent.out",
+  "stderr": "/opt/adx/logs/runtime/agent.err"
+}
+```
+
+Omitted fields default to empty strings. For redirection, prepare a dedicated
+directory owned by the management service. Paths must be directly under
+`JIUWENBOX_RUNTIME_LOG_DIR` (default `/opt/adx/logs/runtime`, or
+`/var/log/agentos/adx_sessions/runtime` for the AgentOS profile). If ADX uses
+a custom `runtime_logs.directory`, configure the same value on Jiuwenbox.
+The directory must not be group- or world-writable. Files use mode `0600` when
+created and must be regular, service-owned files without symlinks or hard
+links. The daemon receives write-only output descriptors. Use a separate
+log pair for each sandbox. Redirected launches bypass parked warm slots.
+
+Background commands inherit only the configured streams. Unconfigured background
+streams remain discarded; synchronous `exec` still returns its captured output.
+Background status responses keep `stdout` and `stderr` empty; read the host files
+for raw output. The create/start path retains startup diagnostics and reads only
+bytes appended by this launch, ignoring old ready markers. The parent closes its
+file descriptors after readiness; long-running descendants keep writing.
+Jiuwenbox does not rotate these files; configure retention externally after
+termination. This feature applies to Supervisor, not the Conch adapter.
 
 Every operation produces **a single row** in the audit JSONL, emitted
 after the call returns so the payload carries both intent (command,

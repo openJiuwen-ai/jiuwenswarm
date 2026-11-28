@@ -44,9 +44,9 @@ def test_default_code_configs_do_not_duplicate_model_enabled_multimodal_tools():
         / "config.team.distributed.teammate.yaml",
         repo_root
         / "deploy"
-        / "yuanrong"
+        / "adx"
         / "conf"
-        / "gateway-config-yuanrong.template.yaml",
+        / "gateway-config.template.yaml",
     ]
     multimodal_tools = {
         "visual_question_answering",
