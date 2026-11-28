@@ -4925,6 +4925,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
         const goal = payload.goal;
+        // 快照会把 goal: null 落成“已清除”。收尾判断必须用清除前的状态，
+        // 否则普通对话的 Goal 续跑护栏会被这次快照自己拆掉。
+        const goalWasActive = Boolean(
+          failedSessionId &&
+          useGoalStore.getState().runtimes[failedSessionId]?.goal?.status === 'active',
+        );
         if (goal !== undefined) {
           applyGoalSnapshot(payload);
         }
@@ -4959,7 +4965,48 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // chat.final/chat.processing_status(false)，立即关闭 session 级 processing 展示
           // （统一走 closeHeartbeatSessionState，按 run_id 去重）。
           closeHeartbeatSessionState(sessionId, hbErrorAutomation.run_id);
+          return;
         }
+        // 普通对话：事件类型仍是 execution.error，原因在 payload.message。
+        // goal 为对象时只走上面的快照；Heartbeat 已在上面收口。适配层对没有
+        // goal 的失败会带上 goal: null，那条才是普通对话。
+        if (goal !== undefined && goal !== null) return;
+        const runtime = failedSessionId ? useChatStore.getState().getRuntime(failedSessionId) : undefined;
+        if (
+          payload.execution_id && runtime?.activeExecutionId &&
+          payload.execution_id !== runtime.activeExecutionId
+        ) return;
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        if (shouldDropDuplicatedEvent('execution.error', payload)) return;
+        const errorMsg =
+          typeof payload.message === 'string' && payload.message.trim()
+            ? payload.message
+            : t('network.unknownError');
+        useChatStore.getState().setThinking(sessionId, false);
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+        if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
+          if (!goalWasActive) {
+            useChatStore.getState().setProcessing(sessionId, false);
+            drainTaskQueueIfIdle(sessionId);
+            localSendPendingRef.current.delete(sessionId);
+            updateSession(sessionId, { is_processing: false });
+            useWorkspaceStore.getState().patchSession(sessionId, { is_processing: false });
+          }
+        }
+        useChatStore.getState().setExecutionError(sessionId, errorMsg);
+        onErrorRef.current?.(errorMsg);
+        useChatStore.getState().setSessionError(sessionId, errorMsg);
+        useChatStore.getState().addMessage(sessionId, {
+          id: prefixedMessageId('error-'),
+          role: 'system',
+          content: t('network.errorPrefix', { message: errorMsg }),
+          timestamp: new Date().toISOString(),
+        });
       }),
       webClient.on('context.usage', ({ payload }) => {
         receiveContextUsage(payload);
