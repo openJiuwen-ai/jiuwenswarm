@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
+from openjiuwen.core.extension.data import StateAddress
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
 from jiuwenswarm.extensions_v2.management import ExtensionManager
@@ -15,6 +16,7 @@ from jiuwenswarm.extensions_v2.webui.models import (
     RenderNode,
     RenderStatus,
     RenderTarget,
+    UiActionInput,
     UiRenderInput,
 )
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
@@ -31,10 +33,16 @@ from dataclasses import replace
 from openjiuwen.core.events import Event
 from openjiuwen.core.extension.data import StateRef
 
-from jiuwenswarm.extensions_v2.webui.models import RenderNode
+from jiuwenswarm.extensions_v2.webui.models import RenderNode, UiRenderInput
 
 
 PACKAGE_ID = "webui.state-refresh"
+
+
+def counter(value):
+    return RenderNode(
+        "Button", {"value": str(value)}, events={"ui.click": {"id": "counter", "args": {}}},
+    )
 
 
 class Extension:
@@ -42,14 +50,47 @@ class Extension:
         registrar.register_event_handler(
             "ui.render", self.render, {"target.package_id": PACKAGE_ID},
         )
+        registrar.register_event_handler(
+            "ui.click", self.click, {"target.package_id": PACKAGE_ID},
+        )
         registrar.register_event_handler("test.event", self.update, {})
 
     async def render(self, event, ops, next_handler):
-        ref = StateRef(PACKAGE_ID, event.event_input.target.instance_key)
+        request = event.event_input
+        uses_prebuilt_tree = request.target.instance_key == "prebuilt"
+        root = request.root
+        if uses_prebuilt_tree and root is None:
+            return await next_handler(event)
+        if not uses_prebuilt_tree and root is not None:
+            return await next_handler(event)
+        ref = StateRef(PACKAGE_ID, request.target.instance_key)
         snapshot = await ops.state.get(ref)
         value = snapshot.value if snapshot.exists else 0
-        request = replace(event.event_input, root=RenderNode("Text", {"value": str(value)}))
+        if root is None:
+            root = counter(value)
+        else:
+            props = dict(root.props)
+            props["value"] = str(value)
+            root = replace(root, props=props)
+        request = replace(request, root=root)
         return await next_handler(Event(event.event_type, request))
+
+    async def click(self, event, ops, next_handler):
+        receipt = await next_handler(event)
+        if not receipt.accepted:
+            return receipt
+        target = event.event_input.target
+        if target.instance_key == "explicit-only":
+            await ops.ui.render(UiRenderInput(target))
+            await ops.ui.render(UiRenderInput(target))
+        else:
+            ref = StateRef(PACKAGE_ID, target.instance_key)
+            snapshot = await ops.state.get(ref)
+            value = (snapshot.value if snapshot.exists else 0) + 1
+            await ops.state.set(ref, value)
+            visible_value = f"manual {value}" if target.instance_key == "different-tree" else value
+            await ops.ui.render(UiRenderInput(target, root=counter(visible_value)))
+        return receipt
 
     async def update(self, event, ops, next_handler):
         await ops.state.set(
@@ -143,6 +184,26 @@ async def _wait_for_frames(transport: FakeTransport, count: int) -> None:
             return
         await asyncio.sleep(0.01)
     assert len(transport.frames) >= count
+
+
+async def _mount_counter(
+    tmp_path: Path, transport: FakeTransport, instance_key: str = "panel", *, root: RenderNode | None = None,
+) -> tuple[WebUIRuntime, ExtensionManager, RenderTarget, SessionContext]:
+    runtime, manager = await _runtime(tmp_path, transport)
+    package = write_package(tmp_path / "source", package_id="webui.state-refresh", module_source=STATEFUL_EXTENSION)
+    assert (await manager.install([package]))[0].status == "SUCCESS"
+    target = RenderTarget("session-1", SLOT, "webui.state-refresh", instance_key)
+    context = SessionContext(target.session_id)
+    result = await runtime.render(UiRenderInput(target, root=root), context)
+    assert result is not None and result.status is RenderStatus.DELIVERED, transport.errors
+    assert [(frame.revision, frame.root.props["value"]) for frame in transport.frames] == [(1, "0")]
+    return runtime, manager, target, context
+
+
+def _counter_click(target: RenderTarget, revision: int) -> UiActionInput:
+    return UiActionInput("ui.click", target, {
+        "node_key": "0", "action_id": "counter", "args": {}, "data": {}, "revision": revision,
+    })
 
 
 @pytest.mark.asyncio
@@ -415,32 +476,128 @@ async def test_header_cleanup_at_capacity_does_not_evict_other_instances(tmp_pat
 @pytest.mark.asyncio
 async def test_state_set_rebuilds_the_delivered_dependent_target(tmp_path: Path) -> None:
     transport = FakeTransport()
-    runtime, manager = await _runtime(tmp_path, transport)
-    package = write_package(
-        tmp_path / "source",
-        package_id="webui.state-refresh",
-        module_source=STATEFUL_EXTENSION,
-    )
-    assert (await manager.install([package]))[0].status == "SUCCESS"
-    target = RenderTarget("session-1", SLOT, "webui.state-refresh", "panel")
+    runtime, manager, target, context = await _mount_counter(tmp_path, transport)
 
     try:
-        delivered = await runtime.render(
-            UiRenderInput(target=target, root=RenderNode("Text", {"value": "placeholder"})),
-            SessionContext("session-1"),
-        )
-        assert delivered is not None and delivered.status is RenderStatus.DELIVERED
-        assert transport.frames[-1].root.props["value"] == "0"
+        for value in (1, 2):
+            await runtime.bus.trigger(Event("test.event", {"key": target.instance_key, "value": value}), context)
+            await _wait_for_frames(transport, value + 1)
+        assert [(frame.revision, frame.root.props["value"]) for frame in transport.frames] == [
+            (1, "0"), (2, "1"), (3, "2"),
+        ]
+    finally:
+        await runtime.shutdown()
+        await manager.shutdown()
 
-        await runtime.bus.trigger(
-            Event("test.event", {"key": "panel", "value": 7}),
-            SessionContext("session-1"),
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("explicit_first", "different_tree"),
+    [(True, False), (False, False), (False, True)],
+    ids=["explicit-first", "automatic-first", "automatic-first-with-different-tree"],
+)
+async def test_counter_click_preserves_state_and_delivers_expected_frames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_first: bool, different_tree: bool,
+) -> None:
+    transport = FakeTransport()
+    instance_key = "different-tree" if different_tree else "panel"
+    runtime, manager, target, context = await _mount_counter(tmp_path, transport, instance_key)
+    explicit_completed = asyncio.Event()
+    refresh_target = runtime._refresh_state_target
+    render_with_route = runtime._render_with_route
+    frames_before_click = len(transport.frames)
+
+    async def wait_for_refresh() -> None:
+        refresh = runtime._state_refresh_tasks.get(target.key)
+        if refresh is not None:
+            await asyncio.wait_for(refresh, timeout=2)
+
+    async def refresh_after_explicit(target_key: str) -> None:
+        await explicit_completed.wait()
+        await refresh_target(target_key)
+
+    async def render_after_automatic(
+        request: UiRenderInput,
+        session_context: SessionContext | None,
+        *,
+        connection_id: str,
+        user_id: str,
+        channel_id: str,
+    ) -> object:
+        if request.root is not None:
+            await _wait_for_frames(transport, frames_before_click + 1)
+            await wait_for_refresh()
+        return await render_with_route(
+            request, session_context, connection_id=connection_id, user_id=user_id, channel_id=channel_id,
         )
+
+    if explicit_first:
+        monkeypatch.setattr(runtime, "_refresh_state_target", refresh_after_explicit)
+    else:
+        monkeypatch.setattr(runtime, "_render_with_route", render_after_automatic)
+
+    try:
+        assert manager.state_store is not None
+        address = StateAddress(target.package_id, target.instance_key, "session", target.session_id)
+        for value in (1, 2):
+            frames_before_click = len(transport.frames)
+            revision = transport.frames[-1].revision
+            explicit_completed.clear()
+            result = await runtime.dispatch(_counter_click(target, revision))
+            assert result is not None and result.accepted and result.status == "handled"
+            explicit_completed.set()
+            await wait_for_refresh()
+
+            snapshot = await manager.state_store.get(address)
+            assert (snapshot.exists, snapshot.value, snapshot.version) == (True, value, value)
+            expected = [(revision + 1, str(value))]
+            if different_tree:
+                expected.append((revision + 2, f"manual {value}"))
+            new_frames = transport.frames[frames_before_click:]
+            assert [(frame.revision, frame.root.props["value"]) for frame in new_frames] == expected
+
+        frames_after_clicks = len(transport.frames)
+        revision = transport.frames[-1].revision
+        await runtime.bus.trigger(Event("test.event", {"key": target.instance_key, "value": 3}), context)
+        await _wait_for_frames(transport, frames_after_clicks + 1)
+        await wait_for_refresh()
+        assert len(transport.frames) == frames_after_clicks + 1
+        assert (transport.frames[-1].revision, transport.frames[-1].root.props["value"]) == (revision + 1, "3")
+        assert not transport.errors
+    finally:
+        explicit_completed.set()
+        await runtime.shutdown()
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_state_refresh_supplies_the_prebuilt_tree_to_a_render_handler(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    initial_tree = RenderNode("Button", {"value": "initial", "variant": "outlined"})
+    runtime, manager, target, context = await _mount_counter(tmp_path, transport, "prebuilt", root=initial_tree)
+
+    try:
+        await runtime.bus.trigger(Event("test.event", {"key": target.instance_key, "value": 1}), context)
         await _wait_for_frames(transport, 2)
+        assert [frame.revision for frame in transport.frames] == [1, 2]
+        assert transport.frames[-1].root.props == {"value": "1", "variant": "outlined"}
+        assert not transport.errors
+    finally:
+        await runtime.shutdown()
+        await manager.shutdown()
 
-        assert transport.frames[-1].target.key == target.key
-        assert transport.frames[-1].root.props["value"] == "7"
-        assert transport.frames[-1].revision == 2
+
+@pytest.mark.asyncio
+async def test_click_without_state_write_delivers_both_explicit_frames(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    runtime, manager, target, _context = await _mount_counter(tmp_path, transport, "explicit-only")
+
+    try:
+        result = await runtime.dispatch(_counter_click(target, 1))
+        assert result is not None and result.accepted and result.status == "handled"
+        assert [(frame.revision, frame.root.props["value"]) for frame in transport.frames] == [
+            (1, "0"), (2, "0"), (3, "0"),
+        ]
     finally:
         await runtime.shutdown()
         await manager.shutdown()
@@ -460,7 +617,7 @@ async def test_cleared_target_no_longer_refreshes_after_state_changes(tmp_path: 
 
     try:
         await runtime.render(
-            UiRenderInput(target=target, root=RenderNode("Text", {"value": "placeholder"})),
+            UiRenderInput(target=target),
             SessionContext("session-1"),
         )
         await runtime.render(UiRenderInput(target=target, mode=RenderMode.CLEAR), SessionContext("session-1"))
@@ -494,13 +651,13 @@ async def test_concurrent_render_delivery_keeps_state_dependencies_per_target(tm
     right = RenderTarget("session-1", SLOT, "webui.state-refresh", "right")
     context = SessionContext("session-1")
     left_render = asyncio.create_task(
-        runtime.render(UiRenderInput(left, root=RenderNode("Text", {"value": "left"})), context)
+        runtime.render(UiRenderInput(left), context)
     )
 
     try:
         await asyncio.wait_for(transport.entered.wait(), 2)
         right_output = await runtime.render(
-            UiRenderInput(right, root=RenderNode("Text", {"value": "right"})),
+            UiRenderInput(right),
             context,
         )
         transport.release.set()

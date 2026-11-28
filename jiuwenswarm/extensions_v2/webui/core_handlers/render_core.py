@@ -34,6 +34,7 @@ def build_render_core_handler(
     *,
     on_delivered: Callable[[UiRenderInput, EventHandlerOps | None], Awaitable[None]] | None = None,
     on_dropped: Callable[[RenderTarget], None] | None = None,
+    reuse_frame: Callable[[RenderFrame, RenderInstance, EventHandlerOps | None], Awaitable[bool]] | None = None,
 ) -> EventHandler:
     """Build the single CORE handler for ui.render."""
 
@@ -107,6 +108,10 @@ def build_render_core_handler(
                     revision=preview.revision,
                 )
                 return UiRenderOutput(status=RenderStatus.REJECTED)
+
+            if reuse_frame is not None and previous.root is not None and request.mode is RenderMode.REPLACE:
+                if await reuse_frame(preview, claim.instance, ops):
+                    return UiRenderOutput(status=RenderStatus.DELIVERED, revision=previous.revision)
 
             registered = registry.get(request.target) is claim.instance
             frame = registry.commit(claim.instance, request)
