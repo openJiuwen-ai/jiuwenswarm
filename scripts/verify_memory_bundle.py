@@ -12,30 +12,38 @@ import traceback
 from importlib import import_module
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 
 def verify_memory_portal(url: str | None) -> None:
     """Load the loopback page and exchange its one-time launch token."""
     page = urlsplit(url or "")
-    token = parse_qs(page.fragment).get("access", [""])[0]
-    if page.scheme != "http" or page.hostname != "127.0.0.1" or not page.port or not token:
+    if page.scheme != "http" or page.hostname != "127.0.0.1" or not page.port:
         raise RuntimeError("JiuwenMemory Portal did not issue a loopback launch link")
-    origin = f"http://127.0.0.1:{page.port}"
+    token = parse_qs(page.fragment).get("access", [""])[0]
+    if not token:
+        raise RuntimeError("JiuwenMemory Portal launch link is missing its access token")
+    authority = f"127.0.0.1:{page.port}"
+    origin = urlunsplit(("http", authority, "", "", ""))
+    page_url = urlunsplit(("http", authority, page.path, page.query, ""))
+    bootstrap_url = urlunsplit(("http", authority, "/portal/api/bootstrap", "", ""))
     opener = build_opener(ProxyHandler({}))
     request = Request(
-        origin + "/portal/api/bootstrap",
+        bootstrap_url,
         data=json.dumps({"token": token, "embedded": True}).encode(),
         headers={"Content-Type": "application/json", "Origin": origin, "X-Memory-Portal-Browser": "1"},
     )
     try:
-        with opener.open(origin + page.path, timeout=10) as response:
+        with opener.open(page_url, timeout=10) as response:
             if response.status != 200 or response.headers.get_content_type() != "text/html" or not response.read(1):
                 raise RuntimeError("JiuwenMemory Portal did not serve its entry page")
         with opener.open(request, timeout=10) as response:
-            if response.status != 200 or not json.load(response).get("session_token"):
+            session = json.load(response)
+            if response.status != 200 or not isinstance(session, dict) or not session.get("session_token"):
                 raise RuntimeError("JiuwenMemory Portal did not accept its launch token")
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("JiuwenMemory Portal returned an invalid bootstrap response") from exc
     except OSError as exc:
         raise RuntimeError("JiuwenMemory Portal HTTP request failed") from exc
 
@@ -44,6 +52,11 @@ async def verify_memory_runtime(root: Path, *, check_portal: bool = False) -> No
     """Assemble the real provider without sending model requests or ingesting media."""
     from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
     from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import _build_security_provider
+
+    supports_portal = hasattr(AgentMemoryMemoryProvider, "open_portal")
+    if check_portal and not supports_portal:
+        logging.warning("Skipping HTTP Portal check because the bundled JiuwenMemory SDK lacks Portal support")
+    verify_portal = check_portal and supports_portal
 
     for video in (False, True):
         profile_root = root / ("video" if video else "text")
@@ -69,8 +82,8 @@ async def verify_memory_runtime(root: Path, *, check_portal: bool = False) -> No
                 "video_api_key": "bundle-check",
             })
         portal_options = {}
-        if hasattr(AgentMemoryMemoryProvider, "open_portal"):
-            portal_options["portal"] = {"enabled": check_portal and not video}
+        if supports_portal:
+            portal_options["portal"] = {"enabled": verify_portal and not video}
         provider = AgentMemoryMemoryProvider(
             user_id="bundle-check",
             security_provider=_build_security_provider("local", "bundle-check"),
@@ -95,7 +108,7 @@ async def verify_memory_runtime(root: Path, *, check_portal: bool = False) -> No
                 raise RuntimeError(f"Missing video memory tools: {sorted(video_tools - names)}")
             if not video and video_tools & names:
                 raise RuntimeError("Video tools registered without a video profile")
-            if check_portal and not video:
+            if verify_portal and not video:
                 await asyncio.to_thread(verify_memory_portal, await provider.open_portal())
         finally:
             await provider.shutdown()
@@ -146,7 +159,7 @@ def main() -> int:
             root = Path(os.environ.get("JIUWENSWARM_DATA_DIR", os.getcwd()))
             (root / "memory-bundle-check.log").write_text(traceback.format_exc(), encoding="utf-8")
             return 1
-        logging.info("JiuwenMemory frozen SDK, video tools and HTTP Portal verification passed")
+        logging.info("JiuwenMemory frozen bundle verification passed")
         return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True, type=Path)
