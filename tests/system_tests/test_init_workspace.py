@@ -56,9 +56,9 @@ def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch, interact
     monkeypatch.delenv("JIUWENSWARM_CONFIG_DIR", raising=False)
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
 
-    # Reset module-level caches in utils.py
-    import jiuwenswarm.common.paths as _paths_unused_marker
-import jiuwenswarm.common.utils as utils_module
+    # Reset module-level path caches.
+    import jiuwenswarm.common.paths as paths_module
+
     monkeypatch.setattr(paths_module, "_user_home", temp_home)
     monkeypatch.setattr(paths_module, "_workspace_base_dir", None)
     monkeypatch.setattr(paths_module, "_initialized", False)
@@ -254,7 +254,8 @@ async def test_memory_template_matches_builtin_provider(tmp_path, monkeypatch, c
 
     runtime_root = tmp_path / "runtime"
     workspace = JiuWenSwarmDeepAdapter._get_memory_workspace(
-        SimpleNamespace(_workspace_dir=str(runtime_root)), config=config
+        SimpleNamespace(_workspace_dir=str(runtime_root), _resolve_runtime_language=lambda: "zh"),
+        config=config,
     )
     operation = SysOperation(SysOperationCard(id="test-memory-workspace-seed"))
     await DirectoryBuilder(operation, str(runtime_root)).build(workspace.directories)
