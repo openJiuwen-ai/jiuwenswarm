@@ -4638,7 +4638,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         ? t('chat.addFileDisabled')
                         : isDesignLanding
                           ? t('chat.addFile')
-                          : t('chat.addFileTooltip')
+                          : t(isTeamMode ? 'chat.addTeamFileTooltip' : 'chat.addFileTooltip')
                     }
                     {...attachTooltipHandlers}
                   >
