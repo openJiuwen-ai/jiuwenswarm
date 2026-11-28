@@ -51,8 +51,8 @@ Gateway 和 AS 共用 `<workspace>/config/.env`，Gateway 在 AgentOS profile �
 MCP 预置包补齐或升级时也保留已有配置文件；新增配置项由部署模板管理。
 个人版继续执行既有版本迁移。
 
-升级时部署脚本先调用 `jiuwenswarm.agentos_migration`。迁移优先读取旧 Gateway 配置
-`infra/config/config.yaml`，也支持旧版一体机的共享 `config/config.yaml`。
+升级时部署脚本先调用 `jiuwenswarm.agentos_migration`。已有独立 Gateway 配置时只刷新部署字段。
+首次拆分时从旧版共享的 `config/config.yaml` 复制用户配置。
 用户配置写入 `infra/config/config.yaml`，VIP、etcd 和 ADX 连接等字段采用本次部署值。
 AS 配置由不带 `-f` 的 `jiuwenswarm-init` 保留。
 

@@ -251,8 +251,8 @@ vim .env.custom
 实例名配置后，`jiuwenswarm-init` 和 `jiuwenswarm-gateway` 命令会自动通过 `JIUWENSWARM_DATA_DIR` 环境变量指向对应的实例目录。
 
 AgentOS 升级时，`gateway_handler.sh` 在 `jiuwenswarm-init` 前调用
-`python -m jiuwenswarm.agentos_migration`。迁移优先读取旧 Gateway 配置
-`infra/config/config.yaml`，也支持旧版一体机的共享 `config/config.yaml`。
+`python -m jiuwenswarm.agentos_migration`。已有独立 Gateway 配置时只刷新部署字段。
+首次拆分时从旧版共享的 `config/config.yaml` 复制用户配置。
 用户配置迁入 `infra/config/config.yaml`，VIP、etcd 和 ADX 连接等字段采用本次部署值。
 旧 AS 配置由不带 `-f` 的 `jiuwenswarm-init` 保留并补齐新键。
 

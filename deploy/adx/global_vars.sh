@@ -69,7 +69,7 @@ declare -A DEPLOY_VARS=(
     ["DISCONNECT_CLEANUP_TIMEOUT_SECONDS"]=""
     ["OS_TYPE"]=""
     ["EXTENSION_DIRS"]=""
-    # Gateway config directory override. Defaults to <workspace>/config.
+    # Gateway config directory override. Defaults to <workspace>/infra/config.
     ["JIUWENSWARM_GATEWAY_CONFIG_DIR"]=""
     # Optional explicit Gateway template path; empty -> use the bundled ADX template.
     ["GATEWAY_CONFIG_TEMPLATE_FILE"]=""
