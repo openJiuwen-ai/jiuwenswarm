@@ -97,7 +97,7 @@ def test_refresh_updates_card_description(tmp_path, monkeypatch, _isolated_state
     _write_min_skill(tmp_path, "docx-craft", "docx")
     _write_min_skill(tmp_path, "xlsx-craft", "xlsx")
     _patch_discover_to(tmp_path, monkeypatch)
-    assert "暂无" in stt.skill_turbo.card.description  # 初始（固化）为暂无
+    assert "docx-craft" not in stt.skill_turbo.card.description  # 共享模板不包含请求清单
 
     names = stt.refresh_skill_acceleration_description()
     assert names == ["docx-craft", "xlsx-craft"]

@@ -45,9 +45,11 @@ def env():
     return SkillTurboEnvironment({"skill_codes_dir": "", "skill_code_import_package": ""})
 
 
-def test_catalog_changes_preserve_legacy_public_tool_schema(isolated):
+def test_catalog_changes_preserve_query_and_explicit_execution_schema(isolated):
     schema = isolated.skill_turbo.card.input_params
-    assert set(schema['properties']) == {'query', 'fresh_start'}
+    assert set(schema['properties']) == {
+        'query', 'fresh_start', 'skill', 'accelerator', 'params', 'accelerators', 'auto_batch',
+    }
     assert schema['required'] == ['query']
 
 
@@ -57,8 +59,6 @@ def test_description_recovery_failure_is_logged_and_clears_catalog(monkeypatch, 
     assert isolated.refresh_skill_acceleration_description() == []
     assert 'roots recovery failed' in caplog.text
     assert '当前内部支持：暂无' in isolated.skill_turbo.card.description
-
-
 def rewrite(skill, raw):
     (skill / "turbo/accelerators.json").write_text(json.dumps(raw), encoding="utf-8")
 
@@ -256,6 +256,13 @@ def test_external_name_ambiguity_and_safety_rejection(tmp_path, isolated, caplog
     assert "demo" not in env().skills
 
 
+def test_tool_signature_keeps_legacy_and_adds_single_segment_fields(tmp_path, isolated):
+    make_skill(tmp_path)
+    schema = isolated.skill_turbo.card.input_params
+    assert set(schema["properties"]) == {"query", "fresh_start", "skill", "accelerator", "params", "accelerators", "auto_batch"}
+    isolated.refresh_skill_acceleration_description()
+    assert "accelerators=" not in isolated.skill_turbo.card.description
+    assert isolated._TEMPLATE_EXCLUSION_SUFFIX in isolated.skill_turbo.card.description
 
 
 def test_real_directory_io_failure_and_read_failure_do_not_register_stale(tmp_path, monkeypatch, isolated):

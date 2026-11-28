@@ -376,3 +376,21 @@ async def test_real_registered_tool_is_reclaimed_on_each_exit(segment, monkeypat
         value.release_registered_tools()
 
 
+@pytest.mark.parametrize('adapter_name', ['JiuWenSwarmDeepAdapter', 'JiuwenSwarmFlashAdapter'])
+def test_adapter_paths_copy_execution_configuration(adapter_name):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
+
+    adapter_type = {'JiuWenSwarmDeepAdapter': JiuWenSwarmDeepAdapter,
+                    'JiuwenSwarmFlashAdapter': JiuwenSwarmFlashAdapter}[adapter_name]
+    value = adapter_type.__new__(adapter_type)
+    value._config_cache = {'skill_turbo': {'enabled': False, 'nested': {'unchanged': True}}}
+    value._instance = None
+    for field in ('_model', '_vision_model_config', '_audio_model_config', '_video_model_config',
+                  '_image_gen_model_config', '_sys_operation'):
+        setattr(value, field, None)
+    value._create_skill_turbo_fallback_handler = Mock(return_value=None)
+    result = value.build_skill_turbo_config()
+    assert result['skill_turbo']['enabled'] is False
+    result['skill_turbo']['nested']['unchanged'] = False
+    assert value._config_cache['skill_turbo']['nested']['unchanged'] is True

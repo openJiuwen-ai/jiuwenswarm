@@ -14,7 +14,6 @@ from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     _prepare_parent_stream_output,
-    _push_task_event_out_of_band,
     _without_inner_task_routing,
     reset_skill_turbo_outer_todo_active,
     set_skill_turbo_outer_todo_active,
@@ -952,10 +951,10 @@ async def test_not_handled_clears_resume_ctx(_skill_turbo_runtime) -> None:
     ("outer_todo_active", "expected_event_types"),
     [
         (True, ["chat.delta", "chat.usage_metadata"]),
-        (False, ["task.update", "chat.delta", "chat.usage_metadata"]),
+        (False, ["chat.delta", "chat.usage_metadata"]),
     ],
 )
-async def test_outer_todo_hides_inner_tasks_without_hiding_stage_messages(
+async def test_all_turbo_runs_hide_inner_tasks_without_hiding_stage_messages(
     _skill_turbo_runtime,
     outer_todo_active: bool,
     expected_event_types: list[str],
@@ -1043,10 +1042,7 @@ async def test_outer_todo_hides_inner_tasks_without_hiding_stage_messages(
         if payload["event_type"] == "chat.delta"
     )
     assert "Stage 1: 流水线初始化" in delta["content"]
-    if outer_todo_active:
-        assert all("task_id" not in payload for payload in forwarded)
-    else:
-        assert forwarded[0]["tasks"][0]["task_id"] == "task_deadbeef"
+    assert all("task_id" not in payload for payload in forwarded)
 
 
 @pytest.mark.asyncio
@@ -1115,7 +1111,7 @@ async def test_skill_turbo_returns_failure_when_p10_delivery_failed(
 
 
 @pytest.mark.asyncio
-async def test_task_update_is_also_pushed_out_of_band(_skill_turbo_runtime) -> None:
+async def test_hidden_task_updates_never_reach_fifo_or_out_of_band(_skill_turbo_runtime) -> None:
     adapter, _turbo_session = _skill_turbo_runtime
     parent_session = SimpleNamespace(
         write_stream=AsyncMock(),
@@ -1204,70 +1200,18 @@ async def test_task_update_is_also_pushed_out_of_band(_skill_turbo_runtime) -> N
         reset_skill_turbo_outer_todo_active(token)
 
     assert result.get("success") is True
-    send_push.assert_awaited_once()
-    pushed = send_push.await_args.args[0]
-    assert pushed["request_id"] == "7fcaa6ad-4b55-454e-909e-8a2897be8d05"
-    assert pushed["session_id"] == "officeclaw_e0495cc952026dae2fb252ef"
-    assert pushed["payload"]["event_type"] == "task.update"
-    assert pushed["payload"]["tasks"][0]["task_content"] == "Stage 11: 幻灯片生成"
-    assert parent_session.write_stream.await_count == 4
-
-
-@pytest.mark.asyncio
-async def test_push_task_event_skips_non_task_events() -> None:
-    send_push = AsyncMock(return_value=1)
-    server = SimpleNamespace(send_push=send_push)
-    with patch(
-        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
-        return_value=server,
-    ):
-        await _push_task_event_out_of_band(
-            "chat.delta",
-            {"event_type": "chat.delta", "content": "x"},
-            request_id="r1",
-            channel_id="officeclaw",
-            session_id="sess-1",
-        )
     send_push.assert_not_awaited()
+    outputs = [call.args[0] for call in parent_session.write_stream.await_args_list]
+    assert len(outputs) == 1
+    assert outputs[0].payload['content'] == '页面生成完成'
+    assert outputs[0].payload['event_type'] == 'chat.delta'
 
 
 @pytest.mark.asyncio
-async def test_push_task_event_skips_start_and_complete() -> None:
-    send_push = AsyncMock(return_value=1)
-    server = SimpleNamespace(send_push=send_push)
-    with patch(
-        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
-        return_value=server,
-    ):
-        await _push_task_event_out_of_band(
-            "task.start",
-            {"event_type": "task.start", "task_id": "task_a"},
-            request_id="r1",
-            channel_id="officeclaw",
-            session_id="sess-1",
-        )
-        await _push_task_event_out_of_band(
-            "task.complete",
-            {"event_type": "task.complete", "task_id": "task_a"},
-            request_id="r1",
-            channel_id="officeclaw",
-            session_id="sess-1",
-        )
-    send_push.assert_not_awaited()
-
-
-# ── B_03：taskProgress 槽位泄漏清算契约 ──
-# 复现链：入口 gate 误判 forwarded（同轮并行 todo_create + skill_acceleration_exec
-# 竞态）→ turbo Stage 快照顶掉外层 todo 槽位 → 该轮终态前被打断（HITL）→
-# 续跑入口判 skip，终态快照被抑制 → 槽位永驻 in_progress（"Stage 卡住"）。
-
-
-@pytest.mark.asyncio
-async def test_skip_mode_terminal_settles_leaked_task_slot(
+async def test_terminal_snapshot_does_not_reintroduce_stages_from_old_slot(
     _skill_turbo_runtime,
 ) -> None:
-    """B_03 复现：登记遗留（首入口误判 forwarded）+ skip 续跑入口终止性出口
-    → 终态快照必须补发关账（FIFO+OOB）；task.start/complete 仍禁。"""
+    """旧槽位遗留不能成为补发内部阶段行的例外。"""
     adapter, _turbo_session = _skill_turbo_runtime
     parent_session = SimpleNamespace(
         write_stream=AsyncMock(),
@@ -1322,20 +1266,13 @@ async def test_skip_mode_terminal_settles_leaked_task_slot(
         call.args[0].payload
         for call in parent_session.write_stream.await_args_list
     ]
-    task_updates = [
-        p for p in forwarded if p.get("event_type") == "task.update"
-    ]
-    # 全部流内快照被 skip 抑制，仅清算补发一帧终态快照
-    assert len(task_updates) == 1
-    assert all(t["status"] == "completed" for t in task_updates[0]["tasks"])
-    # task.start 不得放行（taskStack 归段保护——skip 语义不因清算破例）
-    assert all(p.get("event_type") != "task.start" for p in forwarded)
-    # 登记簿已注销；OOB 直推同步发出（右侧任务列表由 OOB 驱动）
-    assert task_slot_guard.peek_leaked_task_slot("sess-leak") is None
-    assert send_push.await_count == 1
-    pushed = send_push.await_args.args[0]
-    assert pushed["payload"]["event_type"] == "task.update"
-    assert all(t["status"] == "completed" for t in pushed["payload"]["tasks"])
+    assert [p['event_type'] for p in forwarded] == ['chat.delta']
+    assert forwarded[0]['content'] == '交付完成'
+    assert 'task_id' not in forwarded[0]
+    send_push.assert_not_awaited()
+    assert task_slot_guard.peek_leaked_task_slot('sess-leak') == frozenset(
+        {'task_deadbeef', 'task_stage13'}
+    )
 
 
 @pytest.mark.asyncio
@@ -1381,11 +1318,10 @@ async def test_skip_mode_without_leak_keeps_slot_untouched(
 
 
 @pytest.mark.asyncio
-async def test_forwarded_run_closes_own_slot_on_terminal_snapshot(
+async def test_hidden_run_never_claims_task_slot(
     _skill_turbo_runtime,
 ) -> None:
-    """转发分支自己跑到终态：非终态快照登记、终态快照即行注销——后续
-    skip 入口不误清算（流内断言锁定两阶段转移）。"""
+    """内部非终态与终态快照都不能占用外层任务槽。"""
     adapter, _turbo_session = _skill_turbo_runtime
     parent_session = SimpleNamespace(
         write_stream=AsyncMock(),
@@ -1399,15 +1335,13 @@ async def test_forwarded_run_closes_own_slot_on_terminal_snapshot(
                 {"task_id": "task_a", "task_content": "Stage 1", "status": "in_progress"},
             ],
         })
-        # 非终态快照已转发：登记建立
-        assert task_slot_guard.peek_leaked_task_slot("sess-fwd") == frozenset({"task_a"})
+        assert task_slot_guard.peek_leaked_task_slot("sess-fwd") is None
         yield SimpleNamespace(payload={
             "event_type": "task.update",
             "tasks": [
                 {"task_id": "task_a", "task_content": "Stage 1", "status": "completed"},
             ],
         })
-        # 终态快照转发后：登记注销（任务集自然闭合）
         assert task_slot_guard.peek_leaked_task_slot("sess-fwd") is None
         yield SimpleNamespace(payload={
             "event_type": "chat.delta",
@@ -1428,11 +1362,10 @@ async def test_forwarded_run_closes_own_slot_on_terminal_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_forwarded_interrupt_leaves_slot_claimed(
+async def test_hidden_interrupt_does_not_claim_task_slot(
     _skill_turbo_runtime,
 ) -> None:
-    """转发分支终态前被打断（AbortError 暂停语义）：登记保留——skip 续跑
-    入口的终态清算依赖它（登记跨请求存续是登记簿的存在意义）。"""
+    """中断前的内部快照也不能进入外层任务槽。"""
     adapter, _turbo_session = _skill_turbo_runtime
     parent_session = SimpleNamespace(
         write_stream=AsyncMock(),
@@ -1459,9 +1392,8 @@ async def test_forwarded_interrupt_leaves_slot_claimed(
 
     # AbortError 无 TIC：按中断错误收口（非暂停卡路径，但同样不清算）
     assert result.get("success") is False
-    assert task_slot_guard.peek_leaked_task_slot("sess-fwd") == frozenset(
-        {"task_deadbeef"}
-    )
+    assert task_slot_guard.peek_leaked_task_slot("sess-fwd") is None
+    assert not parent_session.write_stream.await_args_list
 
 
 @pytest.mark.asyncio
@@ -1502,7 +1434,7 @@ async def test_skip_mode_abort_keeps_leak_for_resume(
         for call in parent_session.write_stream.await_args_list
     ]
     assert all(p.get("event_type") != "task.update" for p in forwarded)
-    # 登记保留：resume 续跑入口的终止性出口仍可关账
+    # 不修改旧槽位登记，也不补发阶段快照。
     assert task_slot_guard.peek_leaked_task_slot("sess-leak") == frozenset(
         {"task_deadbeef"}
     )
@@ -1612,3 +1544,57 @@ async def test_release_registered_tools_called_on_abort_without_tic(
 
     assert result.get("success") is False
     turbo.release_registered_tools.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('skill', ['pptx-craft', 'demo-craft', 'spreadsheet-craft'])
+@pytest.mark.parametrize('outer_todo', [None, False, True])
+async def test_all_skill_full_entries_hide_only_stage_routing(
+    _skill_turbo_runtime, skill, outer_todo,
+):
+    adapter, _ = _skill_turbo_runtime
+    parent = SimpleNamespace(write_stream=AsyncMock(), get_session_id=lambda: 'all-skills')
+    server = SimpleNamespace(send_push=AsyncMock(return_value=1))
+    stage_events = [
+        {'event_type': 'task.start', 'task_id': 'task_inner', 'task_content': 'generate_inputs'},
+        {'event_type': 'task.update', 'tasks': [{'task_id': 'task_inner',
+          'task_content': 'generate_inputs', 'status': 'in_progress'}]},
+        {'event_type': 'task.complete', 'task_id': 'task_inner', 'status': 'completed'},
+    ]
+    work_events = [
+        {'event_type': 'chat.delta', 'content': 'Stage 1 正文仍保留'},
+        {'event_type': 'chat.reasoning', 'content': '内部思考'},
+        {'event_type': 'chat.tool_call', 'tool_call_id': 'read-1', 'name': 'read_file', 'arguments': {}},
+        {'event_type': 'chat.tool_result', 'tool_call_id': 'read-1', 'content': '文件内容'},
+        {'event_type': 'chat.tool_update', 'tool_call_id': 'read-1', 'status': 'completed'},
+        {'event_type': 'chat.llm_usage', 'usage': {'total_tokens': 10}},
+        {'event_type': 'artifact.generated', 'artifacts': [{'path': '/out/result.pptx'}]},
+        {'event_type': 'fallback.started', 'node_name': 'generate_inputs'},
+        {'event_type': 'chat.ask_user_question', 'questions': [{'question': '确认继续？'}]},
+        {'event_type': 'chat.delta', 'content': '外层任务输出', 'task_id': 'todo:outer'},
+    ]
+    source = stage_events + [{**event, 'task_id': event.get('task_id', 'task_inner')}
+                             for event in work_events]
+
+    async def stream(*_args, **_kwargs):
+        for payload in source:
+            yield SimpleNamespace(payload=payload)
+
+    turbo = _fake_turbo()
+    turbo.run_skill_stream = MagicMock(side_effect=stream)
+    token = set_skill_turbo_outer_todo_active(outer_todo)
+    try:
+        with _forwarding_env(adapter, turbo, parent, metadata={
+            'request_id': 'all-skills-request', 'channel_id': 'test', 'session_id': 'all-skills',
+        }, push_server=server):
+            result = await skill_turbo.invoke({'query': '执行任务', 'skill': skill, 'accelerator': '__full__'})
+    finally:
+        reset_skill_turbo_outer_todo_active(token)
+
+    assert result['success'] is True
+    outputs = [call.args[0].payload for call in parent.write_stream.await_args_list]
+    assert outputs == work_events
+    assert all(event.get('task_id') == 'task_inner' for event in source[3:-1])
+    assert source[-1]['task_id'] == 'todo:outer'
+    server.send_push.assert_not_awaited()
+    turbo.run_skill_stream.assert_called_once()

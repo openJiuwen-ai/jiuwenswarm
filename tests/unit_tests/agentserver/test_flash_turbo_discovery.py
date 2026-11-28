@@ -299,7 +299,8 @@ async def test_refresh_updates_a_copied_card_and_skips_missing_or_disabled_tool(
     adapter._instance = SimpleNamespace(ability_manager=SimpleNamespace(get=lambda _: card))
     with _skill_env(skill_roots[1]):
         await adapter._update_runtime_config(SimpleNamespace(mode="flash"))
-    assert "当前内部支持：pptx-craft" in card.description
+    assert "exact visible skill" in card.description
+    assert "pptx-craft" not in card.description
     refresh = Mock(side_effect=AssertionError("must not scan"))
     monkeypatch.setattr(skill_turbo_tools, "refresh_skill_acceleration_description", refresh)
     adapter._config_cache["skill_turbo"]["enabled"] = False
@@ -313,7 +314,7 @@ async def test_refresh_updates_a_copied_card_and_skips_missing_or_disabled_tool(
 @pytest.mark.asyncio
 async def test_turbo_guide_follows_request_roots_and_actual_tool_visibility(monkeypatch, tmp_path, skill_roots):
     empty, shared = skill_roots
-    adapter, rails = _assemble_flash(monkeypatch)
+    adapter, rails = _assemble_flash(monkeypatch, skill_root=shared)
     monkeypatch.setattr("openjiuwen.harness.deep_agent.schedule_image_support_probe", lambda *_: None)
     model = _Model()
     await Runner.start()
@@ -408,7 +409,8 @@ async def test_flash_guide_preserves_priority_and_cleans_up(monkeypatch, skill_r
     builder.add_section(PromptSection(
         name="skill_turbo_guide", content={language: "stale"}, priority=321,
     ))
-    agent = SimpleNamespace(system_prompt_builder=builder)
+    native = SimpleNamespace(get_skills_for_session=lambda session: [SimpleNamespace(name="pptx-craft")])
+    agent = SimpleNamespace(system_prompt_builder=builder, find_rails_by_type=lambda _: [native])
     rail.init(agent)
     with _skill_env(skill_roots[1]):
         await rail.before_model_call(SimpleNamespace(
@@ -479,24 +481,19 @@ async def test_flash_guide_runtime_failure_cleans_up_and_recovers(monkeypatch, f
     agent = SimpleNamespace(system_prompt_builder=builder)
     rail.init(agent)
     ctx = SimpleNamespace(agent=agent, inputs=SimpleNamespace(tools=[skill_turbo_tools.skill_turbo.card]))
-    monkeypatch.setattr(skill_turbo_tools, "refresh_skill_acceleration_description", Mock(return_value=["pptx-craft"]))
+    snapshot = skill_turbo_tools.AcceleratorCatalogSnapshot(entries={"pptx-craft": "PPT"})
+    monkeypatch.setattr(rail, "_catalog", AsyncMock(return_value=snapshot))
     error = ImportError("Turbo refresh import failed") if failure_stage == "import" else RuntimeError(
         "Turbo guide runtime failure",
     )
     warning = Mock()
-    monkeypatch.setattr(flash_turbo_prompt_rail.logger, "warning", warning)
+    from jiuwenswarm.server.runtime.skill_turbo.rails import accelerator_rail
+    monkeypatch.setattr(accelerator_rail.logger, "warning", warning)
     with monkeypatch.context() as faults:
         if failure_stage == "import":
-            original_import = builtins.__import__
-
-            def failing_import(name, *args, **kwargs):
-                if name == "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools":
-                    raise error
-                return original_import(name, *args, **kwargs)
-
-            faults.setattr(builtins, "__import__", failing_import)
+            faults.setattr(rail, "_catalog", AsyncMock(side_effect=error))
         elif failure_stage == "refresh":
-            faults.setattr(skill_turbo_tools, "refresh_skill_acceleration_description", Mock(side_effect=error))
+            faults.setattr(rail, "_catalog", AsyncMock(side_effect=error))
         elif failure_stage == "guide":
             faults.setattr(flash_turbo_prompt_rail, "region_edit_keyword_summary", Mock(side_effect=error))
         elif failure_stage == "priority":
@@ -507,8 +504,70 @@ async def test_flash_guide_runtime_failure_cleans_up_and_recovers(monkeypatch, f
         await rail.before_model_call(ctx)
     assert builder.get_section("skill_turbo_guide") is None
     assert builder.get_section("unrelated").content == {"cn": "keep"}
-    message = "refresh description" if failure_stage in ("import", "refresh") else "build skill_turbo_guide section"
-    warning.assert_called_once_with(f"[FlashTurboPromptRail] {message} failed: %s", error)
+    warning.assert_called_once_with("accelerator disclosure failed", exc_info=True)
     await rail.before_model_call(ctx)
     assert "pptx-craft" in builder.get_section("skill_turbo_guide").content["cn"]
     assert warning.call_count == 1
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['deep', 'flash'])
+@pytest.mark.parametrize('lazy', [True, False])
+@pytest.mark.parametrize('batch_enabled', [True, False])
+async def test_declared_segments_reach_real_model_and_root_load_message(monkeypatch, tmp_path, skill_roots, mode, lazy, batch_enabled):
+    from openjiuwen.core.foundation.llm import ToolCall
+    from jiuwenswarm.server.runtime.skill_turbo.rails.accelerator_rail import SkillAcceleratorRail
+    _, shared = skill_roots
+    turbo = shared / 'pptx-craft' / 'turbo'
+    (turbo / 'turbo_codes/ppt/accel_prep.py').write_text('root = None\n', encoding='utf-8')
+    spec = {'id': 'prep', 'order': 10, 'summary': '准备环境', 'when_to_use': ['新建演示文稿'],
+        'when_not_to_use': ['局部编辑'], 'covers': {'stages': ['prep'], 'steps': ['prepare']},
+        'input_schema': {'type': 'object', 'properties': {}, 'additionalProperties': False},
+        'entry': {'module': 'accel_prep'}, 'outputs': {'facts': ['ready'],
+        'artifacts': [{'path_glob': 'ready.json', 'kind': 'state'}],
+        'postconditions': [{'kind': 'fact', 'key': 'ready'}]}}
+    (turbo / 'accelerators.json').write_text(json.dumps({'manifest_version': 1, 'skill': 'pptx-craft',
+        'skill_name': 'ppt', 'accelerators': [spec]}), encoding='utf-8')
+    adapter, rails = _assemble_flash(monkeypatch, lazy=lazy, skill_root=shared)
+    if mode == 'deep':
+        rails = [r for r in rails if not isinstance(r, SkillAcceleratorRail)] + [SkillAcceleratorRail()]
+    monkeypatch.setattr('openjiuwen.harness.deep_agent.schedule_image_support_probe', lambda *_: None)
+
+    class LoadModel(_Model):
+        async def invoke(self, messages, **kwargs):
+            self._record(messages, kwargs)
+            if len(self.calls) == 1:
+                return AssistantMessage(content='', tool_calls=[ToolCall(id='load-root', type='function',
+                    name='skill_tool', arguments=json.dumps({'skill_name': 'pptx-craft'}))])
+            return AssistantMessage(content='暂停测试')
+
+    for rail in rails:
+        if isinstance(rail, SkillAcceleratorRail):
+            rail.config['batch_enabled'] = batch_enabled
+    model = LoadModel()
+    await Runner.start()
+    core = create_deep_agent(model=model, tools=[], rails=rails, system_prompt='Test',
+        enable_task_loop=False, max_iterations=2, workspace=str(tmp_path))
+    adapter._instance = core
+    try:
+        await core._ensure_initialized()
+        adapter._init_skill_turbo_tool()
+        with _skill_env(shared):
+            await adapter._update_runtime_config(SimpleNamespace(mode='flash'))
+            session = Session(session_id='step6-model-' + uuid4().hex, card=core.card)
+            await session.pre_run(inputs={'query': '制作月报PPT'})
+            await core.invoke({'query': '制作月报PPT'}, session=session)
+            await session.post_run()
+        assert len(model.calls) == 2
+        first_messages, cards = model.calls[0]
+        card = next(c for c in cards if c.name == TURBO_TOOL_NAME)
+        assert 'pptx-craft/prep' in card.description and '无需用户明确' in card.description
+        assert ('accelerators' in card.parameters.get('properties', {})) is batch_enabled
+        assert ('accelerators=[' in card.description) is batch_enabled
+        assert 'FIRST' not in card.description and '未满足此条件' not in card.description
+        assert 'skill_accelerators' not in core.ability_manager.get(TURBO_TOOL_NAME).description
+        assert 'prep' not in core.ability_manager.get(TURBO_TOOL_NAME).description
+        loaded = [m.content for m in model.calls[1][0] if m.role == 'tool' and m.tool_call_id == 'load-root']
+        assert len(loaded) == 1 and loaded[0].count('<skill_accelerators>') == 1
+        assert 'input_schema' in loaded[0] and 'skill_directory' in loaded[0]
+    finally:
+        await core.stop()

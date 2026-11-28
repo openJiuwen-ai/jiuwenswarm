@@ -24,6 +24,23 @@ def declaration(ident="prep", order=10):
     }
 
 
+@pytest.mark.parametrize('kind,field_type,declared,valid', [
+    ('review', 'boolean', True, True), ('review', 'string', True, False),
+    ('review', 'boolean', False, False), ('clarify', 'boolean', True, False),
+])
+def test_conditional_review_requires_declared_boolean_input(kind, field_type, declared, valid):
+    from jiuwenswarm.server.runtime.skill_turbo.accelerator_manifest import AcceleratorSpec
+    from pydantic import ValidationError
+
+    spec = declaration()
+    spec['hitl'] = {'kind': kind, 'review_when_param': 'review_requested'}
+    if declared:
+        spec['input_schema']['properties']['review_requested'] = {'type': field_type}
+    if valid:
+        assert AcceleratorSpec.model_validate(spec).hitl.review_when_param == 'review_requested'
+    else:
+        with pytest.raises(ValidationError):
+            AcceleratorSpec.model_validate(spec)
 
 
 def make_skill(root, *, internal="demo", external="demo-craft", items=None):
