@@ -273,3 +273,26 @@ test('package change subscription coexists with client capability validation and
   off();
   assert.equal(client.offCalls, 8);
 });
+
+test('package change dedupe is scoped by session_id so application and session notices do not suppress each other', () => {
+  const client = createFakeClient();
+  const transport = createWebClientTransport(client);
+  const received = [];
+  const off = transport.subscribe({
+    onRenderFrame() {},
+    onClearFrame() {},
+    onErrorFrame() {},
+    onConnectionStateChange() {},
+    onPackagesChanged: (ids, sessionId) => received.push([ids, sessionId]),
+  });
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.scoped-dedupe'], session_id: '' });
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.scoped-dedupe'] });
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.scoped-dedupe'], session_id: 'session-1' });
+  client.emit('extensions.v2.installed', { package_ids: ['pkg.scoped-dedupe'], session_id: 'session-1' });
+  assert.deepEqual(received, [
+    [['pkg.scoped-dedupe'], ''],
+    [['pkg.scoped-dedupe'], undefined],
+    [['pkg.scoped-dedupe'], 'session-1'],
+  ]);
+  off();
+});

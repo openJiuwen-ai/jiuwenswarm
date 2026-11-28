@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createWebUIRuntime } from '../node_modules/.cache/webui-runtime/runtime/index.js';
-import { createMockTransport } from '../node_modules/.cache/webui-runtime/transport/index.js';
+import { createMockTransport, createWebClientTransport } from '../node_modules/.cache/webui-runtime/transport/index.js';
 import { DEMO_COMPONENT, DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-runtime/testing/demoCatalog.js';
 import {
   demoClearFrame,
@@ -545,5 +545,65 @@ test('appearance survives a reconnect only when a provider re-applies it', async
   await flush();
   assert.equal(runtime.getAppearance(), null, 'no provider re-applied after the reconnect readies settled');
   handle.release();
+  runtime.dispose();
+});
+
+test('webClientTransport dedupe and runtime filtering refresh both application and session slots', async () => {
+  const listeners = new Map();
+  const requests = [];
+  const fakeClient = {
+    on(eventName, handler) {
+      let set = listeners.get(eventName);
+      if (!set) {
+        set = new Set();
+        listeners.set(eventName, set);
+      }
+      set.add(handler);
+      return () => set.delete(handler);
+    },
+    onStateChange() {
+      return () => undefined;
+    },
+    getState() {
+      return 'ready';
+    },
+    async request(method, params) {
+      requests.push({ method, params });
+      return { accepted: true, status: 'handled' };
+    },
+    emit(eventName, payload) {
+      for (const handler of listeners.get(eventName) ?? []) {
+        handler({ payload });
+      }
+    },
+  };
+  const appSlotRule = { id: 'application.menu', display: 'list', scope: 'application' };
+  const catalog = {
+    getSlot: (slotId) => (slotId === appSlotRule.id ? appSlotRule : demoCatalog.getSlot(slotId)),
+    getComponent: (name) => demoCatalog.getComponent(name),
+  };
+  const transport = createWebClientTransport(fakeClient);
+  const runtime = createWebUIRuntime({ transport, catalog });
+  runtime.start();
+
+  const appHandle = runtime.mountSlot('', appSlotRule.id, { scope: 'application' });
+  const sessionHandle = runtime.mountSlot('sess-1', DEMO_SLOT_SINGLE);
+  await appHandle.notifyReady();
+  await sessionHandle.notifyReady();
+  requests.length = 0;
+
+  fakeClient.emit('extensions.v2.installed', { package_ids: ['pkg.probe-slot'], session_id: '' });
+  fakeClient.emit('extensions.v2.installed', { package_ids: ['pkg.probe-slot'], session_id: 'sess-1' });
+  await flush();
+
+  assert.deepEqual(
+    requests.map((r) => [r.params.event, r.params.session_id ?? '', r.params.target.slot_id, r.params.target.package_id]),
+    [
+      ['ui.ready', '', appSlotRule.id, 'pkg.probe-slot'],
+      ['ui.ready', 'sess-1', DEMO_SLOT_SINGLE, 'pkg.probe-slot'],
+    ],
+  );
+  appHandle.release();
+  sessionHandle.release();
   runtime.dispose();
 });
