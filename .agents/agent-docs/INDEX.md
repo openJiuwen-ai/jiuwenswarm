@@ -207,6 +207,7 @@ generated: true
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | — |
 | [F_20261030_2018_teammate-swarmflow-adaptation](features/F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
+| [F_20261127_1419_enterprise-swarmflow-policy](features/F_20261127_1419_enterprise-swarmflow-policy.md) | F | 企业Swarmflow策略接入（expert_package_template.swarmflow） | @taoliankuan123 | 无独立 D：企业最小接入设计方案（外部文档 §4.2），仓内无独立设计文档；本文档为仓内行为契约的唯一维护位置。 |
 | [B_20261030_2020_pause-refires-consumed-popups](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261030_2020_pause-refires-consumed-popups.md) | B | 暂停/取消后已消费的 human 弹窗被重放层重投 | xiajing | 无独立 D：重放层过滤由主干既有机制承载，本修复补触发层清场与消费层去重两段。 |
 | [B_20261031_0946_ttse-codecheck-boundaries](bugfix/jiuwenswarm/B_20261031_0946_ttse-codecheck-boundaries.md) | B | TTSE 相关 CodeCheck 受保护访问与关闭条件复杂度修复 | xinyang_bali | 无独立 D：按用户提供的 20 项 CodeCheck 清单修复实现边界，沿用当前 TTSE 通用运行契约，无独立 D。 |
 | [B_20261031_1053_atomgit-review](bugfix/jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |

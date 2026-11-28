@@ -112,8 +112,121 @@ async def fetch_advanced_config(
     return dict(row) if isinstance(row, dict) else None
 
 
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    """Coerce *value* to a bool, falling back to *default*."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _coerce_pos_int_or_none(value: Any) -> int | None:
+    """Coerce *value* to a positive int, else None."""
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (ValueError, TypeError):
+        return None
+    return n if n >= 1 else None
+
+
+def _normalize_swarmflow(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """规范化 ``expert_package_template.swarmflow`` JSON 为 Swarmflow 策略。
+
+    只保留原始 JSON 中出现的键（键：allowed / default_enabled / max_workflows /
+    agents_per_run / max_agents_total / swarmflow_budget），并做类型收敛；空对象返回 None。
+
+    数值键统一「无效 / 空 / null 即未下发」（结果里不出现该键）：解析侧
+    （team_helpers → team_manager）在键缺失时保留 config.yaml 的
+    ``swarmflow_concurrency`` 部署底座，因此表单序列化出的 null 不会把
+    部署已收紧的上限放大回引擎默认值。
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    policy: dict[str, Any] = {}
+    if "allowed" in raw:
+        policy["allowed"] = _coerce_bool(raw.get("allowed"), default=True)
+    if "default_enabled" in raw:
+        policy["default_enabled"] = _coerce_bool(raw.get("default_enabled"), default=False)
+    if "max_workflows" in raw:
+        policy["max_workflows"] = _coerce_pos_int_or_none(raw.get("max_workflows"))
+        if policy["max_workflows"] is None:
+            del policy["max_workflows"]
+    if "agents_per_run" in raw:
+        policy["agents_per_run"] = _coerce_pos_int_or_none(raw.get("agents_per_run"))
+        if policy["agents_per_run"] is None:
+            del policy["agents_per_run"]
+    if "max_agents_total" in raw:
+        policy["max_agents_total"] = _coerce_pos_int_or_none(raw.get("max_agents_total"))
+        if policy["max_agents_total"] is None:
+            del policy["max_agents_total"]
+    if "swarmflow_budget" in raw:
+        policy["swarmflow_budget"] = _coerce_pos_int_or_none(raw.get("swarmflow_budget"))
+        if policy["swarmflow_budget"] is None:
+            del policy["swarmflow_budget"]
+    return policy or None
+
+
+async def fetch_expert_package_swarmflow(
+    template_ids: list[str],
+) -> dict[str, Any] | None:
+    """按入参引用顺序读取首个非空且已规范化的 swarmflow 策略。
+
+    ``swarmflow`` 是 expert_package_template 上的 JSON 列（企业最小接入设计
+    方案 §4.2）：键为 allowed / default_enabled / max_workflows / agents_per_run /
+    max_agents_total / swarmflow_budget。入参顺序即优先级（与
+    ``fetch_templates_by_slot`` 的顺序契约一致）：agent_template.template_ref 的
+    expert_package 引用列表次序体现优先级，结果不依赖存储层返回顺序。
+    无命中行或均为空时返回 None（运行时沿用引擎默认）。
+    """
+    import json
+
+    refs: list[str] = []
+    for raw in template_ids:
+        tid = str(raw or "").strip()
+        if tid and tid not in refs:
+            refs.append(tid)
+    if not refs:
+        return None
+    rows = await list_records(
+        "expert_package_template",
+        filters={"enabled": True, "template_id": refs},
+    )
+    by_id = {
+        str(row.get("template_id") or "").strip(): row
+        for row in rows
+        if str(row.get("template_id") or "").strip()
+    }
+    for ref in refs:
+        row = by_id.get(ref)
+        if row is None:
+            continue
+        raw = row.get("swarmflow")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(raw, dict) and raw:
+            normalized = _normalize_swarmflow(raw)
+            if normalized is not None:
+                return normalized
+    return None
+
+
 __all__ = (
     "fetch_advanced_config",
+    "fetch_expert_package_swarmflow",
     "fetch_template_by_slot",
     "fetch_templates_by_slot",
     "list_records",

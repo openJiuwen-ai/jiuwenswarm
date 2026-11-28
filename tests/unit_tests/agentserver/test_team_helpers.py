@@ -9779,10 +9779,16 @@ def test_resolve_session_swarmflow_config_request_overrides_config() -> None:
     config_base = {
         "modes": {"team": {"jiuwen_team": {"enable_swarmflow": False, "swarmflow_budget": 200000}}}
     }
+    # 无企业策略：门禁放行（allowed 默认 True），并发键不注入（spec 沿用 yaml 底座），
+    # 生效值与用户意图一致（无门禁/封顶施加）。
     assert _resolve_session_swarmflow_config(params, config_base, session_id="s1") == {
         "enable_swarmflow": True,
+        "swarmflow_user_enable": True,
         "swarmflow_budget": 50000,
+        "swarmflow_user_budget": 50000,
+        "swarmflow_budget_cap": None,
         "swarmflow_worktree": False,
+        "swarmflow_allowed": True,
     }
 
 
@@ -9798,8 +9804,12 @@ def test_resolve_session_swarmflow_config_falls_back_to_config() -> None:
     }
     assert _resolve_session_swarmflow_config(params, config_base, session_id="s1") == {
         "enable_swarmflow": True,
+        "swarmflow_user_enable": True,
         "swarmflow_budget": 200000,
+        "swarmflow_user_budget": 200000,
+        "swarmflow_budget_cap": None,
         "swarmflow_worktree": False,
+        "swarmflow_allowed": True,
     }
 
 
@@ -9840,8 +9850,12 @@ def test_resolve_session_swarmflow_config_falls_back_to_metadata(
     config_base = {"modes": {"team": {"jiuwen_team": {"enable_swarmflow": False}}}}
     assert _resolve_session_swarmflow_config({}, config_base, session_id="sess-resolve-meta") == {
         "enable_swarmflow": True,
+        "swarmflow_user_enable": True,
         "swarmflow_budget": 30000,
+        "swarmflow_user_budget": 30000,
+        "swarmflow_budget_cap": None,
         "swarmflow_worktree": False,
+        "swarmflow_allowed": True,
     }
 
 

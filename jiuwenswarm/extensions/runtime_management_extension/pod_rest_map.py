@@ -71,6 +71,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("chat.steer", "POST", "/chat/{session_id}/actions/steer"),
     ("chat.steer.status", "POST", "/chat/{session_id}/actions/steer/status"),
     ("chat.user_answer", "POST", "/chat/{session_id}/actions/answer"),
+    # SwarmFlow 人工轮回复：与 chat.user_answer 同平面进聊天适配（http_chat），
+    # 缺这条会让企业版回复停在网关（空壳应答后 HttpMethodNotHandled），
+    # 工作流节点的人工轮 future 等不到投递。
+    ("chat.swarmflow_reply", "POST", "/chat/{session_id}/actions/swarmflow-reply"),
     ("command.session", "POST", "/sessions/{session_id}/commands"),
     ("command.compact", "POST", "/sessions/{session_id}/commands/compact"),
     ("command.compact_partial", "POST", "/sessions/{session_id}/commands/compact-partial"),
