@@ -14,6 +14,11 @@ import { CliAuthModal } from './CliAuthModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { IconAvatar } from './Buttons';
 import { canCancelConnect, deriveCardState, deriveMcpAvailability } from './mcpState';
+import {
+  getEquipmentDefaults,
+  setEquipmentDefaults,
+  type EquipmentDefaultsView,
+} from '../../services/equipmentDefaultsApi';
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
@@ -140,6 +145,27 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const [busy, setBusy] = useState(false);
   const confirmActionRef = useRef(false);
 
+  // 全局默认装备开关的视图数据。defaults 为 null（get 失败/未返回）时
+  // 开关置灰且不参与切换——PUT 语义要求"完整期望清单"，读不到现有清单时盲开会把其他
+  // 默认项清掉，宁可禁用也不盲写。挂载时读一次即可：runtime 集是用户标记（不随本页连接
+  // 状态即时变化），断连后仍显示开启 + unavailable 提示，重进详情页自然刷新。
+  const [defaultsView, setDefaultsView] = useState<EquipmentDefaultsView | null>(null);
+  const [defaultsBusy, setDefaultsBusy] = useState(false);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getEquipmentDefaults()
+      .then((view) => {
+        if (!cancelled) setDefaultsView(view);
+      })
+      .catch(() => {
+        // 读取失败保持 null：开关置灰（title 提示），不阻塞详情页其余功能。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 卡片统一状态机（见 mcpState.ts）。busy 用 busyMap[name]。
   const detailBusyKind = busyMap[name] ?? busyMap[runtimeName];
   const cardState = connector
@@ -223,6 +249,43 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
       },
     });
   }
+
+  // ---- 全局默认装备开关的派生与切换 -----------------------------
+  // connector.name 就是 state.json / defaults RPC 使用的运行时名（与扩展面板勾选、
+  // chat.send mcp 字段同一标识，见 ExtensionPickerPanel 的 enabledMcps 用法）。早捕获
+  // 成常量供闭包使用——`if (!connector) return null` 的窄化不会带进嵌套函数（同上）。
+  const connectorName = connector.name;
+  const runtimeDefaults = defaultsView?.runtime ?? [];
+  const isDefaultOn = runtimeDefaults.includes(connectorName);
+  const defaultsUnavailable = isDefaultOn
+    ? (defaultsView?.unavailable ?? []).includes(connectorName)
+    : false;
+  const defaultSwitchDisabled = !linked || defaultsBusy || !defaultsView;
+  const defaultSwitchTitle = !linked
+    ? t('connectorMarket.detail.defaultSwitch.disabledDisconnected')
+    : !defaultsView
+      ? t('connectorMarket.detail.defaultSwitch.loadError')
+      : undefined;
+
+  async function handleToggleDefault(next: boolean) {
+    if (!defaultsView || defaultsBusy) return;
+    const nextList = next
+      ? Array.from(new Set([...runtimeDefaults, connectorName]))
+      : runtimeDefaults.filter((n) => n !== connectorName);
+    setDefaultsBusy(true);
+    setDefaultsError(null);
+    try {
+      // set 是 PUT 语义：传完整期望清单。响应只回 mcp/runtime 两键，merge 进现有视图。
+      const resp = await setEquipmentDefaults(nextList);
+      setDefaultsView((prev) => (prev ? { ...prev, mcp: resp.mcp, runtime: resp.runtime } : resp));
+    } catch (err) {
+      // 后端校验（未连接/超上限）等错误原样透出，hint 区红字显示；视图保持旧值不动。
+      setDefaultsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDefaultsBusy(false);
+    }
+  }
+  // ---------------------------------------------------------------------------
 
   async function handleInstall() {
     setInstalling(true);
@@ -464,6 +527,41 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             )}
           </div>
         )}
+
+        {/* 全局默认装备复选框（社区对齐形态：每个 MCP 一个
+            "默认使用"复选框）。勾选=新会话默认勾选此连接器（state.json
+            is_default），取消=恢复逐会话手动选择。断连/达上限/清单读取失败时
+            置灰；被标记但断连的项保持勾选态并提示"新会话会跳过"。 */}
+        <div
+          className="flex items-center justify-between gap-3 rounded-lg bg-secondary px-3 py-2 text-[13px]"
+          data-testid="connector-market-mcp-detail-default-row"
+        >
+          <label
+            className="flex shrink-0 cursor-pointer items-center gap-2 font-medium"
+            title={defaultSwitchTitle}
+            data-testid="connector-market-mcp-detail-default-label"
+          >
+            <input
+              type="checkbox"
+              checked={isDefaultOn}
+              onChange={(e) => handleToggleDefault(e.target.checked)}
+              disabled={defaultSwitchDisabled}
+              className="h-3.5 w-3.5 rounded border-border"
+              data-testid="connector-market-mcp-detail-default-checkbox"
+            />
+            {t('connectorMarket.detail.defaultSwitch.label')}
+          </label>
+          <span
+            className={defaultsError ? 'text-danger' : 'text-text-muted'}
+            data-testid="connector-market-mcp-detail-default-hint"
+          >
+            {defaultsError
+              ? defaultsError
+              : defaultsUnavailable
+                ? t('connectorMarket.detail.defaultSwitch.unavailableHint')
+                : t('connectorMarket.detail.defaultSwitch.hint')}
+          </span>
+        </div>
 
         {confirmUnbind && (
           // 2026-08-19：isDeleteMode 时这个弹窗要换成"彻底删除"的文案/确认动作（mcp.delete_

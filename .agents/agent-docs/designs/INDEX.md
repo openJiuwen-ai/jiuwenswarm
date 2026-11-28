@@ -17,7 +17,9 @@ generated: true
 | [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
 | [agent_teams](#module-agent_teams) |
 | [agent_teams/workflow](#module-agent_teams-workflow) |
+| [channels/web/frontend](#module-channels-web-frontend) |
 | [docs](#module-docs) |
+| [gateway](#module-gateway) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness/common](#module-jiuwenswarm-agents-harness-common) |
 | [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
@@ -40,6 +42,9 @@ generated: true
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [openjiuwen/agent_teams](#module-openjiuwen-agent_teams) |
+| [server/runtime/agent_adapter](#module-server-runtime-agent_adapter) |
+| [server/runtime/mcp](#module-server-runtime-mcp) |
+| [server/runtime/session](#module-server-runtime-session) |
 
 <a id="module-agent-core-openjiuwen-agent_teams"></a>
 
@@ -73,6 +78,10 @@ generated: true
 | [SDD-0010](archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | shipped | @chenchunzhou | observability | 2026-08-06 |
 | [SDD-0028](archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | swarmflow verify / fork 可观测与前端呈现 | shipped | @xiajing | observability | 2026-09-29 |
 
+<a id="module-channels-web-frontend"></a>
+
+## channels/web/frontend
+
 <a id="module-docs"></a>
 
 ## docs
@@ -82,6 +91,10 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [D-20261104-1141-npc-team-member-sessions](active/D-20261104-1141-npc-team-member-sessions/design.md) | NPC 主从会话与按需搜索工具 | in-development | kdgmpw | harness | 2026-11-04 |
+
+<a id="module-gateway"></a>
+
+## gateway
 
 <a id="module-jiuwenswarm"></a>
 
@@ -314,3 +327,15 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
+<a id="module-server-runtime-agent_adapter"></a>
+
+## server/runtime/agent_adapter
+
+<a id="module-server-runtime-mcp"></a>
+
+## server/runtime/mcp
+
+<a id="module-server-runtime-session"></a>
+
+## server/runtime/session

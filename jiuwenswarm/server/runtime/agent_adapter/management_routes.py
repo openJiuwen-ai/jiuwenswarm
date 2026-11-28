@@ -80,6 +80,17 @@ _SESSION_ASSET_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SESSION_ASSETS_REMOVE: "handle_session_assets_remove",
 }
 
+# Session default equipment (web): read/replace the global default MCP set
+# that fresh sessions inherit. Stateless RPCs answered before adapter setup in
+# process_message — an unrouted legal ReqMethod would otherwise fall through
+# to the chat path as an empty query.
+_SESSION_EQUIPMENT_DEFAULTS_ROUTES: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.SESSION_EQUIPMENT_DEFAULTS_GET,
+        ReqMethod.SESSION_EQUIPMENT_DEFAULTS_SET,
+    }
+)
+
 # Handlers that persist a Skill visibility document; every one of them must
 # trigger a rail refresh so a grant or a revocation takes effect on the next
 # turn. The read-only ``get`` deliberately stays out.

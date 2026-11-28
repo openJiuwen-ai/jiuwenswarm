@@ -75,10 +75,10 @@ export function WebUITreeSelect({ node, context, emit, appearance }: WebUIAdapte
     treeNodeFilterProp="title" treeDefaultExpandAll={p.treeDefaultExpandAll}
     treeDefaultExpandedKeys={p.treeDefaultExpandedKeys} size={p.size} status={p.status} variant={p.variant}
     maxTagCount={p.maxTagCount}
-    onSelect={(next) => {
+    onSelect={(next: Selection) => {
       if (!disabled && node.events['ui.select']) void emit('ui.select', { value: next });
     }}
-    onChange={(next) => {
+    onChange={(next: Selection) => {
       if (disabled) return;
       const normalized = next ?? (p.multiple ? [] : null);
       setValue(normalized);

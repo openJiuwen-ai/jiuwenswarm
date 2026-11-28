@@ -707,6 +707,10 @@ class ReqMethod(Enum):
     CLIENT_LIST = "client.list"
     CLIENT_CONVERSATION_MESSAGES = "client.conversation.messages"
     CLIENT_CONVERSATIONS = "client.conversations"
+    # Session default equipment (web): read/replace the global default MCP set
+    # that fresh sessions inherit.
+    SESSION_EQUIPMENT_DEFAULTS_GET = "session_equipment.defaults.get"
+    SESSION_EQUIPMENT_DEFAULTS_SET = "session_equipment.defaults.set"
 
 
 @dataclass

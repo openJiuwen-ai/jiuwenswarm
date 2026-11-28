@@ -22,8 +22,10 @@ generated: true
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
 | [agent_teams](#module-agent_teams) |
 | [agent_teams/workflow](#module-agent_teams-workflow) |
+| [channels/web/frontend](#module-channels-web-frontend) |
 | [deploy/yuanrong](#module-deploy-yuanrong) |
 | [docs](#module-docs) |
+| [gateway](#module-gateway) |
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
@@ -97,6 +99,9 @@ generated: true
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
 | [openjiuwen/agent_teams](#module-openjiuwen-agent_teams) |
 | [scripts](#module-scripts) |
+| [server/runtime/agent_adapter](#module-server-runtime-agent_adapter) |
+| [server/runtime/mcp](#module-server-runtime-mcp) |
+| [server/runtime/session](#module-server-runtime-session) |
 | [tests](#module-tests) |
 | [tests/fixtures/ttse_plugin](#module-tests-fixtures-ttse_plugin) |
 | [tests/unit_tests/agentserver](#module-tests-unit_tests-agentserver) |
@@ -173,6 +178,14 @@ generated: true
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | — |
 
+<a id="module-channels-web-frontend"></a>
+
+## channels/web/frontend
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | — |
+
 <a id="module-deploy-yuanrong"></a>
 
 ## deploy/yuanrong
@@ -190,6 +203,14 @@ generated: true
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261120_1707_multica_acp](features/F_20261120_1707_multica_acp.md) | F | Multica 本地 ACP 运行时接入 | alan_cheng | 无独立 D：DEV-3 的首版接入方案记录在事项讨论中。 |
+
+<a id="module-gateway"></a>
+
+## gateway
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | — |
 
 <a id="module-gateway-channel_manager-web"></a>
 
@@ -211,6 +232,7 @@ generated: true
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | — |
 | [F_20261030_2018_teammate-swarmflow-adaptation](features/F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
+| [F_20261120_1534_session-default-equipment](features/F_20261120_1534_session-default-equipment.md) | F | 全局默认装备（SDD-0030）：新会话自动挂载默认 MCP | @StoneChan_ | [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) |
 | [F_20261127_1419_enterprise-swarmflow-policy](features/F_20261127_1419_enterprise-swarmflow-policy.md) | F | 企业Swarmflow策略接入（expert_package_template.swarmflow） | @taoliankuan123 | 无独立 D：企业最小接入设计方案（外部文档 §4.2），仓内无独立设计文档；本文档为仓内行为契约的唯一维护位置。 |
 | [B_20261030_2020_pause-refires-consumed-popups](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261030_2020_pause-refires-consumed-popups.md) | B | 暂停/取消后已消费的 human 弹窗被重放层重投 | xiajing | 无独立 D：重放层过滤由主干既有机制承载，本修复补触发层清场与消费层去重两段。 |
 | [B_20261031_0946_ttse-codecheck-boundaries](bugfix/jiuwenswarm/B_20261031_0946_ttse-codecheck-boundaries.md) | B | TTSE 相关 CodeCheck 受保护访问与关闭条件复杂度修复 | xinyang_bali | 无独立 D：按用户提供的 20 项 CodeCheck 清单修复实现边界，沿用当前 TTSE 通用运行契约，无独立 D。 |
@@ -1086,6 +1108,30 @@ generated: true
 | [B_20261118_1150_memory-frozen-registration](bugfix/scripts/B_20261118_1150_memory-frozen-registration.md) | B | 修复冻结后端中 JiuwenMemory 动态实现漏包 | ToNy_St4rk | 无独立 D：按已确认的发布包故障进行局部打包修复，不改变 Memory 的公共接口或运行时配置契约。 |
 | [B_20261125_2150_windows-installer-restore-bootstrap](bugfix/scripts/B_20261125_2150_windows-installer-restore-bootstrap.md) | B | Windows 安装器恢复进程隔离初始化与分派测试修正 | XinchenZzz | 无独立 D：对 Issue 7056 已有恢复事务的局部故障修复及测试适配，没有新增独立设计。 |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+
+<a id="module-server-runtime-agent_adapter"></a>
+
+## server/runtime/agent_adapter
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | — |
+
+<a id="module-server-runtime-mcp"></a>
+
+## server/runtime/mcp
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | — |
+
+<a id="module-server-runtime-session"></a>
+
+## server/runtime/session
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | — |
 
 <a id="module-tests"></a>
 

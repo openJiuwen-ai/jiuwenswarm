@@ -86,6 +86,19 @@ Use `/mcp` commands during conversations to manage MCP servers:
 
 ---
 
+## Default Equipment (Auto-Mount in New Sessions)
+
+Frequently used MCPs no longer need to be re-checked in every new session: tick **Use by default** on the connector detail page — new sessions without a saved snapshot pre-check this connector in the extensions panel and mount it with the first message.
+
+> MCPs registered via `config.yaml` `mcp.servers` are already visible to every session and are out of scope for this mechanism.
+
+Semantics:
+
+- Priority: explicit request params > session equipment snapshot > global defaults. Defaults seed a session only when it has **no snapshot** and the message omits `mcp`; after the first successful turn the snapshot takes over, so later default-list changes never affect existing sessions.
+- Manually clearing equipment inside a session (sending `mcp: []`) is never back-filled by defaults.
+- Disconnected default MCPs are silently skipped in new sessions. After reconnection, sessions created **afterwards** pick them up again automatically; sessions that already dropped them do not re-attach them (re-check manually).
+- Clearing the default list (unchecking every **Use by default**) restores per-session manual selection.
+---
 ## CLI Connector Authorization
 
 Connecting CLI connectors such as Feishu or DingTalk from the connector marketplace, detail page, or extension dependency flow opens a dialog that waits for authorization automatically.

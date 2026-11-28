@@ -165,7 +165,7 @@ async def test_actual_foreground_final_waits_for_disk_and_surfaces_fault(history
             raise OSError("foreground disk error")
         original(path, item)
     monkeypatch.setattr(session_history, "_append_record_jsonl", fail_final)
-    monkeypatch.setattr(interface, "restore_chat_send_equipment_params", lambda *args: None)
+    monkeypatch.setattr(interface, "restore_chat_send_equipment_params", AsyncMock())
     monkeypatch.setattr(interface, "is_auto_memory_enabled", lambda *args: False)
 
     class Adapter:
@@ -201,7 +201,7 @@ async def test_actual_control_final_disk_error_is_not_acknowledged_and_cleanup_r
             raise OSError("control disk error")
         original(path, item)
     monkeypatch.setattr(session_history, "_append_record_jsonl", fail_final)
-    monkeypatch.setattr(interface, "restore_chat_send_equipment_params", lambda *args: None)
+    monkeypatch.setattr(interface, "restore_chat_send_equipment_params", AsyncMock())
     monkeypatch.setattr(interface, "compute_chat_send_mcp_needed", lambda *args: [])
 
     class Adapter:

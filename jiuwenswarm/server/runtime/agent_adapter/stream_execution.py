@@ -230,7 +230,7 @@ class StreamExecutionService:
 
         session_id = facade._session_manager.get_session_id(request.session_id)
         if isinstance(request.params, dict):
-            ports.restore_chat_send_equipment_params(session_id, request.params)
+            await ports.restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
 
         mode = (

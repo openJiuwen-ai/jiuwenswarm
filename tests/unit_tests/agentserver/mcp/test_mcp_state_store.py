@@ -256,6 +256,44 @@ def test_record_to_mcp_entry_carries_enabled_when_present(tmp_path: Path) -> Non
         assert "enabled" not in entry3
 
 
+def test_list_default_mcps_filters_to_live_states(tmp_path: Path) -> None:
+    """Only connected/connecting defaults are effective; a default flag on a
+    disconnected or registered record is inert but still visible via
+    list_default_flagged_mcps (settings UI warning)."""
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        ss.upsert_mcp_record("live", _mk_entry("live"), state="connected")
+        ss.upsert_mcp_record("joining", _mk_entry("joining"), state="connecting")
+        ss.upsert_mcp_record("dead", _mk_entry("dead"), state="disconnected")
+        ss.upsert_mcp_record("fresh", _mk_entry("fresh"), state="registered")
+        ss.replace_default_mcps(["live", "joining", "dead", "fresh"])
+
+        assert ss.list_default_mcps() == ["joining", "live"]
+        assert ss.list_default_flagged_mcps() == ["dead", "fresh", "joining", "live"]
+
+
+def test_replace_default_mcps_swaps_set_atomically(tmp_path: Path) -> None:
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        for name in ("a", "b", "c"):
+            ss.upsert_mcp_record(name, _mk_entry(name), state="connected")
+        ss.replace_default_mcps(["a", "b"])
+
+        ss.replace_default_mcps(["b", "c"])
+
+        assert ss.get_mcp_record("a")["is_default"] is False
+        assert ss.get_mcp_record("b")["is_default"] is True
+        assert ss.get_mcp_record("c")["is_default"] is True
+        assert ss.list_default_mcps() == ["b", "c"]
+
+
+def test_replace_default_mcps_unknown_name_raises(tmp_path: Path) -> None:
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        ss.upsert_mcp_record("a", _mk_entry("a"), state="connected")
+        with pytest.raises(KeyError):
+            ss.replace_default_mcps(["a", "ghost"])
+        # failed replace leaves the prior set untouched
+        assert ss.get_mcp_record("a").get("is_default") in (None, False)
+
+
 def test_settle_connecting_mcp_promotes_or_degrades(tmp_path: Path, monkeypatch) -> None:
     """Startup probe result settles a leftover hidden record without touching a
     connect that already completed."""

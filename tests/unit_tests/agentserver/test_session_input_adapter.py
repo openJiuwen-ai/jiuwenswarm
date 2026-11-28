@@ -40,7 +40,7 @@ async def test_accepted_steer_persists_supplemental_user_history(monkeypatch):
     facade._adapter = SimpleNamespace(deliver_session_input_impl=deliver)
     facade._session_manager = SimpleNamespace(get_session_id=lambda value: value)
     facade._build_inputs = lambda _request: ({"query": "change to 200 words"}, "disabled", None)
-    monkeypatch.setattr(interface_module, "restore_chat_send_equipment_params", Mock())
+    monkeypatch.setattr(interface_module, "restore_chat_send_equipment_params", AsyncMock())
     history_io = AsyncMock()
     monkeypatch.setattr(interface_module, "_run_history_io", history_io)
     request = SimpleNamespace(

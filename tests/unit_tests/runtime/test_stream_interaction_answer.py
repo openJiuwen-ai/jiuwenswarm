@@ -890,7 +890,7 @@ async def test_real_facade_control_wrapper_closes_retained_adapter_stream(
             yield chunk
 
     facade._stream_control_input = _stream_control_input
-    monkeypatch.setattr(interface, "restore_chat_send_equipment_params", Mock())
+    monkeypatch.setattr(interface, "restore_chat_send_equipment_params", AsyncMock())
     monkeypatch.setattr(
         interface, "compute_chat_send_mcp_needed", Mock(return_value=False)
     )

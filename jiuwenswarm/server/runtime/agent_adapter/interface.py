@@ -59,15 +59,16 @@ from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     resolve_sdk_choice,
 )
 from jiuwenswarm.server.runtime.agent_adapter.management_routes import (
-    _SKILLDEV_METHODS,
-    _SKILL_ROUTES,
-    _SESSION_ASSET_ROUTES,
-    _SKILL_VISIBILITY_WRITE_HANDLERS as _SKILL_VISIBILITY_WRITE_HANDLERS,
-    _SKILL_SYNC_HANDLERS as _SKILL_SYNC_HANDLERS,
-    _SKILL_SYNC_WS_REJECTED,
-    _PLUGIN_ROUTES,
-    _PACKAGE_ROUTES,
-    _AGENT_GROUP_PACKAGE_METHODS as _AGENT_GROUP_PACKAGE_METHODS,
+_SKILLDEV_METHODS,
+_SKILL_ROUTES,
+_SESSION_ASSET_ROUTES,
+_SESSION_EQUIPMENT_DEFAULTS_ROUTES,
+_SKILL_VISIBILITY_WRITE_HANDLERS as _SKILL_VISIBILITY_WRITE_HANDLERS,
+_SKILL_SYNC_HANDLERS as _SKILL_SYNC_HANDLERS,
+_SKILL_SYNC_WS_REJECTED,
+_PLUGIN_ROUTES,
+_PACKAGE_ROUTES,
+_AGENT_GROUP_PACKAGE_METHODS as _AGENT_GROUP_PACKAGE_METHODS,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
 from jiuwenswarm.agents.harness.common.memory.plugin import supported_memory_session
@@ -397,7 +398,7 @@ def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
     return out
 
 
-def restore_chat_send_equipment_params(
+async def restore_chat_send_equipment_params(
     session_id: str | None,
     params: dict[str, Any],
 ) -> dict[str, Any]:
@@ -405,6 +406,18 @@ def restore_chat_send_equipment_params(
 
     Explicit empty values are never overwritten: omission means "keep", while
     ``""`` / ``[]`` mean "clear".
+
+    Third-level source: when the session has no equipment snapshot at all
+    (``get_session_equipment`` returns ``{}`` — a fresh session that never
+    persisted one) and ``mcp`` is omitted, the global default equipment set
+    (state.json ``is_default`` flags, live-filtered) seeds the field once. The first successful mount
+    persists it as the session snapshot, so later default-list changes never
+    retro-apply to this session. A snapshot that exists but is empty
+    (explicit clear) is truthy here, so the escape hatch is preserved.
+
+    All disk IO (snapshot read + defaults read) runs via ``asyncio.to_thread``
+    to keep the event loop free, mirroring the handler side
+    (``handlers/session.py``); callers must ``await`` this coroutine.
     """
     if not session_id:
         return params
@@ -415,11 +428,17 @@ def restore_chat_send_equipment_params(
         get_session_equipment,
     )
 
-    saved = get_session_equipment(session_id)
+    saved = await asyncio.to_thread(get_session_equipment, session_id)
     for key in ("agent_template_name", "plugin_names", "mcp"):
         if key not in params and key in saved:
             value = saved[key]
             params[key] = list(value) if isinstance(value, list) else value
+    if not saved and "mcp" not in params:
+        from jiuwenswarm.common.config import get_default_equipment_mcp_names
+
+        default_mcp = await asyncio.to_thread(get_default_equipment_mcp_names)
+        if default_mcp:
+            params["mcp"] = list(default_mcp)
     return params
 
 
@@ -2401,6 +2420,67 @@ class JiuWenSwarm:
         # pylint: disable-next=protected-access
         return await self._get_management_requests()._handle_session_asset_request(request)
 
+    async def _handle_session_equipment_defaults_request(
+        self, request: AgentRequest
+    ) -> AgentResponse | None:
+        """Handle ``session_equipment.defaults.*`` on the WS wire; None = not ours.
+
+        Stateless (config/state.json reads + one atomic swap) and must be
+        answered before the chat fallthrough. Shares the payload core with
+        the dispatch.py HTTP handlers (``handlers/session.py``), so the two
+        transports can never drift apart.
+        """
+        if request.req_method not in _SESSION_EQUIPMENT_DEFAULTS_ROUTES:
+            return None
+        from jiuwenswarm.server.handlers.session import (
+            apply_session_equipment_defaults_payload,
+            read_session_equipment_defaults_payload,
+        )
+
+        try:
+            if request.req_method == ReqMethod.SESSION_EQUIPMENT_DEFAULTS_GET:
+                payload = await read_session_equipment_defaults_payload()
+            else:
+                params = request.params if isinstance(request.params, dict) else {}
+                payload = await apply_session_equipment_defaults_payload(params)
+        except KeyError as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "MCP_NOT_FOUND"},
+                metadata=request.metadata,
+            )
+        except ValueError as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "BAD_REQUEST"},
+                metadata=request.metadata,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "[JiuWenSwarm] session_equipment.defaults request failed: "
+                "method=%s error=%s",
+                request.req_method,
+                exc,
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "INTERNAL"},
+                metadata=request.metadata,
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     async def _handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
         if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
             return None
@@ -2995,6 +3075,14 @@ class JiuWenSwarm:
         if session_asset_response is not None:
             return session_asset_response
 
+        # Session default equipment RPCs must be answered before adapter
+        # creation and the chat fallthrough (stateless, no session runtime).
+        equipment_defaults_response = await self._handle_session_equipment_defaults_request(
+            request
+        )
+        if equipment_defaults_response is not None:
+            return equipment_defaults_response
+
         assets_package_response = await self._handle_assets_package_request(request)
         if assets_package_response is not None:
             return assets_package_response
@@ -3025,7 +3113,7 @@ class JiuWenSwarm:
 
         session_id = self._session_manager.get_session_id(request.session_id)
         if isinstance(request.params, dict):
-            restore_chat_send_equipment_params(session_id, request.params)
+            await restore_chat_send_equipment_params(session_id, request.params)
         from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion
         prompt_suggestion.forks.request_started(
             session_id,
@@ -3284,7 +3372,7 @@ class JiuWenSwarm:
         if not callable(deliver):
             raise RuntimeError("active agent does not support supplemental input")
         session_id = self._session_manager.get_session_id(request.session_id)
-        restore_chat_send_equipment_params(session_id, request.params)
+        await restore_chat_send_equipment_params(session_id, request.params)
         inputs, _memory_mode, _user_turn = await self._build_inputs_async(request)
         history_persisted = False
         async with aclosing(deliver(request, inputs)) as stream:

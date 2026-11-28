@@ -103,6 +103,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261030_2018_teammate-swarmflow-adaptation](F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
+| [F_20261120_1534_session-default-equipment](F_20261120_1534_session-default-equipment.md) | F | 全局默认装备（SDD-0030）：新会话自动挂载默认 MCP | @StoneChan_ | [SDD-0030](../designs/proposals/SDD-0030-session-default-equipment/design.md) |
 | [F_20261127_1419_enterprise-swarmflow-policy](F_20261127_1419_enterprise-swarmflow-policy.md) | F | 企业Swarmflow策略接入（expert_package_template.swarmflow） | @taoliankuan123 | 无独立 D：企业最小接入设计方案（外部文档 §4.2），仓内无独立设计文档；本文档为仓内行为契约的唯一维护位置。 |
 
 <a id="module-jiuwenswarm-agents-harness"></a>

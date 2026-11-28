@@ -25,6 +25,7 @@ Layout::
           "integration_type": "remote-mcp|stdio-mcp|cli",
           "state": "connected|disconnected",
           "enabled": false,        # TUI-only default switch; web ignores
+          "is_default": false,     # web session default-equipment switch
           "server_id_scope": "mcp:<name>",
           "skills": ["..."]        # cli/skill-only
         }
@@ -427,6 +428,67 @@ def set_mcp_enabled(name: str, *, enabled: bool) -> None:
         _save(st)
 
 
+def list_default_mcps() -> list[str]:
+    """Names of live MCPs flagged ``is_default`` (web session default set).
+
+    Only ``state`` in {connected, connecting} records qualify — a default
+    flag on a disconnected/registered MCP is inert (skipped at restore time;
+    ``reconcile_session_mcp`` failure isolation is the backstop).
+    """
+    with _lock:
+        cons = _load().get("mcp", {})
+    out: list[str] = []
+    for name, c in cons.items():
+        if not isinstance(c, dict):
+            continue
+        if c.get("is_default") is True and c.get("state") in ("connected", "connecting"):
+            out.append(name)
+    return sorted(out)
+
+
+def list_default_flagged_mcps() -> list[str]:
+    """Names of ALL records flagged ``is_default`` (any state).
+
+    For the settings UI: a default-flagged MCP whose connection dropped must
+    still show as "default but unavailable", not silently vanish.
+    """
+    with _lock:
+        cons = _load().get("mcp", {})
+    return sorted(
+        name
+        for name, c in cons.items()
+        if isinstance(c, dict) and c.get("is_default") is True
+    )
+
+
+def replace_default_mcps(names: list[str]) -> None:
+    """Atomically replace the whole ``is_default`` set under one lock.
+
+    Clears ``is_default`` on every record not in ``names`` and sets it on
+    every record in ``names``. Raises ``KeyError`` for a name with no
+    state.json record (validation of connect state is the caller's job).
+    """
+    with _lock:
+        st = _load()
+        cons = st.get("mcp", {})
+        wanted = {str(n or "").strip() for n in names if str(n or "").strip()}
+        missing = wanted - set(cons)
+        if missing:
+            raise KeyError(f"mcp not found in state: {sorted(missing)}")
+        changed = False
+        for name, rec in cons.items():
+            if not isinstance(rec, dict):
+                continue
+            target = name in wanted
+            # Missing key reads as None, which covers the "set a new flag"
+            # case; the single branch below handles both set and clear.
+            if rec.get("is_default") is not target:
+                rec["is_default"] = target
+                changed = True
+        if changed:
+            _save(st)
+
+
 __all__ = [
     "read_mcp_state",
     "get_mcp_record",
@@ -434,6 +496,8 @@ __all__ = [
     "list_truly_connected_mcps",
     "list_connecting_mcps",
     "list_tui_enabled_mcps",
+    "list_default_mcps",
+    "list_default_flagged_mcps",
     "connected_mcp_skill_dirs",
     "list_registered_mcps",
     "upsert_mcp_record",
@@ -441,6 +505,7 @@ __all__ = [
     "set_mcp_state",
     "set_mcp_state_if",
     "set_mcp_enabled",
+    "replace_default_mcps",
     "record_to_mcp_entry",
 ]
 

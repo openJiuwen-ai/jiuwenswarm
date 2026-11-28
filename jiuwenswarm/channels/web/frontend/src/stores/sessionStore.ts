@@ -926,6 +926,13 @@ interface SessionState {
   removeEnabledMcp: (sessionId: string, mcpName: string) => void;
   /** 本会话启用MCP：清空 */
   clearEnabledMcps: (sessionId: string) => void;
+  /**
+   * 全局默认装备预勾选：无快照的新会话首次打开扩展面板时，用全局
+   * 默认 MCP 集整体初始化 enabledMcps 并标记 hydrated——之后首条消息会带显式数组
+   * （语义与后端第三级回填等价，所见即所发）。只在未 hydrate 的会话上调用：已 hydrate
+   * 说明后端快照已恢复或用户已手动改过，整体替换会覆盖用户选择。
+   */
+  prefillDefaultMcps: (sessionId: string, mcpNames: string[]) => void;
   /** 用后端的会话级装备快照恢复插件/MCP选择。 */
   restoreSessionEquipment: (
     sessionId: string,
@@ -2010,6 +2017,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: {
             ...runtime,
             enabledMcps: runtime.enabledMcps.filter((s) => s !== normalized),
+            extensionsHydrated: true,
+          },
+        },
+      };
+    });
+  },
+
+  prefillDefaultMcps: (sessionId, mcpNames) => {
+    const names = Array.from(
+      new Set(mcpNames.map((n) => n.trim()).filter((n) => n.length > 0)),
+    );
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      // 已 hydrate 的会话不动：后端快照恢复或用户手动修改都优先于全局默认。
+      if (runtime.extensionsHydrated) return state;
+      // 未 hydrate 时 enabledMcps 必为空（hydrate 标记在任何手动修改时都会置位），整体
+      // 赋值等价于追加，但语义更明确：默认集就是初始选择。空名单由调用方拦截——空默认
+      // 集不预填（保持省略字段 → 后端回填在发送时活读取默认，晚于面板打开的新增默认
+      // 仍能生效），本动作不做空名单特判。
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            enabledMcps: names,
             extensionsHydrated: true,
           },
         },

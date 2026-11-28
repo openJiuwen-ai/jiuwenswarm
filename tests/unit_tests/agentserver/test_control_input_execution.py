@@ -51,7 +51,7 @@ def make_facade(monkeypatch):
         adapter = SimpleNamespace(process_message_stream_impl=adapter_stream, cleanup=AsyncMock())
         facade._adapter = adapter
         facade._ensure_adapter = lambda **kwargs: adapter
-        monkeypatch.setattr(interface, "restore_chat_send_equipment_params", lambda *_: None)
+        monkeypatch.setattr(interface, "restore_chat_send_equipment_params", AsyncMock())
         monkeypatch.setattr(interface, "compute_chat_send_mcp_needed", lambda *_: [])
         monkeypatch.setattr(interface, "append_history_record", append or (lambda **record: writes.append(record)))
         return facade, writes, closed, adapter

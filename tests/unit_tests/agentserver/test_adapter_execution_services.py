@@ -679,7 +679,7 @@ async def test_injected_memory_hooks_own_before_execution_and_completed_turn(
 
     monkeypatch.setattr(ExtensionRegistry, "get_instance", forbid_registry)
     monkeypatch.setattr(
-        module, "restore_chat_send_equipment_params", lambda *_args: None
+        module, "restore_chat_send_equipment_params", AsyncMock()
     )
     monkeypatch.setattr(module, "_run_history_io", history_io)
     monkeypatch.setattr(
@@ -752,7 +752,7 @@ async def test_plugin_memory_skips_legacy_hooks_and_extraction(monkeypatch, mode
     async def history_io(function, **record):
         function(**record)
 
-    monkeypatch.setattr(module, "restore_chat_send_equipment_params", lambda *_args: None)
+    monkeypatch.setattr(module, "restore_chat_send_equipment_params", AsyncMock())
     monkeypatch.setattr(module, "_run_history_io", history_io)
     monkeypatch.setattr(module, "append_history_record", lambda **record: writes.append(record))
     monkeypatch.setattr(module, "is_auto_memory_enabled", lambda *_args: True)

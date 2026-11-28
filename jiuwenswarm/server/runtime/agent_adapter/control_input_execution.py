@@ -62,7 +62,7 @@ class ControlInputExecutionService:
             adapter = facade._ensure_adapter(mode=facade._adapter_mode_for_request(request))
             self.session_id = facade._session_manager.get_session_id(request.session_id)
             params = request.params if isinstance(request.params, dict) else {}
-            ports.restore_equipment(self.session_id, params)
+            await ports.restore_equipment(self.session_id, params)
             inputs, _memory_mode, _user_turn = await facade._build_inputs_async(request)
             await facade.reconcile_session_mcp(
                 request.session_id, ports.compute_mcp_needed(params),

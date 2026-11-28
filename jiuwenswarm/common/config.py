@@ -3659,6 +3659,35 @@ def get_config_yaml_mcp_servers() -> list[dict[str, Any]]:
     return [item for item in mcp_cfg.get("servers", []) if isinstance(item, dict)]
 
 
+def get_default_equipment_mcp_names() -> list[str]:
+    """Effective global default MCP set for fresh web sessions.
+
+    Single source (2026-11-24 simplification, community-aligned): state.json
+    records flagged ``is_default`` (runtime UI toggles), filtered to live
+    (connected/connecting) records by ``list_default_mcps``. The config.yaml
+    preset layer was dropped — ``mcp.servers`` registrations are already
+    visible to every session by design and need no default mechanism. Any
+    provider failure degrades to ``[]``: default equipment must never break
+    chat.send. Read by ``restore_chat_send_equipment_params`` when a session
+    has no equipment snapshot yet; an empty list simply means the feature is
+    off (per-session manual selection behavior).
+    """
+    try:
+        from jiuwenswarm.common.external_providers import provider
+
+        names = provider("mcp_state").list_default_mcps()
+        return sorted(
+            {
+                name.strip()
+                for name in names
+                if isinstance(name, str) and name.strip()
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[config] failed to read state.json default mcps: %s", exc)
+        return []
+
+
 def upsert_mcp_server_in_config(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """新增或更新 mcp.servers 条目，返回（条目, 是否创建）。"""
     name = str(server.get("name", "")).strip()
