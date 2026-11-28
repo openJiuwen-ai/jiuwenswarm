@@ -440,7 +440,12 @@ async def test_moa_dispatch_cleanup_preserves_only_existing_output_owner(monkeyp
     ])
     if existing_owner:
         assert progress.mailbox is mailbox and not mailbox.closed
-        assert any(event.get("event_type") == "runtime.accepted" for event in events)
+        # Another consumer holds the output lease, so this dispatch is refused as
+        # busy while the existing owner's mailbox stays open.
+        assert any(
+            event.get("event_type") == "chat.error" and event.get("code") == "SESSION_BUSY"
+            for event in events
+        )
         progress.close()
     else:
         assert progress.mailbox is None and mailbox.closed

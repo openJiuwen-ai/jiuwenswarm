@@ -16735,6 +16735,17 @@ class JiuWenSwarmDeepAdapter:
             return False
         return getattr(self._instance, "active_round", None) is None
 
+    def _output_busy_payload(self) -> dict[str, str]:
+        language = self._resolve_runtime_language()
+        return {
+            "code": "SESSION_BUSY",
+            "error": (
+                "This session is still processing another request. Please try again shortly."
+                if language == "en"
+                else "当前会话仍在处理上一条请求，请稍后重试。"
+            ),
+        }
+
     async def _attach_and_send_inputs(
         self,
         request: AgentRequest,
@@ -18851,6 +18862,13 @@ class JiuWenSwarmDeepAdapter:
                 )
                 if interaction_stream is None and not permission_dispatched:
                     self._permission_dispatch.release(inputs)
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload=self._output_busy_payload(),
+                        metadata=request.metadata,
+                    )
             # ``update_state`` alone is process-local. Checkpoint the resolved
             # turn before waiting on the runner so a server restart cannot
             # reset this session's next turn number to 1.
@@ -20352,8 +20370,17 @@ class JiuWenSwarmDeepAdapter:
                     )
                 )
                 if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
-                        yield chunk
+                    busy = self._output_busy_payload()
+                    run_failure = (busy["code"], busy["error"])
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload={"event_type": "chat.error", "request_id": rid, **busy},
+                        is_complete=False,
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid, channel_id=cid, payload=None, is_complete=True,
+                    )
                     interaction_stream_abort = False
                     return
                 server_logger.info(

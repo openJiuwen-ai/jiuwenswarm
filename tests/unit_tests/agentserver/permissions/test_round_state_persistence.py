@@ -56,10 +56,14 @@ def disable_observability(answer_host, monkeypatch):  # noqa: F811 - imported py
     monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
 
 
-async def _send_request(h, streaming=False, **params):
+async def _send_request(h, streaming=False, expect_ok=True, **params):
     if not streaming:
         result = await _request(h, **params)
-        assert result.ok
+        if expect_ok:
+            assert result.ok
+        else:
+            assert not result.ok
+            assert (result.payload or {}).get("code") == "SESSION_BUSY"
         return result
     h.request_count += 1
     request = AgentRequest(
@@ -78,7 +82,13 @@ async def _send_request(h, streaming=False, **params):
             async for chunk in h.adapter.process_message_stream_impl(request, inputs)
         ]
 
-    return await asyncio.wait_for(consume(), 10)
+    chunks = await asyncio.wait_for(consume(), 10)
+    if not expect_ok:
+        assert any(
+            isinstance(chunk.payload, dict) and chunk.payload.get("code") == "SESSION_BUSY"
+            for chunk in chunks
+        )
+    return chunks
 
 
 @pytest.mark.asyncio
@@ -113,7 +123,7 @@ async def test_answered_interrupt_is_not_restored_after_the_round_ends(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_a_request_accepted_into_another_readers_round_does_not_commit_it(
+async def test_a_request_rejected_while_another_reader_holds_the_round_does_not_commit_it(
     answer_host,  # noqa: F811 - the pytest fixture imported above
     checkpointer,
     monkeypatch,
@@ -122,7 +132,8 @@ async def test_a_request_accepted_into_another_readers_round_does_not_commit_it(
     h = answer_host
     await _interrupt(h, monkeypatch, mode="manual", kind="ask")
     # Another reader holds the output lease, and its round has moved past
-    # the interrupt without ending yet.
+    # the interrupt without ending yet.  The request cannot be dispatched, so
+    # it is refused as busy instead of being reported as accepted.
     monkeypatch.setattr(
         h.adapter._instance, "attach_output", AsyncMock(return_value=None)
     )
@@ -130,7 +141,7 @@ async def test_a_request_accepted_into_another_readers_round_does_not_commit_it(
     # The dispatch-time turn checkpoint is a separate write, not under test.
     monkeypatch.setattr(h.adapter._turn_tracker, "sync", AsyncMock())
 
-    await _send_request(h, streaming=streaming, query="next")
+    await _send_request(h, streaming=streaming, expect_ok=False, query="next")
 
     assert list(await _persisted_interrupt(h, checkpointer)) == ["call_0"]
 

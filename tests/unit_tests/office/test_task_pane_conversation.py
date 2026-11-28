@@ -203,7 +203,11 @@ async def test_turns_that_start_together_on_a_new_agent_load_the_template_once(
 
     async with SessionAdapter(tmp_path, monkeypatch, "deck-a", CLIENT_APP) as pane:
         # The task pane's message and another conversation's message arrive together.
-        assert await asyncio.gather(pane.send(), pane.send(**FROM_ANOTHER_CONVERSATION)) == [[], []]
+        # Only one of them can hold the output lease; the other is refused as busy
+        # instead of being accepted and then silently dropped.
+        results = await asyncio.gather(pane.send(), pane.send(**FROM_ANOTHER_CONVERSATION))
+        assert sorted(len(errors) for errors in results) == [0, 1]
+        assert "仍在处理" in next(errors for errors in results if errors)[0]
         assert len(pane.rails()) == 1
         assert_has_the_powerpoint_template(*await pane.turn())
 

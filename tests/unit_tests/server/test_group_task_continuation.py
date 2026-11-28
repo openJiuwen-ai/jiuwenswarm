@@ -80,6 +80,7 @@ async def submit_private(child, *, task=False):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_background_proxy_remains_available_and_adjusts_same_execution(private_run, monkeypatch):
     run = private_run
     started = asyncio.Event()
@@ -93,7 +94,8 @@ async def test_background_proxy_remains_available_and_adjusts_same_execution(pri
         yield None
 
     monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
-    accepted = await asyncio.wait_for(run.proxy.invoke({"run_id": "one", "task": "Research"}), 1)
+    # The release event verifies that acceptance precedes completion without a lock timing assumption.
+    accepted = await run.proxy.invoke({"run_id": "one", "task": "Research"})
     assert accepted.success and accepted.data["accepted"]
     await started.wait()
     key = accepted.data["execution_id"]
@@ -112,7 +114,7 @@ async def test_background_proxy_remains_available_and_adjusts_same_execution(pri
     assert repeat.data["execution_id"] == key and len(run.store.read()) == 1
     worker = run.manager.get_stream_task(private_session(run, accepted))
     release.set()
-    await asyncio.wait_for(asyncio.shield(worker), 2)
+    await worker
     assert run.store.get(key)["status"] == "completed"
     assert run.store.get(key)["presentation"] == "message"
 

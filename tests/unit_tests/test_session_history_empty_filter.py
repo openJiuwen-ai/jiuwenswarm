@@ -509,6 +509,33 @@ def test_subagent_history_mode_does_not_replace_parent_session_mode(
     assert metadata_updates[0]["mode"] is None
 
 
+def test_team_plan_output_does_not_replace_session_mode(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    metadata_updates = []
+    monkeypatch.setattr(
+        session_metadata,
+        "update_session_metadata",
+        lambda **kwargs: metadata_updates.append(kwargs),
+    )
+
+    session_history.append_history_record(
+        session_id="team-plan-output",
+        request_id="plan-turn",
+        channel_id="web",
+        role="assistant",
+        event_type="chat.final",
+        content="Plan implementation result",
+        timestamp=1.0,
+        mode="team.work.plan",
+    )
+
+    records = _wait_history("team-plan-output")
+    assert records[0]["mode"] == "team.work.plan"
+    assert metadata_updates[0]["mode"] is None
+
+
 def test_request_completion_is_persisted_after_prior_history(tmp_path, monkeypatch):
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
 
