@@ -131,7 +131,9 @@ debug_trace:
 
 ### 4.4 Reporting structured OTel traces
 
-In enterprise Work and Code sessions, the main agent span uses `agent_template.template_name` for `gen_ai.agent.name` when the request’s `bot_id` matches the `resource_id` in the enterprise configuration already loaded for that session. Naming reuses this configuration without an additional database query. If the session has no matching configuration or template name, the span uses the agent’s existing name. When turns overlap in one session, callbacks bound to a specific turn can still report its template name. Callbacks with only a session ID use the runtime name until all overlapping turns finish. This rule applies to JiuwenSwarm web sessions and Insight experiments. The template name is for telemetry only. The running agent uses its existing `AgentCard.name`. Explicit agent definitions, custom Specs, instances with an explicit `agent_name`, teams and subagents report their own names.
+For enterprise Work and Code conversations started in JiuwenSwarm Web or Insight, the main Agent span prefers the Manager’s `agent_name` as `gen_ai.agent.name`. This is the Agent name shown on the **Agent Templates** page. Gateway matches the authenticated user’s cluster, group and `bot_id` against the Manager’s authorized contexts. The lookup has a one-second timeout and is shared across turns for the same WebSocket and context. If the name is unavailable, the span uses the standard runtime Agent name, which is `main_agent` by default.
+
+When turns overlap in one session, callbacks bound to a specific turn can still report its display name. Callbacks with only a session ID use the runtime name until all overlapping turns finish. The running Agent continues to use its existing `AgentCard.name`. Explicit Agent definitions, custom Specs, instances with an explicit `agent_name`, teams and subagents report their own names.
 
 OTel supports four exporter modes — pick by whether you are always online:
 

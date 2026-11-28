@@ -8768,13 +8768,12 @@ class JiuWenSwarmDeepAdapter:
         return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
 
     def _set_main_agent_trace_name(self, request: AgentRequest, run_span: Span | None) -> None:
-        """Bind the matching session snapshot's template name to this recorded turn."""
+        """Bind the enterprise Agent display name to this recorded turn."""
         try:
             if run_span is None or not self._is_session_scoped_adapter or not run_span.is_recording():
                 return
-            policy = self._enterprise_config
             params = request.params
-            if policy is None or not isinstance(params, dict):
+            if not isinstance(params, dict):
                 return
             if not is_single_agent_mode(deprecate_mode(params.get("mode", "agent"))) or is_team_params(params):
                 return
@@ -8784,22 +8783,33 @@ class JiuWenSwarmDeepAdapter:
                 or "agent_name" in self._instance_overrides
             ):
                 return
-            from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
+            from jiuwenswarm.common.request_ext import METADATA_KEY
             from jiuwenswarm.common.request_identity import web_routing_identity
+            from jiuwenswarm.enterprise import is_enterprise
 
+            if request.channel_id != "web" or not is_enterprise():
+                return
             bot_id = web_routing_identity(request.metadata).get("bot_id")
-            if not bot_id or getattr(policy, "resource_id", None) != bot_id:
+            if not bot_id:
                 return
-            template = getattr(policy, "agent_template", None)
-            name = template.get("template_name") if isinstance(template, dict) else None
-            if not isinstance(name, str) or not name.strip():
+
+            ext = request.metadata.get(METADATA_KEY)
+            # Gateway stamps this key after checking the Manager user context.
+            identity = ext.get("_jiuwen_trace_agent_name") if isinstance(ext, dict) else None
+            if not isinstance(identity, dict) or identity.get("bot_id") != bot_id:
                 return
+            name = identity.get("name")
+            if not isinstance(name, str) or not name.strip() or len(name) > 128:
+                return
+
+            from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
+
             for rail in self._instance.configured_rails():
                 if isinstance(rail, MainAgentObservabilityRail):
                     rail.bind_template_name(run_span, name.strip())
                     return
         except Exception:  # Telemetry must not interrupt a chat.
-            logger.warning("Could not set the Agent template name for tracing", exc_info=True)
+            logger.warning("Could not set the Agent display name for tracing", exc_info=True)
 
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
         if _is_attach_only_subscription(request.params):
