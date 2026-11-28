@@ -161,6 +161,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -1375,9 +1376,10 @@ def _ensure_legacy_compat_symlinks(workspace_dir: Path, *, require_target: bool 
     个人版安装新版本运行一段时间后回滚老版本：业务数据已剪切进 profile/，
     老版本仍按数据根平铺路径读写——在老位置放相对软链，使新老两条路径
     指向同一份数据，回滚后老版本继续读写新数据不丢不断。规则：
-    - 老位置存在真实目录/文件 → 不动（迁移未完成，软链会遮蔽数据）；
-    - 老位置已是软链 → 仅在指向不一致时替换；
-    - 平台禁止软链（如 Windows 未开开发者模式）→ 静默跳过；
+    - 老位置存在真实目录/文件 → 不动并告警（迁移未完成，软链会遮蔽数据）；
+    - 老位置已是软链/junction → 仅在指向不一致时替换；
+    - 平台禁止软链（如 Windows 未开开发者模式）→ 回退目录联接（junction），
+      仍失败则告警——不静默吞掉；
     - ``require_target=False``（prepare_workspace 新初始化路径）：目标目录尚
       未创建也建链（必要时先建空目录），悬挂软链由老版本首次写入时填实。
     config/runtime_state 的兼容链单独处理（config 本体保持真实目录，
@@ -1436,58 +1438,177 @@ def _ensure_log_compat_symlinks(workspace_dir: Path, *, require_target: bool = T
     _ensure_compat_symlink(logs_root / "logs", Path("core"))
 
 
+_COMPAT_LINK_WARNED: set[str] = set()
+
+
+def _warn_compat_link_once(link: Path, reason: str) -> None:
+    """启动期会被反复调用，同一链接一个进程只告警一次。"""
+    key = str(link)
+    if key in _COMPAT_LINK_WARNED:
+        return
+    _COMPAT_LINK_WARNED.add(key)
+    logger.warning("[Compat] %s: %s", reason, link)
+
+
+def _link_matches(link: Path, desired: Path) -> bool:
+    """兼容链（软链/junction）是否已解析到期望目标。
+
+    路径拼写可能不同（8.3 短名、subst 盘符、UNC 大小写），仅比较字符串形态
+    会把同一目录误判为失效并每次启动重建，故再比较一次 inode。
+    """
+    try:
+        if link.resolve() == desired.resolve():
+            return True
+        return link.samefile(desired)
+    except OSError:
+        return False
+
+
+def _remove_compat_link(link: Path) -> None:
+    """删除兼容链：Windows 上的目录联接需用 rmdir，符号链接用 unlink。"""
+    try:
+        link.unlink()
+        return
+    except FileNotFoundError:
+        return
+    except (IsADirectoryError, PermissionError):
+        pass
+    try:
+        link.rmdir()
+    except FileNotFoundError:
+        return
+
+
+def _create_windows_junction(link: Path, target: Path) -> bool:
+    """无符号链接特权时用目录联接（junction）创建兼容链。
+
+    Windows 建符号链接需要 ``SeCreateSymbolicLinkPrivilege``（默认仅管理员，
+    普通用户须开启"开发者模式"）；``mklink /J`` 创建目录联接不需要该特权。
+    联接记录的是绝对目标，数据根整体搬迁后会失效，因此只作为 symlink 失败
+    后的降级手段。
+    """
+    if os.name != "nt":
+        return False
+    abs_target = (link.parent / target).resolve()
+    if not abs_target.is_dir():
+        return False
+    # 在 link 父目录下用相对名调用 mklink：数据根路径（可能含 & ^ 或空格）
+    # 不进入命令行，避免被 cmd 解释为分隔符；/d 关闭 AutoRun，/J 建目录联接。
+    try:
+        target_rel = os.path.relpath(abs_target, start=link.parent)
+    except ValueError:
+        return False
+    try:
+        completed = subprocess.run(
+            [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/c",
+                "mklink",
+                "/J",
+                link.name,
+                target_rel,
+            ],
+            cwd=str(link.parent),
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        output = b"".join(
+            part for part in (completed.stderr, completed.stdout) if part
+        )
+        try:
+            detail = output.decode("oem", "replace")
+        except LookupError:
+            detail = output.decode("utf-8", "replace")
+        logger.debug("[Compat] mklink /J failed at %s: %s", link, detail.strip())
+        return False
+    return link.is_dir()
+
+
+def _create_compat_link(link: Path, target: Path) -> bool:
+    """创建兼容链：优先符号链接，Windows 无权限时回退目录联接。
+
+    失败时由 ``logger.warning`` 暴露（一次启动一次），不再只留 debug——
+    兼容链缺失会让回滚后的老版本读写不到新数据。
+    """
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        logger.info("[Compat] linked legacy path: %s -> %s", link, target)
+        return True
+    except (OSError, NotImplementedError) as exc:
+        if _create_windows_junction(link, target):
+            logger.info("[Compat] linked legacy path via junction: %s -> %s", link, target)
+            return True
+        _warn_compat_link_once(
+            link,
+            "compatibility link could not be created; "
+            "legacy-path readers may be degraded "
+            "(Windows: enable Developer Mode or run with symlink privilege)",
+        )
+        logger.debug("[Compat] compat link creation failed at %s: %s", link, exc)
+        return False
+
+
 def _ensure_compat_symlink(link: Path, target: Path) -> None:
     """
-    幂等创建/校正相对软链：已指向目标则跳过，真实路径绝不覆盖。
+    幂等创建/校正兼容链：已指向目标则跳过，真实路径绝不覆盖。
 
-    替换旧链采用"临时名先行"两步换入：Windows 未开开发者模式（无
-    SeCreateSymbolicLinkPrivilege）时建链会失败，若先 unlink 旧链再建新链，
-    失败会让老路径链接直接丢失——先在临时名下建新链，成功后才换入。
+    链形态优先符号链接；Windows 未开开发者模式（无
+    SeCreateSymbolicLinkPrivilege）时回退目录联接（junction，无需特权）。
+    替换旧链采用"临时名先行"两步换入：若先删除旧链再建新链，建链失败会让
+    老路径链接直接丢失——先在临时名下建新链，成功后才换入。
+
+    ``<root>/agent`` 等老位置若已是真实目录/文件（迁移未完成或新旧版本
+    并存）则不覆盖，仅告警一次；当前版本 Web 端对 ``agent/...`` 请求做
+    profile 路径重写，不依赖该链（见 ``app_web._resolve_project_path``）。
     """
-    if link.is_symlink():
-        try:
-            if link.resolve() == (link.parent / target).resolve():
-                return
-        except OSError:
-            pass
+    desired = link.parent / target
+    if _is_migration_link(link):
+        if _link_matches(link, desired):
+            return
         staged = link.with_name(f".{link.name}.compat-new")
-        if staged.is_symlink():
+        if _is_migration_link(staged):
             try:
-                staged.unlink()
+                _remove_compat_link(staged)
             except OSError:
-                logger.debug("[Compat] failed to clean stale staged symlink: %s", staged)
+                logger.debug("[Compat] failed to clean stale staged link: %s", staged)
                 return
         elif staged.exists():
             # 临时名被真实路径占用（异常残留）：不动它，放弃本次校正
             return
-        try:
-            staged.symlink_to(target, target_is_directory=True)
-        except (OSError, NotImplementedError):
-            logger.debug("[Compat] compat symlink replacement skipped at %s", link)
+        if not _create_compat_link(staged, target):
             return
         try:
-            link.unlink()
+            _remove_compat_link(link)
         except OSError:
-            logger.debug("[Compat] failed to replace stale symlink: %s", link)
+            logger.debug("[Compat] failed to replace stale link: %s", link)
             try:
-                staged.unlink()
+                _remove_compat_link(staged)
             except OSError:
                 pass
             return
         try:
             staged.replace(link)
         except OSError:
-            logger.debug("[Compat] failed to swap in staged symlink: %s", link)
-    elif link.exists():
-        # 老位置仍是真实目录/文件（含 Windows junction，is_symlink 对其恒为
-        # False）：迁移未完成，软链会遮蔽数据
+            logger.warning("[Compat] failed to swap in compatibility link: %s", link)
+            # 换入失败别把临时链留在数据根里（下次启动也会清理，但期间可见）
+            try:
+                _remove_compat_link(staged)
+            except OSError:
+                pass
         return
-    else:
-        try:
-            link.symlink_to(target, target_is_directory=True)
-            logger.info("[Compat] linked legacy path: %s -> %s", link, target)
-        except (OSError, NotImplementedError):
-            logger.debug("[Compat] compat symlink not created at %s", link)
+    if link.exists():
+        # 老位置是真实目录/文件：软链会遮蔽真实数据，绝不覆盖
+        _warn_compat_link_once(
+            link,
+            "legacy path is a real directory/file; compatibility link skipped",
+        )
+        return
+    _create_compat_link(link, target)
 
 
 def ensure_config_runtime_state_compat_link(workspace_dir: Path, *, require_target: bool = True) -> None:
