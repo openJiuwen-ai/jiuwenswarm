@@ -180,6 +180,14 @@ function formatBytes(value?: number | null): string {
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+/** Size suffix for the install/update confirm prompt; empty when the Hub omits the size. */
+function confirmSizeSuffix(value?: number | null): string {
+  if (!value || value <= 0) return '';
+  // Keep the separator inside the value so the prompt reads "v1.2.3 4.0 KB" instead of
+  // "v1.2.34.0 KB", and so a missing size leaves no dangling space before the punctuation.
+  return ` ${formatBytes(value)}`;
+}
+
 function appDirectory(app: AppInfo): string {
   const entry = (app.entry_path || '').trim();
   if (!entry) return '';
@@ -523,7 +531,7 @@ export function AppMarketPanel({
         showNotice(t('appMarket.alreadyInstalled'), 'info');
         return;
       }
-      const size = detail.source_size ? `${(detail.source_size / 1024 / 1024).toFixed(1)} MB` : '';
+      const size = confirmSizeSuffix(detail.source_size);
       const warnings = [
         detail.has_server_script ? t('appMarket.installServerWarning') : '',
         detail.permissions?.length
@@ -611,7 +619,7 @@ export function AppMarketPanel({
       if (!window.confirm(t('appMarket.updateConfirm', {
         name: app.name,
         version: detail.version,
-        size: detail.source_size ? `${(detail.source_size / 1024 / 1024).toFixed(1)} MB` : '',
+        size: confirmSizeSuffix(detail.source_size),
       }))) return;
       const start = await webRequest<{ job_id: string }>('app_market.update', {
         app_id: app.app_id,

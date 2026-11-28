@@ -338,6 +338,41 @@ test('install directory prompt remains usable after opening a market detail', as
   }
 });
 
+test('install confirm prompt separates the version from a human-readable package size', async () => {
+  const prompts = [];
+  let sourceSize = 4096;
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return {
+        total: 1,
+        items: [{
+          asset_id: 'tiny-app', display_name: 'Tiny App', public_latest_version: '1.2.3', tags: [],
+          installed: false, installed_version: '', installed_app_id: '',
+        }],
+      };
+    }
+    if (method === 'app_market.market_detail') {
+      return { asset_id: params.asset_id, display_name: 'Tiny App', version: '1.2.3', source_size: sourceSize };
+    }
+    return response(method);
+  });
+  try {
+    window.confirm = (message) => {
+      prompts.push(message);
+      return false;
+    };
+    await click(document.querySelector('button[data-variant="market"]'));
+    await click(find('app-market-install'));
+    assert.match(prompts[prompts.length - 1], /^Install Tiny App v1\.2\.3 4\.0 KB\?/);
+    // Some Hub assets report no source size: the prompt must not keep a dangling separator.
+    sourceSize = 0;
+    await click(find('app-market-install'));
+    assert.match(prompts[prompts.length - 1], /^Install Tiny App v1\.2\.3\?/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 const response = (method, instances = []) => (method === 'app_market.list' ? { apps: [app] } : { instances });
 
 test('installed app details load AI role cards and show the session policy', async () => {
