@@ -13,6 +13,7 @@ import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './con
 import { isTeamCronModeValue } from './cronMode';
 import { cronModelPayloadFields } from './cronModelSelection';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
+import { formatCronPreviewTime, formatCronRunTime } from './cronTimeFormat';
 import { createSubmitGuard } from './drawerSubmitGuard';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
@@ -339,7 +340,7 @@ const STATUS_FILTER_BADGE_PROPS: Record<StatusFilterKey, { enabled: boolean; exp
 };
 
 export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession }: CronPanelProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   // 工作面板侧边栏的"按项目分组展示定时任务"用的是独立的 useCronStore（见
   // multi-session/sidebar/ConversationSidebar.tsx），跟这个面板自己的 jobs state 是两份数据；
   // 在这里创建/编辑/停止/删除任务后也要通知它刷新，否则侧边栏那边的任务文件夹会显示过期数据
@@ -1117,25 +1118,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     }
   }
 
-  function formatPreviewTime(value: string): string {
-    return formatRunTime(value) ?? value;
-  }
-
-  // 「执行记录」条目时间：后端返回 Unix 秒(历史数据可能是毫秒)或 ISO 字符串，统一归一后
-  // 走 toLocaleString()，与「未来执行计划」的时间显示格式保持一致。字段缺失/为 0/非法时
-  // 返回 null，由调用方兜底只显示标题。
-  function formatRunTime(value: number | string | null | undefined): string | null {
-    if (value === null || value === undefined || value === '' || value === 0) return null;
-    let ms: number;
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value) || value <= 0) return null;
-      ms = value < 1e11 ? value * 1000 : value;
-    } else {
-      ms = Date.parse(value);
-      if (Number.isNaN(ms)) return null;
-    }
-    return new Date(ms).toLocaleString();
-  }
+  // 「执行记录」条目时间与「未来执行计划」都按任务时区展示，并附时区名；
+  // 缺失/非法值返回 null，由调用方兜底只显示标题。
 
   // 列配置（antd columns 式，单一数据源）：colgroup / 表头 / 单元格全部由它 map 出来
   const columns: CronColumnDef[] = [
@@ -1422,7 +1406,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                         // last_message_at/created_at 兜底成 0、last_user_message_at 可为 null，
                         // ?? 只跳过 null/undefined，会停在 0 上漏掉后面有效的时间。
                         const runTime = [s.last_user_message_at, s.last_message_at, s.created_at]
-                          .map((value) => formatRunTime(value))
+                          .map((value) => formatCronRunTime(value, {
+                            timeZone: job.timezone,
+                            locale: i18n.language,
+                          }))
                           .find((formatted): formatted is string => formatted !== null) ?? null;
                         const label = s.title || s.session_id;
                         return (
@@ -1510,7 +1497,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                           data-testid="cron-preview-popover-run-item"
                           data-variant={index + 1}
                         >
-                          {t('cron.preview.label', { index: index + 1 })}：{formatPreviewTime(item.push_at)}
+                          {t('cron.preview.label', { index: index + 1 })}：{formatCronPreviewTime(item.push_at, {
+                            timeZone: job.timezone,
+                            locale: i18n.language,
+                          })}
                         </div>
                       ))}
                     </div>
