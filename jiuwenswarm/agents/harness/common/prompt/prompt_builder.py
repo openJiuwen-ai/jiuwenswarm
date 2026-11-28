@@ -28,8 +28,11 @@ class PromptPriority(IntEnum):
     TODO = 85
     # thinking_discipline 紧挨最终可见回复之前：思考与 tool_calls 职责分工，高于 RESPONSE。
     THINKING_DISCIPLINE = 115
+    # team 执行质量准则（事实/模板）：仅 AccelPromptRail 注入。
+    # 占用原留空号 116，避开 avatar_identity / request_system_prompt / flash refusal@110 簇。
+    EXECUTION_QUALITY = 116
     # 专家团成本意识（含精简写作/协作要点）。夹在思考纪律和最终可见回复之间。
-    # A2UI_BOOST 保持 117；116/118 空出，避免与旧写作/协作段冲突。
+    # A2UI_BOOST 保持 117；118 空出，避免与旧写作/协作段冲突。
     A2UI_BOOST = 117
     TEAM_COST_DISCIPLINE = 119
     # final_visible_reply 放在 system 最末，强调约束工具/todo 结束后必须再发一轮完整纯文本 final；
@@ -42,6 +45,7 @@ class LocalSectionName:
 
     A2UI = "a2ui"
     A2UI_BOOST = "a2ui_boost"
+    EXECUTION_QUALITY = "execution_quality"
     THINKING_DISCIPLINE = "thinking_discipline"
     TEAM_COST_DISCIPLINE = "team_cost_discipline"
     FINAL_VISIBLE_REPLY = "final_visible_reply"

@@ -74,8 +74,13 @@ async def test_accel_prompt_adds_member_cost_only():
     await accel.before_model_call(SimpleNamespace())
 
     assert builder.has_section(LocalSectionName.THINKING_DISCIPLINE)
+    assert builder.has_section(LocalSectionName.EXECUTION_QUALITY)
     assert builder.has_section(LocalSectionName.TEAM_COST_DISCIPLINE)
     rendered = builder.build()
+    assert "执行质量准则" in rendered
+    assert "证据不足须显式" in rendered
+    assert "字面输出契约" in rendered
+    assert "抓取与来源降级" not in rendered
     assert "团队成本意识（成员）" in rendered
     assert "成本会放大" in rendered
     assert "跟随任务卡 / leader 口径" in rendered
@@ -94,6 +99,8 @@ async def test_accel_prompt_leader_gets_leader_cost_copy():
     accel.init(agent)
     await accel.before_model_call(SimpleNamespace())
     rendered = builder.build()
+    assert "执行质量准则" in rendered
+    assert "承诺边界" in rendered
     assert "团队成本意识（leader）" in rendered
     assert "多成员成本近似相乘" in rendered
     assert "不要自己下场完成交付物" in rendered
@@ -101,6 +108,26 @@ async def test_accel_prompt_leader_gets_leader_cost_copy():
     assert "看板完成即回执" in rendered
     assert "何时压成本 / 何时保质量" in rendered
     assert "团队成本意识（成员）" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_accel_prompt_execution_quality_shared_for_en():
+    manager = _AbilityManager()
+    agent, builder = _agent(manager, language="en")
+    accel = AccelPromptRail(role="teammate")
+    accel.init(agent)
+    await accel.before_model_call(SimpleNamespace())
+    rendered = builder.build()
+    assert "Execution Quality Principles" in rendered
+    assert "Literal output contract" in rendered
+    assert "Mark insufficient evidence" in rendered
+    assert 'keep numbering, code, units, and casing as-is' in rendered
+    assert "wholesale overwrite/clear/rebuild" in rendered
+    assert "do not use a naked time" in rendered
+    assert "Fetch / source degradation" not in rendered
+    accel.uninit(agent)
+    assert not builder.has_section(LocalSectionName.EXECUTION_QUALITY)
+    assert not builder.has_section(LocalSectionName.TEAM_COST_DISCIPLINE)
 
 
 def test_normalize_team_role():
