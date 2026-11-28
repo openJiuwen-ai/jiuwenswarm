@@ -11,6 +11,8 @@ export interface ParsedTeamEvent {
   isP2P: boolean;
   isBroadcast: boolean;
   isLeaderToUser: boolean;
+  recipientIsHuman?: boolean;
+  isDisplayProjection?: boolean;
   /** 框架模板消息（调度器交接等）的展示描述；普通消息为 undefined。 */
   handoff?: TeamHandoff;
 }
@@ -52,6 +54,8 @@ export function parseTeamEventMessage(message: Message): ParsedTeamEvent | null 
       type,
       messageId,
       fromMember,
+      recipientIsHuman: event.recipient_is_human === true,
+      isDisplayProjection: event.projection_source === 'send_message' || messageId.startsWith('human-delivery:'),
       toMember,
       content: messageContent,
       timestamp,
@@ -92,7 +96,7 @@ export function mergeUniqueMessages(messages: Message[]): Message[] {
   return messages.filter((message) => {
     const event = parseTeamEventMessage(message);
     const key = event
-      ? ['team', message.sourceTeamId || '', event.type, event.messageId, event.fromMember, event.toMember || '', event.timestamp || '', event.content].join(':')
+      ? ['team', message.sourceTeamId || message.teamId || '', event.type, event.messageId || `${event.timestamp || ''}:${event.content}`, event.fromMember, event.toMember || ''].join(':')
       : `${message.id}:${message.content}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -105,5 +109,5 @@ export function isTeamActivityMessage(message: Message): boolean {
 }
 
 export function isTeamP2PMessageToUser(event: ParsedTeamEvent): boolean {
-  return event.type === 'team.message.p2p' && event.toMember === 'user';
+  return event.type === 'team.message.p2p' && (event.toMember === 'user' || event.recipientIsHuman === true);
 }

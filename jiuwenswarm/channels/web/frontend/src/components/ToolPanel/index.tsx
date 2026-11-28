@@ -4,6 +4,8 @@
  * 工具面板，显示 Todo 列表和状态信息
  */
 
+import { MemberExecutionStatus } from '../teamArea/MemberExecutionStatus';
+import { shouldPresentTeamMemberIdle } from '../../features/teamConnectionPresentation';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useTranslation } from 'react-i18next';
 import { conversationKey, useChatStore, useSessionStore, useTodoStore } from '../../stores';
@@ -309,6 +311,11 @@ export function ToolPanel({
         imageClassName="rounded-full"
       />
     );
+  };
+  const memberRowStatus = (task: TeamTask) => {
+    const member = teamMembers.find(item => item.member_id === task.assignee);
+    return member ? <MemberExecutionStatus member={member}
+      showIdleStatus={shouldPresentTeamMemberIdle(member.member_id, member.status, teamConnectionPresentation)} /> : null;
   };
   // 规划/性能模式下复用 TaskPlanningPanel 紧凑态：把 TodoItem 降级为 TeamTask
   const todos = useTodoStore(s => s.runtimes[activeSessionId ?? '']?.todos ?? []);
@@ -775,7 +782,9 @@ export function ToolPanel({
                   expanded={teamMembersExpanded}
                   emptyText={t('team.noMemberData')}
                   emptyIllustration={emptyMembersIcon}
-                  renderStatusIcon={memberRowAvatar}
+                  renderTaskIcon={memberRowAvatar}
+                  renderStatusIcon={memberRowStatus}
+                  statusIconAtEnd
                   onTaskClick={memberId => expandTo('team', memberId)}
                 />
               )}
@@ -791,7 +800,9 @@ export function ToolPanel({
                       hideAssignee
                       maxCollapsedCount={4}
                       expanded={teamMembersExpanded}
-                      renderStatusIcon={memberRowAvatar}
+                      renderTaskIcon={memberRowAvatar}
+                      renderStatusIcon={memberRowStatus}
+                      statusIconAtEnd
                       onTaskClick={memberId => expandTo('team', memberId)}
                     />
                     {remaining > 0 && <div className="px-2 py-1 text-xs text-text-muted">{t('team.moreTasks', { count: remaining })}</div>}
