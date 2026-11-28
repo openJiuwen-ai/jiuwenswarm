@@ -196,6 +196,8 @@ export function SkillNetSearchModal({
     }
     return e.text ?? "";
   };
+  // Latest-wins sequence: responses from superseded searches must not write state.
+  const searchSeqRef = useRef(0);
   const evaluateAbortRef = useRef<AbortController | null>(null);
 
   const dismissEvaluateOverlay = useCallback(() => {
@@ -233,6 +235,8 @@ export function SkillNetSearchModal({
   useEffect(() => {
     if (embedded && query.trim()) {
       const q = query.trim();
+      // Latest-wins sequence: responses from superseded searches must not write state.
+      const seq = ++searchSeqRef.current;
       setLoadState("loading");
       setBannerError(null);
       void (async () => {
@@ -244,6 +248,7 @@ export function SkillNetSearchModal({
             detail_params?: Record<string, unknown>;
             skills?: SkillNetItem[];
           }>("skills.skillnet.search", withSession({ q, limit: 20 }));
+          if (seq !== searchSeqRef.current) return;
           if (!data.success) {
             throw new LocalizedError(
               toLocErr(
@@ -259,6 +264,7 @@ export function SkillNetSearchModal({
           setExpandedUrl(null);
           dismissEvaluateOverlay();
         } catch (err) {
+          if (seq !== searchSeqRef.current) return;
           console.error(err);
           setResults([]);
           setLoadState("error");
@@ -309,7 +315,8 @@ export function SkillNetSearchModal({
   const handleSearch = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
-
+    // Latest-wins sequence: responses from superseded searches must not write state.
+    const seq = ++searchSeqRef.current;
     setLoadState("loading");
     setBannerError(null);
     try {
@@ -320,6 +327,7 @@ export function SkillNetSearchModal({
         detail_params?: Record<string, unknown>;
         skills?: SkillNetItem[];
       }>("skills.skillnet.search", withSession({ q, limit: 20 }));
+      if (seq !== searchSeqRef.current) return;
       if (!data.success) {
         throw new LocalizedError(
           toLocErr(
@@ -335,6 +343,7 @@ export function SkillNetSearchModal({
       setExpandedUrl(null);
       dismissEvaluateOverlay();
     } catch (err) {
+      if (seq !== searchSeqRef.current) return;
       console.error(err);
       setResults([]);
       setLoadState("error");
@@ -968,7 +977,7 @@ export function SkillNetSearchModal({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              onKeyDown={(e) => e.key === "Enter" && loadState !== "loading" && handleSearch()}
               data-testid="skill-net-search-modal-search-input"
               placeholder={t("skills.skillNet.searchPlaceholder")}
               className="flex-1 min-w-0 px-3 py-2 rounded-md bg-secondary border border-border text-sm text-text placeholder:text-text-muted"
