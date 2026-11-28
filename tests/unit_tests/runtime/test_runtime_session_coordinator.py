@@ -1572,6 +1572,39 @@ async def test_failed_team_control_answer_keeps_interaction_pending() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [False, True])
+async def test_team_control_answer_after_idle_preserves_delivery_outcome(fail: bool) -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+    try:
+        coordinator.mark_session_waiting_for_input("session-a", 1)
+        assert _team_request_execution(coordinator).state is SessionExecutionState.WAITING_FOR_INPUT
+        assert not coordinator.has_control_target("session-a", "call-other")
+        assert not coordinator.has_control_target("session-other", "call-1")
+        assert coordinator.has_control_target("session-a", "call-1")
+
+        if fail:
+            with pytest.raises(RuntimeError, match="not delivered"):
+                await _answer_team_control(coordinator, "call-1", fail=True)
+        else:
+            await _answer_team_control(coordinator, "call-1")
+
+        expected_controls = frozenset({"call-1"}) if fail else frozenset()
+        assert _team_request_execution(coordinator).waiting_control_ids == expected_controls
+        release.set()
+        async for _ in stream:
+            pass
+        expected_state = SessionExecutionState.WAITING_FOR_CONTROL if fail else SessionExecutionState.SUCCEEDED
+        assert _team_request_execution(coordinator).state is expected_state
+    finally:
+        release.set()
+        await stream.aclose()
+        await coordinator.close()
+
+
+@pytest.mark.asyncio
 async def test_team_control_answer_only_releases_its_own_interaction() -> None:
     coordinator = RuntimeSessionCoordinator()
     await _register(coordinator)

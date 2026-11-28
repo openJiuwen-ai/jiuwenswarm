@@ -49,6 +49,31 @@ def asked_interaction_ids(events: Iterable[RuntimeEvent]) -> frozenset[str]:
     return frozenset().union(*map(interaction_ids, events))
 
 
+def team_control_outcome(event: RuntimeEvent) -> bool | None:
+    """Read the delivery receipt without confusing a terminal frame with success."""
+    from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
+
+    if not event.ok or event.event_type in TERMINAL_ERROR_EVENT_TYPES | {"team.interact.failed"}:
+        return False
+    if event.event_type in {
+        "team.input.accepted", "team.group_message.accepted", "chat.processing_status_deferred",
+    }:
+        return True
+    return None
+
+
+def team_control_result(events: Iterable[RuntimeEvent]) -> bool | None:
+    """Keep an accepted answer delivered if later Team business output fails."""
+    result = None
+    for event in events:
+        outcome = team_control_outcome(event)
+        if outcome is True:
+            return True
+        if outcome is False:
+            result = False
+    return result
+
+
 class InteractionAnswerError(ValueError):
     """Stable validation failure at the Runtime interaction boundary."""
 
