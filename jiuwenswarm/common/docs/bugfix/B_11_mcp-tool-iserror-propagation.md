@@ -73,6 +73,13 @@
 - 新增 `TestMetaVariantCoverage`（`test_mcp_call_timeout_patch.py`）：meta 版本被同一套超时
   包装覆盖、`call_tool → call_tool_with_meta` 只进一次 IO 临界区（旧版 openjiuwen 无 meta
   方法时用等价 stub 注入，契约不依赖安装版本）、ToolMgr owner 也路由 meta 版本。
+- 端到端（真实 transport，非 mock）：本机用 `mcp.server.fastmcp` 起 streamable-http server
+  （`always_ok` 返回文本 / `always_fail` 抛错），以真实 `StreamableHttpClient` +
+  `_RemoteMcpCallAdapter` 调用，`_meta_pairs_with_call_tool=True`，`always_fail` 得
+  `isError=True`、`always_ok` 得 `isError=False`。再按 `RequestScopedOfficeClawMcpTool.invoke`
+  原样套信封：失败帧 `status=error / success=false / error_code=mcp_tool_error`，
+  `normalize_tool_result` 得 `status=error`、`_unwrap_tool_failure` 判失败；成功帧只有
+  `{"result": ...}`，`normalize_tool_result` 得 `status=success` 且不判失败。
 - `tests/unit_tests/common/` 共 683 项：671 通过 / 4 skipped / 8 failed。8 例失败全部先于本次
   改动存在（已在 base 上逐一复现）：`test_mcp_patch_test_isolation` 的子进程输出在 GBK
   控制台解码失败、`test_todo_integration` 同样因 GBK 读取 UTF-8 文本失败、
