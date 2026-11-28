@@ -1,5 +1,5 @@
 import { type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
-import { EntityHeader, type EntityHeaderAvatar } from '../EntityHeader/EntityHeader';
+import { EntityHeader, type EntityHeaderAvatar, type EntityHeaderTag } from '../EntityHeader/EntityHeader';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import './PageCard.css';
 
@@ -29,7 +29,7 @@ export interface PageCardProps {
   avatar: PageCardAvatar;
   title: string;
   titleEnd?: ReactNode;
-  label?: string[];
+  label?: EntityHeaderTag[];
   action?: PageCardActionProps;
   actionSlot?: ReactNode;
   defaultButton?: PageCardDefaultButton;
