@@ -241,10 +241,31 @@ def process_alive(pid: int) -> bool | None:
 
 
 def kill_process(pid: int) -> None:
-    """Terminate *pid* inside the sandbox (best effort, idempotent)."""
+    """Terminate the detached auth process tree for *pid* in the sandbox.
+
+    ``start_detached`` runs the login in its own session via ``setsid``, so the
+    recorded pid is the session leader and a compound command form (pipeline,
+    ``npx`` wrapper chain, daemonizing CLI) keeps the actual CLI process as a
+    child of that shell. Killing only the pid leaves those children reparented
+    and alive inside the shared sandbox — the login keeps running after the
+    user cancelled it. The kill therefore targets the whole session (negative
+    pid → process group) first and falls back to the single pid for images
+    where the session lead is gone (zombie reaped) or the shell form degenerated
+    to a same-pid exec.
+    """
+    p = int(pid)
     run_in_sandbox(
-        f"kill -TERM {int(pid)} 2>/dev/null; sleep 0.3; "
-        f"kill -KILL {int(pid)} 2>/dev/null; true"
+        # TERM the session first so the login can flush credentials/log output,
+        # then escalate after a grace period. The negative operand targets the
+        # process group setsid created. Do not write the POSIX ``--`` delimiter
+        # here: dash's kill builtin (the /bin/sh some sandbox providers run
+        # commands with) rejects it, which would abort the whole command before
+        # any signal is sent and leave the login running. With the signal given
+        # as the first option, both bash and dash treat ``-PID`` as a pid.
+        # ``2>/dev/null`` absorbs "no such process" when the group is already
+        # gone.
+        f"kill -TERM -{p} {p} 2>/dev/null; sleep 0.3; "
+        f"kill -KILL -{p} {p} 2>/dev/null; true"
     )
 
 

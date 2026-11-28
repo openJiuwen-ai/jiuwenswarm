@@ -325,6 +325,37 @@ class TestDetachedAuth:
             proc.kill()
         kill.assert_called_once_with(11)
 
+    def test_kill_process_targets_the_whole_session(self) -> None:
+        """JW-73 regression: ``start_detached`` records the session leader's
+        pid, but a compound-form CLI (pipeline / npx chain / daemonizing) runs
+        as a child of that shell. Killing only the pid leaves the login alive
+        after the user cancelled — the kill must signal the process group
+        (negative pid) as well."""
+        with patch.object(
+            cli_sandbox, "run_in_sandbox", return_value=CommandResult("x", 0),
+        ) as run:
+            cli_sandbox.kill_process(4242)
+        script = run.call_args[0][0]
+        assert "kill -TERM -4242 4242" in script
+        assert "kill -KILL -4242 4242" in script
+        # dash's kill builtin (``/bin/sh`` under some sandbox providers) rejects
+        # the POSIX ``--`` delimiter and aborts the command before sending any
+        # signal; the negative operand after the signal works in bash and dash.
+        assert "--" not in script
+
+    def test_kill_process_script_stays_idempotent(self) -> None:
+        """The kill must stay best effort: a dead pid or a reaped session
+        leader cannot fail the enclosing cancel flow."""
+        with patch.object(
+            cli_sandbox, "run_in_sandbox", return_value=CommandResult("x", 1),
+        ):
+            cli_sandbox.kill_process(1)  # Must not raise.
+        with patch.object(
+            cli_sandbox, "run_in_sandbox",
+            return_value=CommandResult("x", -1, stderr="sandbox gone"),
+        ):
+            cli_sandbox.kill_process(1)  # Must not raise.
+
 
 def _cli_manifest() -> CliManifest:
     return CliManifest(
