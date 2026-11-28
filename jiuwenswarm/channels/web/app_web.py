@@ -152,6 +152,30 @@ def _get_logs_dir() -> Path:
     return _get_agent_root_dir() / ".logs"
 
 
+_LEGACY_AGENT_DIR = "agent"
+_PROFILE_AGENT_DIRS = ("profile", "agent")
+
+
+def _canonicalize_legacy_agent_path(rel_path: str) -> str:
+    """把 profile 迁移前的老路径 ``agent/...`` 重写到 ``profile/agent/...``。
+
+    迁移后业务数据落在 ``<数据根>/profile/agent``，老位置 ``<数据根>/agent``
+    只靠兼容链（软链/junction）指向新数据。Windows 普通用户未开开发者模式时
+    软链创建会失败，而当前版本的会话文件/工作区/日志面板仍按 ``agent/...``
+    请求文件 API——不能依赖兼容链才能工作。这里在服务端统一规范化，兼容链
+    只服务回滚后的老版本。
+
+    绝对路径（``C:\\...``、UNC、``/...``）和其余相对路径原样返回。
+    """
+    normalized = rel_path.replace("\\", "/")
+    if normalized.startswith("/") or (len(normalized) > 1 and normalized[1] == ":"):
+        return rel_path
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts or parts[0] != _LEGACY_AGENT_DIR:
+        return rel_path
+    return "/".join((*_PROFILE_AGENT_DIRS, *parts[1:]))
+
+
 def _get_ssl_verify() -> bool:
     """Load TLS policy only when a proxied HTTPS request needs it."""
     from jiuwenswarm.agents.harness.common.tools.ssl_config import get_ssl_verify
@@ -1766,8 +1790,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         """
         if "\x00" in rel_path:
             raise _BadRequestError("invalid_path")
+        # 老布局路径 agent/... → profile/agent/...：不依赖兼容链是否建成功。
+        canonical = _canonicalize_legacy_agent_path(rel_path)
         try:
-            return (self.project_root / rel_path).resolve()
+            return (self.project_root / canonical).resolve()
         except (OSError, ValueError) as exc:
             raise _BadRequestError("invalid_path") from exc
 
