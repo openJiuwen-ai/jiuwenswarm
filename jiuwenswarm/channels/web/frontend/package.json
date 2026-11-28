@@ -38,6 +38,7 @@
     "test:asset-name-search": "esbuild src/features/assetNameSearch.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/asset-name-search && node --test tests/assetNameSearch.test.mjs",
     "test:asset-transfer": "esbuild src/features/assetTransfer.ts --bundle --platform=node --format=esm --define:import.meta.env={} --loader:.css=empty --outfile=node_modules/.cache/asset-transfer/assetTransfer.mjs && node --test tests/assetTransfer.test.mjs",
     "test:context-compression-cancel": "esbuild src/utils/contextCompression.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/context-compression-cancel/contextCompression.mjs && node --test tests/contextCompressionCancel.test.mjs",
+    "test:cron-time-format": "esbuild src/components/CronPanel/cronTimeFormat.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/cron-time-format/cronTimeFormat.mjs && node --test tests/cronTimeFormat.test.mjs",
     "test:moa-settings": "npm run test:multi-model-collaboration-settings",
     "test:jev-settings": "node --test tests/jevSettings.test.mjs tests/jevSettingsDialog.test.mjs tests/multiModelCollaborationSettings.test.mjs tests/browserSettingsFeedback.test.mjs",
     "test:multi-model-collaboration-settings": "node --test tests/multiModelCollaborationSettings.test.mjs",
