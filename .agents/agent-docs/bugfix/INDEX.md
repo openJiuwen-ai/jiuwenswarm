@@ -23,6 +23,7 @@ generated: true
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
 | [jiuwenswarm/agents/harness/common/prompt](#module-jiuwenswarm-agents-harness-common-prompt) |
+| [jiuwenswarm/agents/harness/common/memory](#module-jiuwenswarm-agents-harness-common-memory) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
 | [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
@@ -157,6 +158,13 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261128_1501_thinking-language-match-content](jiuwenswarm/agents/harness/common/prompt/B_20261128_1501_thinking-language-match-content.md) | B | 思考过程语言不跟随 match / 输出语言规则 | whds5279 | 无独立 D：无独立 D；对既有 preferred_response_language（en/zh/match）输出语言契约的小范围补强，使可见思考叙述与最终回复同语。 |
+<a id="module-jiuwenswarm-agents-harness-common-memory"></a>
+
+## jiuwenswarm/agents/harness/common/memory
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261128_1329_group-reinstall-team-memory](jiuwenswarm/server/runtime/agent_adapter/B_20261128_1329_group-reinstall-team-memory.md) | B | 专家团重装后恢复团队记忆访问 | zhengpeng | 无独立 D：沿用稳定团队身份和显式成员管理契约。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 
@@ -603,6 +611,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261110_1849_group-lock-cancellation](jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 | [B_20261116_1701_my-plugin-installed-only](jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
+| [B_20261128_1329_group-reinstall-team-memory](jiuwenswarm/server/runtime/agent_adapter/B_20261128_1329_group-reinstall-team-memory.md) | B | 专家团重装后恢复团队记忆访问 | zhengpeng | 无独立 D：沿用稳定团队身份和显式成员管理契约。 |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
