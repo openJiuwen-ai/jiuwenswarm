@@ -283,6 +283,12 @@ async def test_shared_ssl_factory_matches_sdk_default(headers, timeout, with_aut
 
 @pytest.mark.asyncio
 async def test_shared_ssl_falls_back_to_sdk_default(monkeypatch, _record_transport):
+    """共享 SSL 上下文构建失败时，工厂仍要注入（verify 回退到 httpx 默认 True）。
+
+    注入工厂还承担 401/403 的 HTTP 状态观测：凭证失效的诊断不能依赖 CA 缓存是否
+    构建成功，否则 Excel 轮次里会退化成无信息量的 "initialization interrupted"。
+    """
+
     import httpx
     from mcp.client import streamable_http
 
@@ -298,7 +304,10 @@ async def test_shared_ssl_falls_back_to_sdk_default(monkeypatch, _record_transpo
 
     assert await _make_streamable_client().connect() is False
     assert patch._mcp_ssl_contexts == {}
-    assert _record_transport[-1] == (None, None), "构建失败时不得注入工厂"
+    factory, client = _record_transport[-1]
+    assert factory is not None, "构建失败也必须注入工厂，否则观测不到 403"
+    assert getattr(factory, "_jws_mcp_shared_ssl", False)
+    assert client is not None, "工厂必须能建出 httpx 客户端（verify 回退到默认）"
 
     sentinel = object()
     monkeypatch.setattr(patch, "_mcp_ssl_contexts", {patch._mcp_ssl_context_key(): sentinel})

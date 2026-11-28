@@ -36,6 +36,62 @@ _pending_sdk_read_timeout: contextvars.ContextVar[float | None] = contextvars.Co
 #: MCP HTTP 传输共享的 SSL 上下文，key 为 httpx 选证书源用到的环境变量
 #: (SSL_CERT_FILE, SSL_CERT_DIR)。见 ``_ensure_mcp_ssl_context``。
 _mcp_ssl_contexts: dict[tuple[str, str], Any] = {}
+#: 最近一次 MCP HTTP 建连观察到的失败响应（status / url / method）。
+#:
+#: 为什么要单独记录：MCP SDK 在 initialize 收到 401/403 时会把它变成
+#: ``CancelledError('Cancelled via cancel scope ...')``（横向 task group 取消），
+#: 真正的状态码只存在于 HTTP 响应里，跑不到调用者手上。现场日志因此只剩
+#: ``MCP worker initialization interrupted`` —— 无法区分「凭证过期」和「传输抖动」。
+#: 用「可变 dict + ContextVar」而不是值型 ContextVar：httpx 的响应钩子可能跑在
+#: 子 task 里，值型 ContextVar 的写入不会回流到建连 task，共享的 dict 会。
+_mcp_http_failure: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "_jws_mcp_http_failure", default=None
+)
+
+
+def begin_mcp_http_observation() -> dict[str, Any]:
+    """开始记录本次建连的 HTTP 失败响应（同一 task 内有效）。"""
+
+    holder: dict[str, Any] = {}
+    _mcp_http_failure.set(holder)
+    return holder
+
+
+def clear_mcp_http_observation() -> None:
+    """结束观察，避免把上一次建连的 403 带到下一次。"""
+
+    _mcp_http_failure.set(None)
+
+
+def observed_mcp_http_failure() -> tuple[int, str, str] | None:
+    """返回 ``(status, method, url)``；没有观察到失败响应时返回 None。"""
+
+    holder = _mcp_http_failure.get()
+    if not holder:
+        return None
+    status = holder.get("status")
+    if not isinstance(status, int):
+        return None
+    return status, str(holder.get("method") or ""), str(holder.get("url") or "")
+
+
+def _record_mcp_http_response(response: Any) -> None:
+    """httpx 响应钩子：只记录 >=400 的状态，写入当前建连的 holder。"""
+
+    holder = _mcp_http_failure.get()
+    if holder is None:
+        return
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+    except (TypeError, ValueError):
+        return
+    if status < 400:
+        return
+    request = getattr(response, "request", None)
+    url = getattr(request, "url", None)
+    holder["status"] = status
+    holder["method"] = str(getattr(request, "method", "") or "")
+    holder["url"] = str(url) if url is not None else ""
 #: Fallback per-call timeout for process-level ToolMgr MCP clients when
 #: ``--timeout_s`` is not supplied. Request-scoped MCP workers use their
 #: separate 300s default in ``mcp_config._MCP_CALL_TOOL_TIMEOUT_S`` because
@@ -683,11 +739,17 @@ def _mcp_http_client_factory(ssl_context: Any) -> Any:
     ) -> Any:
         if timeout is None:
             timeout = httpx.Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT)
-        kwargs: dict[str, Any] = {"timeout": timeout, "verify": ssl_context}
+        kwargs: dict[str, Any] = {
+            "timeout": timeout,
+            "verify": ssl_context if ssl_context is not None else True,
+        }
         if headers is not None:
             kwargs["headers"] = headers
         if auth is not None:
             kwargs["auth"] = auth
+        # 记录失败响应：initialize 的 401/403 会被 SDK 的 task group 取消吞掉，
+        # 只有 HTTP 层还留着真实状态码（见 ``observed_mcp_http_failure``）。
+        kwargs["event_hooks"] = {"response": [_record_mcp_http_response]}
         return httpx.AsyncClient(**kwargs)
 
     factory._jws_mcp_shared_ssl = True  # type: ignore[attr-defined]
@@ -745,9 +807,11 @@ def _patch_sdk_read_timeouts() -> None:
             **kwargs: Any,
         ):
             if accepts_factory and len(args) <= 1 and "httpx_client_factory" not in kwargs:
-                ssl_context = _cached_mcp_ssl_context()
-                if ssl_context is not None:
-                    kwargs["httpx_client_factory"] = _mcp_http_client_factory(ssl_context)
+                # 即使共享 SSL 上下文不可用（构建失败），也要注入自己的工厂：
+                # 它同时负责记录 401/403 的 HTTP 状态，凭证失效诊断不能依赖 CA 缓存。
+                kwargs["httpx_client_factory"] = _mcp_http_client_factory(
+                    _cached_mcp_ssl_context()
+                )
             hint = _pending_sdk_read_timeout.get()
             if _stamp_is_valid(hint):
                 current = kwargs.get("sse_read_timeout")

@@ -1098,6 +1098,124 @@ class _PooledMcpWorker:
 
 # 按 (request_id, server_name) 池化：同 key 并发 invoke 共享一个进程/浏览器，跨请求不共享。
 _request_scoped_mcp_sessions: dict[tuple[str, str], _PooledMcpWorker] = {}
+# 同一 (request_id, server_name) 连续 init 失败计数；达到上限后本轮不再重建。
+_request_scoped_mcp_init_failures: dict[tuple[str, str], int] = {}
+# 已判定「本请求内不可能恢复」的 (request_id, server_name) → 给模型的原因。
+# 命中后 acquire 立即失败，不再起 worker 等 5s 强杀，也不让模型空转重试。
+_request_scoped_mcp_dead: dict[tuple[str, str], str] = {}
+
+# 连续 init 失败达到该次数即认定本请求内不可恢复（单次抖动仍允许一次重试）。
+_MCP_INIT_FAILURE_LIMIT = 3
+# 401/403 是确定性鉴权失败：同一请求的凭证不会自愈，第一次就停止重建。
+# 只认明确的鉴权信号，不能拿裸数字当子串匹配：``4013 ms`` 之类会被误判成 401，
+# 一次误判就会让这一轮的连接器被判定死亡、逼用户重发消息。
+_MCP_AUTH_FAILURE_RE = re.compile(
+    r"(?:"
+    r"\bhttp\b[^\n]{0,48}?\b(?:401|403)\b"
+    r"|\bstatus(?:[ _-]?code)?\b\W{0,8}\b(?:401|403)\b"
+    r"|\bunauthori[sz]ed\b"
+    r"|\bforbidden\b"
+    r"|\binvalid[_ ]token\b"
+    r"|\bcapability_invalid\b"
+    r")",
+    re.IGNORECASE,
+)
+# 鉴权失败时给模型的可执行指引：它重试一万次也不会成功，必须让用户发新消息。
+_MCP_AUTH_FAILURE_GUIDANCE = (
+    "The editing credential for this request is no longer valid and cannot be renewed "
+    "within this turn. Do not retry this tool; stop and tell the user to resend the "
+    "message so a new request obtains a fresh credential."
+)
+
+
+def _mcp_auth_failure(exc: BaseException) -> bool:
+    """判断初始化失败是否为确定性鉴权失败（401/403）。
+
+    MCP SDK 的 ``McpError`` 把状态码写进消息（``Error POSTing to endpoint (HTTP 403)``），
+    httpx / aiohttp 写进 repr（``status=403``），两种形态都覆盖；纯数字串不匹配。
+    只用于 init 阶段，消息里不会混入业务数据。
+    """
+
+    return bool(_MCP_AUTH_FAILURE_RE.search(f"{exc!r} {exc}"))
+
+
+def _request_scoped_key_for(worker: _PooledMcpWorker) -> tuple[str, str] | None:
+    """反查 worker 所属的池化 key（失败路径才会调用，O(n) 可接受）。"""
+
+    for key, pooled in _request_scoped_mcp_sessions.items():
+        if pooled is worker:
+            return key
+    return None
+
+
+def _observed_http_failure_status() -> int | None:
+    """本次建连是否观察到 401/403 之类的 HTTP 失败（SDK 会把它吞成取消）。"""
+
+    try:
+        from jiuwenswarm.common.mcp_call_timeout_patch import (
+            observed_mcp_http_failure,
+        )
+
+        observed = observed_mcp_http_failure()
+    except Exception:  # noqa: BLE001 - 观测失败绝不能影响失败处理本身
+        return None
+    if not observed:
+        return None
+    return observed[0]
+
+
+def _mcp_init_failure_reason(
+    worker: _PooledMcpWorker,
+    exc: BaseException,
+    *,
+    consecutive: int,
+    auth_dead: bool,
+    http_status: int | None = None,
+) -> str:
+    """把 init 失败翻译成模型可行动的句子，而不是一个无信息量的中断。"""
+
+    if auth_dead:
+        status_text = f"HTTP {http_status}" if http_status else "HTTP 401/403"
+        return (
+            f"MCP worker initialization failed: server={worker.server_name} "
+            f"({status_text} Unauthorized). {_MCP_AUTH_FAILURE_GUIDANCE}"
+        )
+    if isinstance(exc, Exception):
+        detail = f"{type(exc).__name__}: {exc}"
+    else:
+        detail = f"{type(exc).__name__}"
+        if worker.close_reason:
+            detail = f"{detail}, close_reason={worker.close_reason}"
+    if http_status:
+        detail = f"{detail}, http_status={http_status}"
+    if consecutive >= _MCP_INIT_FAILURE_LIMIT:
+        return (
+            f"MCP worker initialization failed {consecutive} times in this request: "
+            f"server={worker.server_name} ({detail}). It will not be retried again in this "
+            "turn; stop retrying and tell the user the connector is unavailable so they can "
+            "retry the message."
+        )
+    return f"MCP worker initialization interrupted: server={worker.server_name} ({detail})"
+
+
+def _bump_request_scoped_mcp_init_failure(key: tuple[str, str] | None) -> int:
+    """累计本请求内同一连接器的 init 失败次数（无 key 时不计数）。"""
+
+    if key is None:
+        return 0
+    consecutive = _request_scoped_mcp_init_failures.get(key, 0) + 1
+    _request_scoped_mcp_init_failures[key] = consecutive
+    return consecutive
+
+
+def _task_cancelling(task: asyncio.Task | None) -> bool:
+    """``Task.cancelling()`` 只在 3.11+ 存在；日志里不能因为它把异常路径再炸一次。"""
+
+    try:
+        return bool(task is not None and task.cancelling())
+    except AttributeError:
+        return False
+
 # 串行化 (re)build：同 key 并发首调只起一个 owner task，避免竞态泄漏失败者。
 _request_scoped_mcp_build_lock = asyncio.Lock()
 
@@ -1135,23 +1253,56 @@ async def _run_mcp_worker(
         )
         try:
             if client_type in ("sse", "streamable-http"):
+                # SDK 会把 initialize 的 401/403 变成 cancel scope 取消，状态码只剩
+                # 在 HTTP 响应里；建连期间开一个观察窗口，失败时据此判定凭证失效。
+                from jiuwenswarm.common.mcp_call_timeout_patch import (
+                    begin_mcp_http_observation,
+                )
+
+                begin_mcp_http_observation()
                 session = await _enter_remote_mcp_session(stack, params, client_type)
             else:
                 session = await _enter_stdio_mcp_session(stack, params, worker)
         except BaseException as exc:
             # 初始化失败：失败已排队的 caller，退出以便下次 invoke 时 acquire 重建。
+            #
+            # 这里只记 ``error=%s`` 是不够的：CancelledError 的 str() 恒为空，现场只留下
+            # 一条空的 "init failed"，Excel 轮次里 16 次「init interrupted」因此无法定位。
+            # 统一带上类型、repr、worker 关闭原因与 task 是否被取消。
+            interrupted = not isinstance(exc, Exception)
+            http_status = _observed_http_failure_status()
+            auth_dead = http_status in (401, 403) or _mcp_auth_failure(exc)
+            key = _request_scoped_key_for(worker)
+            consecutive = _bump_request_scoped_mcp_init_failure(key)
+            dead = auth_dead or consecutive >= _MCP_INIT_FAILURE_LIMIT
+            reason = _mcp_init_failure_reason(
+                worker, exc, consecutive=consecutive, auth_dead=auth_dead,
+                http_status=http_status,
+            )
+            if dead and key is not None:
+                _request_scoped_mcp_dead[key] = reason
             logger.warning(
-                "request-scoped MCP worker init failed: server=%s transport=%s error=%s",
+                "request-scoped MCP worker init failed: server=%s transport=%s "
+                "error_type=%s error=%r http_status=%s close_reason=%s cancelling=%s "
+                "auth_dead=%s consecutive=%s",
                 worker.server_name,
                 client_type,
+                type(exc).__name__,
                 exc,
+                http_status or "-",
+                worker.close_reason or "-",
+                _task_cancelling(worker.task),
+                auth_dead,
+                consecutive,
             )
             # worker 自身仍传播取消，但排队 caller 应收到工具失败而非用户取消。
-            mapped = exc if isinstance(exc, Exception) else McpWorkerStoppedError(
-                f"MCP worker initialization interrupted: server={worker.server_name}"
-            )
+            # 鉴权失效 / 同一请求连续失败达上限：换成带指引的明确失败，别让模型继续空转。
+            if interrupted or auth_dead or consecutive >= _MCP_INIT_FAILURE_LIMIT:
+                mapped: BaseException = McpWorkerStoppedError(reason)
+            else:
+                mapped = exc
             await _drain_queue_with_error(worker, mapped)
-            if not isinstance(exc, Exception):
+            if interrupted:
                 raise
             return
         while True:
@@ -1480,6 +1631,11 @@ async def acquire_request_scoped_mcp_session(
     """
 
     key = (str(request_id or ""), str(server_name or ""))
+    # 本请求内已判定不可恢复（凭证失效 / init 连续失败到上限）：立即失败。
+    # 再起一个 worker 只会等 5s 强杀，然后让模型在同一张死凭证上空转重试。
+    dead_reason = _request_scoped_mcp_dead.get(key)
+    if dead_reason:
+        raise McpWorkerStoppedError(dead_reason)
     worker = _request_scoped_mcp_sessions.get(key)
     if force_rebuild and worker is not None:
         await _close_pooled_worker(worker, key)
@@ -1653,6 +1809,8 @@ async def _close_pooled_worker(
     """Best-effort stop+remove one request-scoped pooled worker."""
 
     _request_scoped_mcp_sessions.pop(key, None)
+    _request_scoped_mcp_init_failures.pop(key, None)
+    _request_scoped_mcp_dead.pop(key, None)
     await shutdown_pooled_mcp_worker(worker)
 
 
@@ -1660,10 +1818,16 @@ async def release_request_scoped_mcp_sessions(request_id: str) -> None:
     """Stop every long-lived MCP worker for one request (cleanup hook)."""
 
     rid = str(request_id or "")
-    keys = [k for k in _request_scoped_mcp_sessions if k[0] == rid]
+    keys = {
+        k for k in (*_request_scoped_mcp_sessions, *_request_scoped_mcp_dead) if k[0] == rid
+    }
     for key in keys:
         worker = _request_scoped_mcp_sessions.get(key)
         if worker is None:
+            # 只有失败标记没有 worker（init 失败后已自动移除）：把标记一起清掉，
+            # 否则每个失败的请求都会在进程里留下一条永不回收的记录。
+            _request_scoped_mcp_dead.pop(key, None)
+            _request_scoped_mcp_init_failures.pop(key, None)
             continue
         await _close_pooled_worker(worker, key)
 
