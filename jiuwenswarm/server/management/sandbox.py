@@ -189,7 +189,8 @@ class SandboxManagement:
             if sandbox_type == "adx-environment":
                 if sub != "status":
                     raise ValueError(
-                        "sandbox.type=adx-environment: only /sandbox (view config) is supported; subcommands are disabled"
+                        "sandbox.type=adx-environment: only /sandbox (view config) is supported; "
+                        "subcommands are disabled"
                     )
                 payload = build_adx_sandbox_status_view()
                 resp = AgentResponse(
