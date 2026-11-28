@@ -17,6 +17,7 @@ generated: true
 | [agent-core/openjiuwen/agent_teams](#module-agent-core-openjiuwen-agent_teams) |
 | [agent-gateway/agent_gateway/channel_manager/web](#module-agent-gateway-agent_gateway-channel_manager-web) |
 | [agent-gateway/channel_manager/web](#module-agent-gateway-channel_manager-web) |
+| [agent-gateway/enterprise/team](#module-agent-gateway-enterprise-team) |
 | [agent-gateway/extensions/runtime_management_extension](#module-agent-gateway-extensions-runtime_management_extension) |
 | [agent_gateway/channel_manager/im_platforms/xiaoyi](#module-agent_gateway-channel_manager-im_platforms-xiaoyi) |
 | [agent_gateway/message_handler](#module-agent_gateway-message_handler) |
@@ -125,6 +126,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261124_1704_skills-uninstall-missing-name-400](bugfix/extensions/B_20261124_1704_skills-uninstall-missing-name-400.md) | B | 企业版 Skill 卸载缺 name/null 返回 HTTP 500 改为 400 | meizi6 | 无独立 D：无独立 D；依据现有北向 POST /skills/actions/uninstall 与南向 DELETE /skills/{name} 契约，将路径占位符缺失归类为客户端入参错误。 |
+
+<a id="module-agent-gateway-enterprise-team"></a>
+
+## agent-gateway/enterprise/team
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261128_1043_agent-gateway-team-quota-lease-pin](bugfix/jiuwenswarm/server/B_20261128_1043_agent-gateway-team-quota-lease-pin.md) | B | 团队配额孤儿租约：gateway pin 对齐到兜底回收版本 | hanxinyang | 无独立 D：承接 Issue |
 
 <a id="module-agent-gateway-extensions-runtime_management_extension"></a>
 
@@ -307,7 +316,6 @@ generated: true
 | [F_20261116_0500_office-document-reader-tools](features/F_20261116_0500_office-document-reader-tools.md) | F | 补齐结构化办公文档只读工具 (read_docx 与 read_spreadsheet) | zhuxiangju | 无独立 D：补齐办公文档 Word 与 Excel/CSV 结构化只读能力的工程落地。 |
 | [F_20261116_2130_safe-archive-tools](features/F_20261116_2130_safe-archive-tools.md) | F | 补齐安全归档与压缩包工具集 (inspect_archive 与 extract_archive) | zhuxiangju | 无独立 D：安全高效的压缩包预览与解压工具落地，严密防范路径穿越。 |
 | [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | F | read_pptx PowerPoint Presentation Reading Tool | zhuxiangju | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
-| [B_20261126_0956_spreadsheet-out-of-range-paging](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0956_spreadsheet-out-of-range-paging.md) | B | read_spreadsheet 越界分页与仅表头文件的矛盾提示 | openjiuwen_ai | 无独立 D：内置工具只读分页提示的缺陷修复，无独立设计方案，按 Issue |
 | [F_20261126_2117_enterprise-eml](features/F_20261126_2117_enterprise-eml.md) | F | Web 会话上传和读取 EML 邮件 | linda | 无独立 D：在需求会话中确认企业版和个人版共用实现，无独立设计文档。 |
 | [B_20261126_0210_enterprise-team-file-live-delivery](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0210_enterprise-team-file-live-delivery.md) | B | 企业版团队会话文件卡片丢失：投递优先级反转与网关补发 | hanxinyang | 无独立 D：针对 Issue |
 | [B_20261126_0956_spreadsheet-out-of-range-paging](bugfix/jiuwenswarm/agents/harness/common/tools/B_20261126_0956_spreadsheet-out-of-range-paging.md) | B | read_spreadsheet 越界分页与仅表头文件的矛盾提示 | openjiuwen_ai | 无独立 D：内置工具只读分页提示的缺陷修复，无独立设计方案，按 Issue |
@@ -360,7 +368,6 @@ generated: true
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
-| [B_20261123_1757_harmony-process-identity](bugfix/jiuwenswarm/server/B_20261123_1757_harmony-process-identity.md) | B | HarmonyOS 拒绝读取全局 proc stat 时 Worker HELLO 失败 | 刘瑜 | 无独立 D：按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。 |
 | [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
@@ -452,14 +459,13 @@ generated: true
 | [B_20261121_1529_skill-install-toast-display-name-width](bugfix/jiuwenswarm/channels/web/frontend/B_20261121_1529_skill-install-toast-display-name-width.md) | B | 技能安装成功提示显示英文 slug 与提示条固定过宽修复 | yuhaiquan | 无独立 D：由 issue |
 | [B_20261125_0115_cron-pin-sidebar-blackhole](bugfix/jiuwenswarm/server/runtime/session/B_20261125_0115_cron-pin-sidebar-blackhole.md) | B | 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶 | CharlesWang2030 | 无独立 D：由缺陷分析归档 JW-78 逆向定位，无独立设计文档；方案取舍（入口拒绝 vs 准入放宽 vs 元数据自愈）记录在本文档决策节。 |
 | [B_20261125_1146_design-shared-path-regressions](bugfix/jiuwenswarm/channels/web/B_20261125_1146_design-shared-path-regressions.md) | B | Design 公共路径历史回归防护 | Huang, Zeyu | 无独立 D：依据历史 issue 和当前公共路径契约补回归测试，无独立设计方案；不重构产品代码。 |
+| [B_20261126_1221_team-file-card-duplicate](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_1221_team-file-card-duplicate.md) | B | 团队模式 chat.file 二次投递使文件卡片重复渲染为两张 | chen hui | 无独立 D：事件时序契约缺陷修复，无独立 D；依据前端 team-leader 消息按 teamStream.requestId 关联的既有契约与各事件处理器的去重守卫约定。 |
 | [B_20261126_1420_channel-settings-failure-feedback](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_1420_channel-settings-failure-feedback.md) | B | 渠道设置页保存/加载失败反馈缺失——保存失败零提示、单渠道加载失败整列表永久骨架 | gunner_beat | 无独立 D：交互反馈层缺陷修复，复用 FormDialog 既有 status 插槽与骨架/横幅/toast 三层反馈位，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261126_1628_upload-doc-block-auto-title](bugfix/jiuwenswarm/B_20261126_1628_upload-doc-block-auto-title.md) | B | 会话自动标题被【上传文档】协议块污染 | whds5279 | 无独立 D：修复既有标题生成与上传协议块注入的跨层契约冲突，不引入新方案。 |
 | [B_20261126_1750_source-skill-display-name-ledger](bugfix/jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
 | [B_20261126_1940_enterprise-agent-switch-route](bugfix/jiuwenswarm/channels/web/B_20261126_1940_enterprise-agent-switch-route.md) | B | Open a new conversation after an enterprise Agent switch | linda | 无独立 D：Minimal fix explicitly approved in the task; no separate design document. |
-| [B_20261126_2208_application-menu-slot-flicker](bugfix/jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
-| [B_20261126_1750_source-skill-display-name-ledger](bugfix/jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
-| [B_20261126_1221_team-file-card-duplicate](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_1221_team-file-card-duplicate.md) | B | 团队模式 chat.file 二次投递使文件卡片重复渲染为两张 | chen hui | 无独立 D：事件时序契约缺陷修复，无独立 D；依据前端 team-leader 消息按 teamStream.requestId 关联的既有契约与各事件处理器的去重守卫约定。 |
 | [B_20261126_2000_agent-mgmt-confirm-dialog-i18n](bugfix/jiuwenswarm/channels/web/frontend/B_20261126_2000_agent-mgmt-confirm-dialog-i18n.md) | B | 专家团卸载与专家删除确认框原生 window.confirm 按钮文案无法随应用 i18n 切换 | whds5279 | 无独立 D：交互层缺陷修复，复用既有 ConfirmDialog 组件与 agentManagement.confirm / common.cancel\|confirm\|loading 文案契约，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
+| [B_20261126_2208_application-menu-slot-flicker](bugfix/jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-market-stop-and-page-lifecycle](specs/jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
@@ -813,8 +819,9 @@ generated: true
 | [B_20261116_1540_interrupt-intent-contract](bugfix/jiuwenswarm/server/B_20261116_1540_interrupt-intent-contract.md) | B | chat.interrupt 未知 intent 静默假成功：WS/HTTP 双入口统一契约校验 | ZHANGPP_ | 无独立 D：依据联调现场与 PR 检视意见定位，无独立设计文档；修复限定 intent 契约校验范围，并补回归测试。 |
 | [B_20261125_1412_personal-edition-enterprise-team-methods](bugfix/jiuwenswarm/server/B_20261125_1412_personal-edition-enterprise-team-methods.md) | B | 个人版收到企业 team 控制面方法时落入聊天分支：服务端入口补 edition 闸门 | mingo007 | 无独立 D：依据代码逐跳核实定位，无独立设计文档；修复只在服务端入口补一次 edition 判定，不改企业 handler 与协议枚举。 |
 | [B_20261125_1658_unhandled-known-method-no-chat-fallback](bugfix/jiuwenswarm/server/B_20261125_1658_unhandled-known-method-no-chat-fallback.md) | B | 枚举内未接 handler 的方法落入聊天分支：runtime 两个入口补通用兜底 | mingo007 | 无独立 D：静态审计全部枚举成员的认领层，确认只有 4 个聊天入口方法允许落入 chat 执行器；兜底不维护 175 方法白名单，而是挂在两个入口的收口点上。 |
-| [B_20261126_1621_health-native-telemetry-exclusion](bugfix/jiuwenswarm/server/B_20261126_1621_health-native-telemetry-exclusion.md) | B | 健康探测排除 FastAPI 原生遥测 | jrr | 无独立 D：对既有健康接口的小范围修复，无独立设计文档；依据 Issue 7091 及已确认的精确路径排除方案。 |
 | [B_20261126_0212_team-delete-partial-quota-release](bugfix/jiuwenswarm/server/B_20261126_0212_team-delete-partial-quota-release.md) | B | 团队部分删除后配额占用残留：按会话清理与实体保留 | hanxinyang | 无独立 D：针对 Issue |
+| [B_20261126_1621_health-native-telemetry-exclusion](bugfix/jiuwenswarm/server/B_20261126_1621_health-native-telemetry-exclusion.md) | B | 健康探测排除 FastAPI 原生遥测 | jrr | 无独立 D：对既有健康接口的小范围修复，无独立设计文档；依据 Issue 7091 及已确认的精确路径排除方案。 |
+| [B_20261128_1043_agent-gateway-team-quota-lease-pin](bugfix/jiuwenswarm/server/B_20261128_1043_agent-gateway-team-quota-lease-pin.md) | B | 团队配额孤儿租约：gateway pin 对齐到兜底回收版本 | hanxinyang | 无独立 D：承接 Issue |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
@@ -905,8 +912,8 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
-| [F_20261126_2117_enterprise-eml](features/F_20261126_2117_enterprise-eml.md) | F | Web 会话上传和读取 EML 邮件 | linda | 无独立 D：在需求会话中确认企业版和个人版共用实现，无独立设计文档。 |
 | [F_20261123_1526_bundled-agent-memory](features/F_20261123_1526_bundled-agent-memory.md) | F | Work 与 Code 主 Agent 迁移到内置 Agent Memory 插件 | y00841611 | 无独立 D：本文记录插件迁移的实现与决策；运行契约见仓内 S_04。 |
+| [F_20261126_2117_enterprise-eml](features/F_20261126_2117_enterprise-eml.md) | F | Web 会话上传和读取 EML 邮件 | linda | 无独立 D：在需求会话中确认企业版和个人版共用实现，无独立设计文档。 |
 | [B_20261031_0946_ttse-codecheck-boundaries](bugfix/jiuwenswarm/B_20261031_0946_ttse-codecheck-boundaries.md) | B | TTSE 相关 CodeCheck 受保护访问与关闭条件复杂度修复 | xinyang_bali | 无独立 D：按用户提供的 20 项 CodeCheck 清单修复实现边界，沿用当前 TTSE 通用运行契约，无独立 D。 |
 | [B_20261031_1042_pr9317-review](bugfix/jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 | [B_20261031_1053_atomgit-review](bugfix/jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
