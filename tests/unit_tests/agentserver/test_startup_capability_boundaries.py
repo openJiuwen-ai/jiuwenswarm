@@ -170,27 +170,26 @@ async def test_custom_sender_is_not_reported_as_sdk_and_timing_failure_is_nonfat
 @pytest.mark.parametrize('action', ['status', 'enable'])
 @pytest.mark.asyncio
 async def test_managed_sandbox_command_is_read_only(monkeypatch, action):
-    server = server_module
+    from jiuwenswarm.server.management import sandbox as server
+
     monkeypatch.setattr(server, '_require_sandbox_supported', lambda: None)
     monkeypatch.setattr(server, 'get_sandbox_endpoint', lambda: {'type': 'adx-environment'})
     view = {'type': 'adx-environment', 'runtime': 'conch', 'enabled': True, 'mounts': []}
     status = Mock(return_value=view)
     monkeypatch.setattr(server, 'build_adx_sandbox_status_view', status)
-    monkeypatch.setattr(server, 'encode_agent_response_for_wire', lambda response, **_: response)
-    sent = []
-    async def send(ws, response):
-        sent.append(response)
-    monkeypatch.setattr(server, 'send_wire_payload', send)
+    services = SimpleNamespace(encode_response=lambda response, **_: response, send=AsyncMock())
     request = SimpleNamespace(params={'sub': action}, request_id='sandbox-request', channel_id='web')
-    await server.AgentWebSocketServer._handle_command_sandbox(SimpleNamespace(), None, request, asyncio.Lock())
-    assert len(sent) == 1
+    handler = server.SandboxManagement(SimpleNamespace(services=services))
+    await handler._handle_command_sandbox(None, request, asyncio.Lock())
+    services.send.assert_awaited_once()
+    response = services.send.await_args.args[1]
     if action == 'status':
-        assert sent[0].ok and sent[0].payload == view
+        assert response.ok and response.payload == view
         status.assert_called_once_with()
     else:
-        assert not sent[0].ok
-        assert sent[0].payload['code'] == 'SANDBOX_BAD_REQUEST'
-        assert 'subcommands are disabled' in sent[0].payload['error']
+        assert not response.ok
+        assert response.payload['code'] == 'SANDBOX_BAD_REQUEST'
+        assert 'subcommands are disabled' in response.payload['error']
         status.assert_not_called()
 
 
