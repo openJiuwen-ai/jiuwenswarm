@@ -28,6 +28,7 @@ from agent_gateway.common.mode_matrix import (
 from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
 from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.app_role import is_app_role_team, is_npc_session
 from jiuwenswarm.runtime.hooks import ExtensionRequestHooks, RequestHooks
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
 from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
@@ -4289,17 +4290,23 @@ class AgentRuntime:
         )
         return is_team_mode(canonical)
 
-    @staticmethod
-    def _swarm_npc_chat_refusal(request: AgentRequest, metadata: dict[str, Any]) -> RuntimeEvent | None:
+    @classmethod
+    def _is_passive_chat_attachment(cls, request: AgentRequest) -> bool:
+        params = request.params if isinstance(request.params, dict) else {}
+        return (
+            request.req_method is ReqMethod.CHAT_SEND
+            and cls._is_attach_only_request(request)
+            and not any(params.get(field) for field in ("query", "content", "files", "media_items"))
+        )
+
+    @classmethod
+    def _swarm_npc_chat_refusal(cls, request: AgentRequest, metadata: dict[str, Any]) -> RuntimeEvent | None:
         """Keep the Swarm composer from changing app-owned conversation history."""
         params = request.params or {}
         if request.req_method != ReqMethod.CHAT_SEND or params.get("chat_surface") != "swarm":
             return None
-        if params.get(TEAM_ATTACH_ONLY_PARAM) is True and not any(
-            params.get(field) for field in ("query", "content", "files", "media_items")
-        ):
+        if cls._is_passive_chat_attachment(request):
             return None
-        from jiuwenswarm.runtime.app_role import is_npc_session
         from jiuwenswarm.runtime.events import RuntimeEvent
 
         if not is_npc_session(metadata):
@@ -4316,8 +4323,8 @@ class AgentRuntime:
         """Resolve the effective mode before Runtime classification and dispatch."""
         return cls._normalize_request_with_metadata(request)[0]
 
-    @staticmethod
-    def _normalize_request_with_metadata(request: AgentRequest) -> tuple[AgentRequest, dict[str, Any]]:
+    @classmethod
+    def _normalize_request_with_metadata(cls, request: AgentRequest) -> tuple[AgentRequest, dict[str, Any]]:
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
         session_id = str(request.session_id or "").strip()
@@ -4345,14 +4352,19 @@ class AgentRuntime:
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
             return request, metadata
+        work_mode = metadata.get("work_mode")
+        if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
+            work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
+        if cls._is_passive_chat_attachment(request) and is_app_role_team(metadata):
+            # A passive observer inherits the NPC Team's locked mode. Composing
+            # the legacy Web mode "team" can otherwise select "code.team".
+            attachment_params = {**params, "mode": resolved_mode, "work_mode": work_mode}
+            return replace(request, params=attachment_params), metadata
         if isinstance(raw_mode, str) and raw_mode.strip():
             from jiuwenswarm.runtime.request import resolve_request_runtime_mode
 
             if not (is_single_agent_mode(deprecate_mode(resolved_mode)) or is_team_mode(resolved_mode)):
                 return request, metadata
-            work_mode = metadata.get("work_mode")
-            if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
-                work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
             requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
             if requested_mode.is_team == is_team_mode(resolved_mode):
                 return request, metadata

@@ -23,6 +23,7 @@ from jiuwenswarm.common.schema.agent import (
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime, RuntimeStateError
 from jiuwenswarm.runtime import service as runtime_service_module
+from jiuwenswarm.runtime.app_role import validate_app_role_request
 from jiuwenswarm.runtime.context import (
     get_current_agent_manager,
     get_current_runtime,
@@ -188,6 +189,62 @@ def test_npc_chat_keeps_app_messages_and_read_only_attachments():
     assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
     request.params = {"chat_surface": "swarm", "attach_only": True, "query": ""}
     assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
+
+
+@pytest.fixture
+def npc_team_metadata(monkeypatch):
+    metadata = {
+        "execution_profile": "app_role",
+        "role_instructions": "Lead the NPC team.",
+        "npc_team": {"members": [{"name": "advisor", "role_instructions": "Advise the leader."}]},
+        "mode": "team.code.normal",
+        "work_mode": "code",
+    }
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: metadata,
+    )
+    return metadata
+
+
+@pytest.mark.parametrize("stored_work_mode", ["code", None])
+async def test_npc_team_attachment_inherits_the_session_mode(npc_team_metadata, stored_work_mode):
+    npc_team_metadata["work_mode"] = stored_work_mode
+    params = {"mode": "team", "query": "", TEAM_ATTACH_ONLY_PARAM: True}
+    if stored_work_mode is None:
+        params["work_mode"] = "work"
+    request = AgentRequest(
+        request_id="npc-attach", session_id="app-npc", channel_id="web",
+        req_method=ReqMethod.CHAT_SEND, is_stream=True, params=params,
+    )
+
+    attachment = AgentRuntime.normalize_request(request)
+    await prepare_chat_turn(FakeAgentManager(), attachment, "web", sync_metadata=False)
+
+    assert attachment.params["mode"] == "team.code.normal"
+    assert attachment.params["work_mode"] == "code"
+    assert attachment.params[TEAM_ATTACH_ONLY_PARAM] is True
+    validate_app_role_request(npc_team_metadata, attachment.params)
+    assert request.params["mode"] == "team"
+
+
+@pytest.mark.parametrize("input_params", [
+    {"query": "player input"},
+    {"query": "player input", TEAM_ATTACH_ONLY_PARAM: True},
+    {"files": ["attachment"], TEAM_ATTACH_ONLY_PARAM: True},
+])
+async def test_npc_team_chat_keeps_explicit_mode_validation(npc_team_metadata, input_params):
+    request = AgentRequest(
+        request_id="npc-turn", session_id="app-npc", channel_id="web",
+        req_method=ReqMethod.CHAT_SEND, is_stream=True,
+        params={"mode": "code.team", **input_params},
+    )
+
+    turn = AgentRuntime.normalize_request(request)
+    await prepare_chat_turn(FakeAgentManager(), turn, "web", sync_metadata=False)
+
+    with pytest.raises(ValueError, match="the NPC Team mode is fixed at session creation"):
+        validate_app_role_request(npc_team_metadata, turn.params)
 
 
 @pytest.mark.parametrize("streaming", [False, True])

@@ -26,6 +26,8 @@ The creation response includes `execution_profile: "app_role"`, `npc_session: tr
 
 Swarm labels NPC conversations and shows their history in a read-only view. Players continue the conversation inside the application. Existing `app_role` conversations are recognized automatically. When a character needs host tools and uses the default execution profile, include `npc_session: true` at creation.
 
+When Swarm opens or reconnects to a Team NPC conversation, the read-only event subscription uses the mode established at session creation. Older Swarm clients can continue to view existing Team NPC conversations.
+
 Send only current player input or scene JSON through `chat.send`. Reuse one session per stable role. Wait for `chat.final`; acceptance is not an answer. The host restores recent complete dialogue pairs from that session's history. Model input is bounded to 48000 characters; oldest pairs are omitted without modifying persisted history. Oversized fixed instructions plus current input produce an explicit error. Existing default-model selection applies.
 
 The base system prompt identifies the assistant as an application character, requires following character rules and the application output format, treats player and scene values as input data, and states its capability boundaries. The role has no host tools, project-file access, private memory, or access to other characters' conversations. In the lead-and-members form the lead prompt lists the member roster and consultation rules, while member prompts answer only the lead's consultations.
