@@ -48,6 +48,13 @@ function showNotice(content: string, variant: ToastVariant = 'success') {
   });
 }
 
+const CLEANUP_NOTICE_KEYS: Record<string, string> = {
+  unverified_directory: 'appMarket.cleanupKeptUnverified',
+  protected_directory: 'appMarket.cleanupKeptProtected',
+  directory_in_use: 'appMarket.cleanupKeptInUse',
+  filesystem_busy: 'appMarket.cleanupFilesystemBusy',
+};
+
 interface AppInfo {
   app_id: string;
   name: string;
@@ -872,19 +879,39 @@ export function AppMarketPanel({
     if (removeFiles && !window.confirm(t('appMarket.deleteCleanConfirm', { name: app.name }))) return;
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
-      let messageKey = removeFiles ? 'appMarket.deleteCleanSuccess' : 'appMarket.removeKeepSuccess';
-      let directory = '';
-      const result = await webRequest<{ cleanup_warning?: string; work_dir?: string }>(
+      const result = await webRequest<{
+        cleanup_warning?: string;
+        cleanup_code?: string;
+        work_dir?: string;
+        preserved_dir?: string;
+      }>(
         app.source === 'hub' ? 'app_market.uninstall' : 'app_market.delete',
-        { app_id: app.app_id, remove_files: removeFiles },
+        {
+          app_id: app.app_id,
+          remove_files: removeFiles,
+          // A local app directory may be the user's project directory, so the
+          // server requires the caller to name it back before deleting files.
+          ...(removeFiles && app.source !== 'hub' ? { confirm_work_dir: appDirectory(app) } : {}),
+        },
+        // Large local trees (node_modules) can take minutes to remove.
+        removeFiles ? { timeoutMs: 180000 } : undefined,
       );
-      if (result?.cleanup_warning) {
-        messageKey = 'appMarket.uninstallCleanupWarning';
-        directory = result.work_dir || '';
-      }
+      const cleanupError = result?.cleanup_warning;
+      const cleanupKey = cleanupError ? CLEANUP_NOTICE_KEYS[result?.cleanup_code || ''] : '';
       removeInstalledApp(app.app_id);
       if (app.source === 'hub' && app.hub_asset_id) invalidateMarketDetail(app.hub_asset_id);
-      showNotice(t(messageKey, { directory }), messageKey === 'appMarket.uninstallCleanupWarning' ? 'warning' : 'success');
+      if (cleanupError) {
+        const directory = result?.work_dir || appDirectory(app);
+        const message = cleanupKey
+          ? t(cleanupKey, { directory })
+          : t('appMarket.cleanupFailed', { directory, error: cleanupError });
+        const archive = result?.preserved_dir;
+        showNotice(archive ? t('appMarket.cleanupWithArchive', { message, directory: archive }) : message, 'error');
+      } else if (removeFiles && result?.preserved_dir) {
+        showNotice(t('appMarket.deleteCleanArchived', { directory: result.preserved_dir }), 'success');
+      } else {
+        showNotice(t(removeFiles ? 'appMarket.deleteCleanSuccess' : 'appMarket.removeKeepSuccess'), 'success');
+      }
       await closeApplication(app);
       window.dispatchEvent(new Event('app-market-apps-changed'));
     } catch (error) {

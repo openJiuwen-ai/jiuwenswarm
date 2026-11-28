@@ -57,6 +57,23 @@ def _owner_identity_required() -> bool:
     return is_enterprise()
 
 
+def _same_directory(left: str, right: str) -> bool:
+    """Compare two directories by canonical path, treating Windows case alike."""
+    try:
+        left_path = Path(left).expanduser().resolve()
+        right_path = Path(right).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return os.path.normcase(str(left_path)) == os.path.normcase(str(right_path))
+
+
+def _confirmed_work_dir(manifest: AppManifest, confirm_work_dir: str) -> bool:
+    """Require the caller to echo the exact directory before deleting its files."""
+    if not manifest.work_dir or not confirm_work_dir.strip():
+        return False
+    return _same_directory(manifest.work_dir, confirm_work_dir)
+
+
 @dataclass
 class InstallJob:
     job_id: str
@@ -1098,7 +1115,12 @@ class AppMarketManager:
             self._reject_active_job(app_id)
             return await self._uninstall_app_locked(app_id, owner_id, remove_files)
 
-    async def _uninstall_app_locked(self, app_id: str, owner_id: str, remove_files: bool) -> dict[str, Any]:
+    async def _uninstall_app_locked(
+        self,
+        app_id: str,
+        owner_id: str,
+        remove_files: bool,
+    ) -> dict[str, Any]:
         from .hub_install import AppInstallError, uninstall_hub_app
 
         try:
@@ -1140,11 +1162,19 @@ class AppMarketManager:
                 raise AppMarketError("app_operation_conflict", "Could not stop the active application")
 
     async def delete_app(
-        self, app_id: str, owner_id: str = "", remove_files: bool = False
+        self,
+        app_id: str,
+        owner_id: str = "",
+        remove_files: bool = False,
+        confirm_work_dir: str = "",
     ) -> dict[str, Any]:
         """Remove an app from the market, optionally deleting its program files.
 
-        Both modes leave the app project and its editor sessions untouched.
+        A local app directory may also be its project directory, so ``data`` and
+        ``.git`` are archived but the remaining project files are deleted. A
+        ``remove_files`` request must therefore name that directory in
+        ``confirm_work_dir``. Filesystem failures are reported after deregistration.
+        Project and editor session records themselves are not modified.
         """
         from .hub_install import cleanup_local_app_files
 
@@ -1152,6 +1182,11 @@ class AppMarketManager:
             app = self._service.get_app(app_id)
             if not app or app.owner_id != owner_id:
                 return {"deleted": False}
+            if remove_files and app.source != "hub" and not _confirmed_work_dir(app, confirm_work_dir):
+                raise AppMarketError(
+                    "app_delete_confirm_required",
+                    "Confirm the application directory before deleting its files",
+                )
             self._reject_active_job(app_id)
             if app.source == "hub":
                 result = await self._uninstall_app_locked(app_id, owner_id, remove_files)
@@ -1159,24 +1194,29 @@ class AppMarketManager:
             if not await self._service.delete_app(app_id) or self._service.get_app(app_id) is not None:
                 return {"deleted": False}
 
-            removed_dir = preserved_dir = cleanup_warning = ""
+            removed_dir = preserved_dir = cleanup_warning = cleanup_code = ""
             if remove_files:
                 async with self._local_work_dirs_lock:
                     cleanup = asyncio.create_task(asyncio.to_thread(cleanup_local_app_files, app, self.storage))
                     try:
-                        removed_dir, preserved_dir, cleanup_warning = await asyncio.shield(cleanup)
+                        removed_dir, preserved_dir, cleanup_warning, cleanup_code = await asyncio.shield(cleanup)
                     except asyncio.CancelledError:
                         # Keep both locks until the filesystem work finishes.
                         await cleanup
                         raise
+        project_retained = not (
+            bool(removed_dir) and app.project_dir and _same_directory(app.work_dir, app.project_dir)
+        )
         return {
             "deleted": True,
             "removed_files": bool(removed_dir),
             "removed_dir": removed_dir,
             "preserved_dir": preserved_dir,
-            "project_retained": True,
+            "project_retained": project_retained,
+            "project_files_removed": bool(removed_dir) and not project_retained,
             "work_dir": app.work_dir,
             "cleanup_warning": cleanup_warning,
+            "cleanup_code": cleanup_code,
         }
 
     async def shutdown(self) -> None:

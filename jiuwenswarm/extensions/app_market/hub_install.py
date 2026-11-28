@@ -11,6 +11,7 @@ shape checks, local registration through the existing ``publish_app`` path,
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import html.parser
 import io
@@ -19,7 +20,9 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
+import time
 import uuid
 import zipfile
 from dataclasses import asdict
@@ -996,10 +999,130 @@ def _copy_preserved_paths(source: Path, target: Path) -> None:
             shutil.copytree(entry, target / name, symlinks=True)
 
 
+def _remove_tree(path: Path) -> None:
+    """Delete a tree without following links and tolerating read-only entries.
+
+    ``shutil.rmtree`` follows directory junctions and Windows rejects read-only
+    files/directories with ``WinError 5``. Remove entry-by-entry instead:
+    reparse points are unlinked rather than entered, write permission is
+    restored on read-only entries before retrying, and a final failure is
+    reported to the caller. Links are never chmod'ed, so their targets keep
+    their own permissions.
+    """
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    def clear_readonly(target: Path) -> None:
+        try:
+            mode = os.lstat(target).st_mode
+        except OSError:
+            return
+        if stat.S_ISLNK(mode):
+            return
+        try:
+            if os.name == "nt":
+                os.chmod(target, stat.S_IWRITE)
+            elif not mode & stat.S_IWUSR:
+                # POSIX needs write permission on a directory to remove its entries.
+                os.chmod(target, stat.S_IMODE(mode) | stat.S_IWUSR)
+        except OSError:
+            pass
+
+    def attempt(action: Callable[[], None], target: Path) -> None:
+        for remaining in range(3, 0, -1):
+            try:
+                action()
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError:
+                if remaining == 1:
+                    raise
+                clear_readonly(target)
+                time.sleep(0.1)
+
+    def remove(target: Path) -> None:
+        try:
+            info = os.lstat(target)
+        except FileNotFoundError:
+            return
+        is_reparse = bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+        if stat.S_ISDIR(info.st_mode) and not is_reparse:
+            try:
+                with os.scandir(target) as entries:
+                    children = [Path(entry.path) for entry in entries]
+            except FileNotFoundError:
+                return
+            for child in children:
+                remove(child)
+            clear_readonly(target)
+            attempt(lambda: os.rmdir(target), target)
+            return
+        if is_reparse and stat.S_ISDIR(info.st_mode):
+            # A junction or directory symlink: remove the link, never its target.
+            clear_readonly(target)
+            try:
+                os.rmdir(target)
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                pass
+        clear_readonly(target)
+        attempt(lambda: os.unlink(target), target)
+
+    remove(path)
+
+
+def _canonical_text(path: Path) -> str:
+    try:
+        return os.path.normcase(str(Path(path).expanduser().resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _path_contains(parent: str, child: str) -> bool:
+    """Return whether ``child`` is ``parent`` itself or lies inside it."""
+    if not parent or not child:
+        return False
+    if parent == child:
+        return True
+    return child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def _protected_directory_reason(path: Path) -> str:
+    """Refuse to delete a root, home or JiuwenSwarm data directory."""
+    target = _canonical_text(path)
+    if not target:
+        return "The application directory could not be verified and was kept"
+    if os.path.dirname(target) == target:
+        return "A filesystem root cannot be removed"
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    protected = [Path.home(), get_user_workspace_dir()]
+    try:
+        protected.append(Path.cwd())
+    except OSError:
+        pass
+    for root in protected:
+        if _path_contains(target, _canonical_text(root)):
+            return f"The application directory holds protected data and was kept: {path}"
+    return ""
+
+
+def _cleanup_error_code(error: Exception) -> str:
+    if isinstance(error, AppInstallError):
+        return "unverified_directory"
+    if isinstance(error, OSError) and (
+        error.errno in (errno.EBUSY, errno.ETXTBSY) or getattr(error, "winerror", None) in (32, 33)
+    ):
+        return "filesystem_busy"
+    return "filesystem_error"
+
+
 def _cleanup_uninstalled_files(
     manifest: AppManifest,
     record: dict[str, Any] | None,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     preserved_dir = ""
     try:
         if not record:
@@ -1015,6 +1138,9 @@ def _cleanup_uninstalled_files(
             or record.get("work_dir") != str(work_dir)
         ):
             raise AppInstallError("install_path_conflict", "Cannot verify ownership of installation directory")
+        reason = _protected_directory_reason(work_dir)
+        if reason:
+            return "", "", reason, "protected_directory"
         if not _owns_release(work_dir, release_id):
             raise AppInstallError("install_path_conflict", "Cannot verify ownership of installation directory")
         if any((work_dir / name).exists() or (work_dir / name).is_symlink() for name in ("data", ".git")):
@@ -1024,59 +1150,74 @@ def _cleanup_uninstalled_files(
             preserved_dir = str(archive)
         if not _owns_release(work_dir, release_id):
             raise AppInstallError("install_path_conflict", "Application directory changed during uninstall")
-        shutil.rmtree(work_dir)
+        _remove_tree(work_dir)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("Local cleanup failed after uninstalling %s: %s", manifest.app_id, exc)
-        return "", preserved_dir, str(exc) or "Local application files could not be removed"
-    return str(work_dir), preserved_dir, ""
+        code = _cleanup_error_code(exc)
+        return "", preserved_dir, str(exc) or "Local application files could not be removed", code
+    return str(work_dir), preserved_dir, "", ""
 
 
-def cleanup_local_app_files(manifest: AppManifest, storage: MarketStorage) -> tuple[str, str, str]:
-    """Remove an app-owned local program directory, archiving data/ and .git.
+def cleanup_local_app_files(manifest: AppManifest, storage: MarketStorage) -> tuple[str, str, str, str]:
+    """Remove a local app program directory after explicit user confirmation.
 
-    Returns ``(removed_dir, preserved_dir, cleanup_warning)``. Local apps may
-    point at a user source directory. A converted installation outside the
-    default root needs the release ID retained from its install record.
+    Returns ``(removed_dir, preserved_dir, cleanup_warning, cleanup_code)``.
+    Local apps may point at a user source directory, so the caller must have
+    confirmed the deletion; ``data`` and ``.git`` are archived first. The
+    install root, archive directories, protected directories and directories
+    still used by another registration are always kept.
     """
     if not manifest.work_dir:
-        return "", "", ""
+        return "", "", "", ""
     work_dir = Path(manifest.work_dir).expanduser()
     preserved_dir = ""
     try:
         if not work_dir.exists() and not work_dir.is_symlink():
-            return "", "", ""
+            return "", "", "", ""
         install_root = default_install_root(os.environ.get("APP_MARKET_INSTALL_ROOT", ""))
         identity = _directory_identity(work_dir)
         under_install_root = work_dir.is_relative_to(install_root)
         archived = any(part.casefold() == ".app-archive" for part in work_dir.parts)
-        owned = (
-            _owns_release(work_dir, manifest.local_release_id)
-            if manifest.local_release_id else under_install_root
-        )
-        kept_message = f"The application directory is not owned by App Market and was kept: {work_dir}"
-        if not identity or not owned:
-            return "", "", kept_message
+        if not identity:
+            return (
+                "",
+                "",
+                f"The application directory could not be verified and was kept: {work_dir}",
+                "unverified_directory",
+            )
         if install_root.is_relative_to(work_dir) or archived:
-            return "", "", kept_message
+            return "", "", "The application install root or archive directory cannot be removed", "protected_directory"
+        reason = _protected_directory_reason(work_dir)
+        if reason:
+            return "", "", reason, "protected_directory"
         if storage.has_overlapping_work_dir(work_dir):
-            return "", "", "The application directory is still used by another application"
+            return (
+                "",
+                "",
+                "The application directory is still used by another application",
+                "directory_in_use",
+            )
         if any((work_dir / name).exists() or (work_dir / name).is_symlink() for name in ("data", ".git")):
             archive_root = _archive_root(install_root if under_install_root else work_dir.parent)
             archive = archive_root / f"{work_dir.name}-{uuid.uuid4().hex}"
             archive.mkdir()
             _copy_preserved_paths(work_dir, archive)
             preserved_dir = str(archive)
-        if _directory_identity(work_dir) != identity or (
-            manifest.local_release_id and not _owns_release(work_dir, manifest.local_release_id)
-        ):
+        if _directory_identity(work_dir) != identity:
             raise AppInstallError("install_path_conflict", "Application directory changed during cleanup")
         if storage.has_overlapping_work_dir(work_dir):
-            return "", preserved_dir, "The application directory is still used by another application"
-        shutil.rmtree(work_dir)
+            return (
+                "",
+                preserved_dir,
+                "The application directory is still used by another application",
+                "directory_in_use",
+            )
+        _remove_tree(work_dir)
     except (OSError, RuntimeError, ValueError) as exc:
         logger.warning("Local app cleanup failed for %s: %s", manifest.app_id, exc)
-        return "", preserved_dir, str(exc) or "Local application files could not be removed"
-    return str(work_dir), preserved_dir, ""
+        code = _cleanup_error_code(exc)
+        return "", preserved_dir, str(exc) or "Local application files could not be removed", code
+    return str(work_dir), preserved_dir, "", ""
 
 
 async def uninstall_hub_app(
@@ -1099,11 +1240,12 @@ async def uninstall_hub_app(
     if not await manager.service.delete_app(app_id) or manager.service.get_app(app_id) is not None:
         raise AppInstallError("app_operation_conflict", "Failed to remove application from App Market")
 
-    removed_dir = preserved_dir = cleanup_warning = ""
+    removed_dir = preserved_dir = cleanup_warning = cleanup_code = ""
     if remove_files and manifest.work_dir and manager.storage.contains_local_app(Path(manifest.work_dir)):
         cleanup_warning = "The installation directory is still used by a local application"
+        cleanup_code = "directory_in_use"
     elif remove_files:
-        removed_dir, preserved_dir, cleanup_warning = await asyncio.to_thread(
+        removed_dir, preserved_dir, cleanup_warning, cleanup_code = await asyncio.to_thread(
             _cleanup_uninstalled_files, manifest, record,
         )
     return {
@@ -1114,6 +1256,7 @@ async def uninstall_hub_app(
         "project_retained": True,
         "work_dir": manifest.work_dir,
         "cleanup_warning": cleanup_warning,
+        "cleanup_code": cleanup_code,
     }
 
 
@@ -1122,6 +1265,7 @@ __all__ = [
     "AppInstallError",
     "app_install_id",
     "app_package_root",
+    "cleanup_local_app_files",
     "default_install_root",
     "hub_app_downloader",
     "install_hub_app",

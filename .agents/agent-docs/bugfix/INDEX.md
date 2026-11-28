@@ -304,6 +304,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261126_1055_file-size-unit-rounding](jiuwenswarm/channels/web/B_20261126_1055_file-size-unit-rounding.md) | B | 文件大小在单位边界显示为 1024K/1024M | openjiuwen_ai | 无独立 D：前端展示层单位进位缺陷，无独立设计方案，按 Issue |
 | [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
+| [B_20261128_0955_local-app-delete-safeguards](jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
@@ -436,6 +437,7 @@ generated: true
 | [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261124_1429_local-app-removal-and-conversion](jiuwenswarm/extensions/app_market/B_20261124_1429_local-app-removal-and-conversion.md) | B | 应用市场本地清理和 Hub 转换的一致性 | kdgmpw | 无独立 D：本次修正应用市场登记、目录归属与转换行为，沿用 S_03 契约和现有项目接口，无独立设计。 |
 | [B_20261126_2025_installed-app-icon-expiry](jiuwenswarm/extensions/app_market/B_20261126_2025_installed-app-icon-expiry.md) | B | Hub 应用安装后的图标链接过期 | kdgmpw | 无独立 D：修复本地展示依赖临时链接的问题，沿用 S_03 的 Hub 应用包装和登记契约。 |
+| [B_20261128_0955_local-app-delete-safeguards](jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
 
 <a id="module-jiuwenswarm-extensions-runtime_management_extension"></a>
 
