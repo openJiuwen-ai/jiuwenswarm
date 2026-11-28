@@ -2307,6 +2307,24 @@ function AppContent({
             setThinking(targetSessionId, false);
           }
         }
+        // Team 模式：服务端权威 idle，本地前台仍 busy 时强制灭灯。
+        // 终态 chat.processing_status 丢帧或被历史加载吞掉时，侧栏会一直转圈、
+        // 输入框停在「集群模式处理中」；team 又不用 chat.final 兜底灭灯。
+        // 回放中的 execution recovery 仍交给 cursor 回放，避免抢跑。
+        const sessionMode = useSessionStore.getState().getRuntime(targetSessionId)?.mode;
+        if (
+          isTeamAgentMode(sessionMode)
+          && session.is_processing === false
+          && locallyBusy
+          && !recoveringExecution
+        ) {
+          setProcessing(targetSessionId, false);
+          setThinking(targetSessionId, false);
+          useWorkspaceStore.getState().patchSession(targetSessionId, {
+            is_processing: false,
+            updated_at: new Date().toISOString(),
+          });
+        }
       }
       if (session.session_equipment && typeof session.session_equipment === 'object') {
         restoreSessionEquipment(targetSessionId, session.session_equipment);
