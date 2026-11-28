@@ -339,6 +339,7 @@ class TestPortAvailability:
         group (5173 -> 6173) for no reason.
         """
         import socket as _socket
+        import sys as _sys
 
         listener = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         listener.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
@@ -357,11 +358,18 @@ class TestPortAvailability:
 
         probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         try:
-            # Precondition: without SO_REUSEADDR the port really is unbindable.
-            # If this ever stops holding, the test below proves nothing.
-            with pytest.raises(OSError):
-                probe.bind(("127.0.0.1", port))
-                probe.listen(1)
+            # Precondition (POSIX only): without SO_REUSEADDR the port really is
+            # unbindable while a lingering connection holds it, so the bind below
+            # must fail.  If this ever stops holding, the test below proves
+            # nothing.  Windows has different SO_REUSEADDR semantics (closer to
+            # SO_REUSEPORT): a plain bind() can succeed against a half-closed
+            # connection, so this precondition is not valid there.  Skip only
+            # the precondition on Windows; the behaviour assertion still runs
+            # and is meaningful on every platform (see the issue thread).
+            if _sys.platform != "win32":
+                with pytest.raises(OSError):
+                    probe.bind(("127.0.0.1", port))
+                    probe.listen(1)
         finally:
             probe.close()
 
