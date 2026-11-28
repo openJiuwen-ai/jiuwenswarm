@@ -64,12 +64,36 @@ def main() -> None:
             raise SystemExit(1) from None
         return
 
+    # Lightweight trace preparation: one clock base and a YAML-only config read.
+    # The recorder is created after Agent Runtime preloads (see lifecycle.py),
+    # so this never imports OpenTelemetry or OpenJiuwen. The clock must start
+    # before the external CLI path activation so its cost is in the config phase.
+    from jiuwenswarm.runtime_trace.clock import ClockBase
+    from jiuwenswarm.runtime_trace.config import load_runtime_trace_settings
+
+    trace_clock = ClockBase()
+    trace_settings = load_runtime_trace_settings()
+    trace_clock.mark("config")
+    trace_state = {
+        "settings": trace_settings,
+        "clock": trace_clock,
+        "instance": None,
+        "generation": None,
+    }
+
     _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port))
+    task = loop.create_task(
+        serve_worker(
+            args.socket,
+            host=args.host,
+            port=args.port,
+            trace_state=trace_state,
+        )
+    )
 
     def _stop() -> None:
         task.cancel()
@@ -78,9 +102,43 @@ def main() -> None:
         loop.add_signal_handler(signal.SIGINT, _stop)
         loop.add_signal_handler(signal.SIGTERM, _stop)
     except (NotImplementedError, OSError):
-        pass
+        # Windows event loops do not support add_signal_handler. Schedule the
+        # cancel on the loop instead of letting Ctrl+C raise KeyboardInterrupt
+        # and skip serve_worker's finally (which closes Runtime and drains the
+        # runtime trace).
+        def _fallback_stop(signum, frame) -> None:
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
+
+        for signal_name in ("SIGINT", "SIGBREAK"):
+            signum = getattr(signal, signal_name, None)
+            if signum is None:
+                continue
+            try:
+                signal.signal(signum, _fallback_stop)
+            except (ValueError, OSError):
+                continue
     try:
         loop.run_until_complete(task)
+    except KeyboardInterrupt:
+        # Windows has no loop.add_signal_handler: Ctrl+C arrives here instead.
+        # Cancel the service task and let its finally close Runtime and drain
+        # the runtime trace before the loop is closed.
+        logging.getLogger(__name__).info(
+            "[Worker] keyboard interrupt; shutting down"
+        )
+        task.cancel()
+        try:
+            loop.run_until_complete(task)
+        except WorkerForceExit:
+            logging.getLogger(__name__).exception(
+                "[Worker] fatal exit: Runtime dispatch did not stop"
+            )
+            raise SystemExit(1) from None
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
     except WorkerForceExit:
         logging.getLogger(__name__).exception(
             "[Worker] fatal exit: Runtime dispatch did not stop"

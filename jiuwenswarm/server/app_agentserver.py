@@ -25,6 +25,11 @@ import time
 _PROCESS_START_T0 = time.monotonic()
 _STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
 
+# A websocket client may never finish its close handshake. Front's HTTP/WS
+# stop must not consume the launcher's graceful-shutdown grace, which also
+# has to cover the supervisor stop and the runtime trace drain.
+_FRONT_STOP_TIMEOUT_SECONDS = 3.0
+
 
 def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
@@ -53,7 +58,9 @@ _mark_startup_import_phase("entry_module_ready")
 
 
 
-async def _start_supervisor(front: object, host: str, port: int) -> object:
+async def _start_supervisor(
+    front: object, host: str, port: int, recorder: object = None
+) -> object:
     """Attach the supervisor and wait until Worker IPC is up.
 
     ``AGENT_READY`` arrives later on the IPC readiness stream. Control-plane
@@ -67,6 +74,7 @@ async def _start_supervisor(front: object, host: str, port: int) -> object:
         forwarder=getattr(front, "forwarder", None),
         host=host,
         port=port,
+        recorder=recorder,
     )
     attach = getattr(front, "attach_runtime_backend", None)
     if callable(attach):
@@ -79,6 +87,87 @@ async def _start_supervisor(front: object, host: str, port: int) -> object:
         getattr(supervisor, "worker_pid", None),
     )
     return supervisor
+
+
+def _replay_front_startup_phases(recorder: object, config_end_ns: int) -> None:
+    """Replay import marks and the config phase under the startup root."""
+    if recorder is None:
+        return
+    try:
+        marks = list(_STARTUP_IMPORT_PHASES)
+        for previous, current in zip(marks, marks[1:]):
+            stage = current[0]
+            handle = recorder.start(
+                f"startup.phase.{stage}",
+                parent=recorder.startup_handle,
+                level="normal",
+                mono_start=int(previous[1] * 1_000_000_000),
+                attributes={"runtime.stage": stage},
+            )
+            recorder.end(
+                handle, "success", mono_end=int(current[1] * 1_000_000_000)
+            )
+        handle = recorder.start(
+            "startup.phase.config",
+            parent=recorder.startup_handle,
+            level="normal",
+            mono_start=int(_PROCESS_START_T0 * 1_000_000_000),
+            attributes={"runtime.stage": "config"},
+        )
+        recorder.end(handle, "success", mono_end=config_end_ns)
+    except Exception:  # noqa: BLE001 - tracing must not affect startup
+        logger.warning("[AgentServer] runtime trace replay failed", exc_info=True)
+
+
+def _end_startup_phase(
+    recorder: object,
+    name: str,
+    start_ns: int,
+    outcome: str = "success",
+    reason_code: str | None = None,
+    *,
+    end_ns: int | None = None,
+    parent: object = None,
+) -> None:
+    """Close one explicit startup/shutdown phase span."""
+    if recorder is None:
+        return
+    try:
+        attributes: dict[str, object] = {"runtime.stage": name.rsplit(".", 1)[-1]}
+        if reason_code:
+            attributes["runtime.reason_code"] = reason_code
+        parent_handle = parent if parent is not None else recorder.startup_handle
+        handle = recorder.start(
+            name,
+            parent=parent_handle,
+            level="normal",
+            mono_start=start_ns,
+            attributes=attributes,
+        )
+        recorder.end(
+            handle,
+            outcome,
+            mono_end=end_ns if isinstance(end_ns, int) else time.monotonic_ns(),
+            attributes=attributes,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("[AgentServer] runtime trace phase failed", exc_info=True)
+
+
+def _close_startup_root(
+    recorder: object, outcome: str | None, reason_code: str | None
+) -> None:
+    if recorder is None:
+        return
+    try:
+        from jiuwenswarm.runtime_trace.lifecycle import close_open_startup_root
+
+        if outcome is None:
+            close_open_startup_root()
+        else:
+            close_open_startup_root(outcome=outcome, reason_code=reason_code)
+    except Exception:  # noqa: BLE001
+        logger.warning("[AgentServer] runtime trace startup close failed", exc_info=True)
 
 
 def _configure_openjiuwen_logging() -> None:
@@ -151,12 +240,115 @@ def _configure_openjiuwen_logging() -> None:
 
 
 async def _run(host: str, port: int) -> None:
+    # Install stop handlers before any startup work so Ctrl+C during the
+    # (multi-second) trace attach or Front import still becomes a normal
+    # shutdown with a shutdown root instead of KeyboardInterrupt.
+    stop_event = asyncio.Event()
+    stop_signal = False
+    supervisor: object | None = None
+
+    def _on_signal() -> None:
+        nonlocal stop_signal
+        stop_signal = True
+        stop_event.set()
+        # Mark the supervisor as stopping immediately. The Worker also gets
+        # Ctrl+C and can close its IPC before this coroutine reaches the
+        # shutdown block; without this, the EOF looks like a crash and the
+        # restart path terminates a Worker that is shutting down gracefully.
+        request_stop = getattr(supervisor, "request_stop", None)
+        if callable(request_stop):
+            try:
+                request_stop()
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[AgentServer] supervisor stop request failed", exc_info=True
+                )
+
+    loop = asyncio.get_running_loop()
+    try:
+        import signal
+
+        loop.add_signal_handler(signal.SIGINT, _on_signal)
+        loop.add_signal_handler(signal.SIGTERM, _on_signal)
+    except (NotImplementedError, OSError):
+        # Windows event loops do not support add_signal_handler. Install a
+        # plain SIGINT/SIGBREAK handler that schedules the same callback,
+        # otherwise Ctrl+C becomes KeyboardInterrupt and skips the normal
+        # shutdown block (and its shutdown trace).
+        try:
+            import signal
+
+            def _fallback_handler(signum, frame) -> None:
+                try:
+                    loop.call_soon_threadsafe(_on_signal)
+                except RuntimeError:
+                    pass
+
+            for signal_name in ("SIGINT", "SIGBREAK"):
+                signum = getattr(signal, signal_name, None)
+                if signum is None:
+                    continue
+                try:
+                    signal.signal(signum, _fallback_handler)
+                except (ValueError, OSError):
+                    continue
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[AgentServer] fallback signal handler install failed",
+                exc_info=True,
+            )
+
+    # Runtime trace is assembled before the Front import so a WS bind failure
+    # still leaves a startup root on disk. Disabled settings load nothing heavy.
+    trace_recorder = None
+    config_end_ns = time.monotonic_ns()
+    trace_attach_end_ns = config_end_ns
+    try:
+        from jiuwenswarm.runtime_trace.config import load_runtime_trace_settings
+
+        settings = load_runtime_trace_settings()
+        config_end_ns = time.monotonic_ns()
+        if settings.enabled:
+            from jiuwenswarm.runtime_trace.clock import ClockBase
+            from jiuwenswarm.runtime_trace.lifecycle import attach_runtime_trace
+
+            trace_recorder = attach_runtime_trace(
+                role="front",
+                settings=settings,
+                clock=ClockBase(),
+                startup_start_mono_ns=int(_PROCESS_START_T0 * 1_000_000_000),
+            )
+        trace_attach_end_ns = time.monotonic_ns()
+    except Exception:  # noqa: BLE001 - tracing must never block startup
+        logger.warning("[AgentServer] runtime trace init failed", exc_info=True)
+        trace_attach_end_ns = time.monotonic_ns()
+        trace_recorder = None
+
+    if trace_recorder is not None:
+        # Assembling the recorder imports OpenJiuwen and OpenTelemetry. Front
+        # does not load them otherwise, so this is a real, visible cold-start
+        # cost and must not hide between config and front_init.
+        _end_startup_phase(
+            trace_recorder,
+            "startup.phase.trace_attach",
+            config_end_ns,
+            end_ns=trace_attach_end_ns,
+        )
+
+    # Import phases above stop at entry_module_ready. The Front server import,
+    # logging setup, and the shell patch below import OpenJiuwen, which is a
+    # multi-second step on a cold start; cover it so the startup root has no
+    # unexplained gap before ws_listen.
+    front_init_start_ns = time.monotonic_ns()
     from jiuwenswarm.server.front.server import AgentServerFront
 
     _configure_openjiuwen_logging()
     from jiuwenswarm.server.runtime.mcp.cli_env_patch import install_shell_patch
 
     install_shell_patch()
+    _end_startup_phase(
+        trace_recorder, "startup.phase.front_init", front_init_start_ns
+    )
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
@@ -172,84 +364,255 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - _PROCESS_START_T0,
         time.monotonic() - startup_t0,
     )
+    _replay_front_startup_phases(trace_recorder, config_end_ns)
 
-    front = AgentServerFront(host=host, port=port)
-    await front.start()
-    logger.info(
-        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
-        host,
-        port,
-        time.monotonic() - startup_t0,
-    )
-    logger.info(
-        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
-        "agent_ws_listening",
-        time.monotonic() - _PROCESS_START_T0,
-        time.monotonic() - startup_t0,
-        front.readiness.snapshot().get("control_ready"),
-    )
+    backend_task: asyncio.Task | None = None
+    watcher: asyncio.Task | None = None
+    front: object | None = None
+    startup_outcome: str | None = None
+    startup_reason: str | None = None
+    shutdown_outcome = "success"
+    shutdown_entered = False
 
-    stop_event = asyncio.Event()
-    supervisor: object | None = None
-    backend_task = asyncio.create_task(
-        _start_supervisor(front, host, port),
-        name="runtime-supervisor",
-    )
-
-    async def _watch_backend() -> None:
-        nonlocal supervisor
+    try:
+        front = AgentServerFront(host=host, port=port)
+        ws_start_ns = time.monotonic_ns()
         try:
-            supervisor = await backend_task
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[AgentServer] runtime supervisor failed: %s", exc)
-            mark_failed = getattr(front.readiness, "mark_failed", None)
-            if callable(mark_failed):
-                mark_failed(str(exc))
+            await front.start()
+        except Exception:
+            startup_outcome, startup_reason = "error", "ws_bind_failed"
+            _end_startup_phase(
+                trace_recorder,
+                "startup.phase.ws_listen",
+                ws_start_ns,
+                "error",
+                "ws_bind_failed",
+            )
+            raise
+        else:
+            _end_startup_phase(
+                trace_recorder, "startup.phase.ws_listen", ws_start_ns
+            )
+        logger.info(
+            "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+            host,
+            port,
+            time.monotonic() - startup_t0,
+        )
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+            "agent_ws_listening",
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
+            front.readiness.snapshot().get("control_ready"),
+        )
 
-    watcher = asyncio.create_task(_watch_backend(), name="runtime-supervisor-watch")
+        supervisor_start_ns = time.monotonic_ns()
+        backend_task = asyncio.create_task(
+            _start_supervisor(front, host, port, recorder=trace_recorder),
+            name="runtime-supervisor",
+        )
 
-    def _on_signal() -> None:
-        stop_event.set()
-
-    loop = asyncio.get_running_loop()
-    try:
-        import signal
-
-        loop.add_signal_handler(signal.SIGINT, _on_signal)
-        loop.add_signal_handler(signal.SIGTERM, _on_signal)
-    except (NotImplementedError, OSError):
-        pass
-
-    try:
-        await stop_event.wait()
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
-    finally:
-        logger.info("[AgentServer] stopping…")
-        stop_event.set()
-        begin_drain = getattr(front, "begin_drain", None)
-        if callable(begin_drain):
-            begin_drain()
-        await asyncio.sleep(0)
-        if supervisor is None and backend_task.done() and not backend_task.cancelled():
+        async def _watch_backend() -> None:
+            nonlocal supervisor, startup_outcome, startup_reason
             try:
-                supervisor = backend_task.result()
+                supervisor = await backend_task
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[AgentServer] runtime supervisor failed: %s", exc)
+                startup_outcome, startup_reason = "error", "ipc_timeout"
+                mark_failed = getattr(front.readiness, "mark_failed", None)
+                if callable(mark_failed):
+                    mark_failed(str(exc))
+            finally:
+                phase_outcome = "success" if startup_outcome is None else "error"
+                _end_startup_phase(
+                    trace_recorder,
+                    "startup.phase.supervisor_start",
+                    supervisor_start_ns,
+                    phase_outcome,
+                    startup_reason,
+                )
+                if startup_outcome is None:
+                    _close_startup_root(trace_recorder, "success", None)
+                else:
+                    _close_startup_root(
+                        trace_recorder, startup_outcome, startup_reason
+                    )
+
+        watcher = asyncio.create_task(
+            _watch_backend(), name="runtime-supervisor-watch"
+        )
+
+        try:
+            await stop_event.wait()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            if startup_outcome is None:
+                startup_outcome = "cancelled"
+                startup_reason = "cancel_requested"
+        finally:
+            logger.info("[AgentServer] stopping…")
+            stop_event.set()
+            _close_startup_root(trace_recorder, startup_outcome, startup_reason)
+            shutdown_entered = True
+            try:
+                from jiuwenswarm.runtime_trace.lifecycle import (
+                    start_shutdown_root,
+                )
+
+                start_shutdown_root()
             except Exception:  # noqa: BLE001
-                supervisor = None
-        if supervisor is not None:
-            # Detach only. The Worker keeps its loaded Runtime for the next Front.
-            stop = getattr(supervisor, "stop", None)
-            if callable(stop):
-                await stop()
-        elif not backend_task.done():
-            backend_task.cancel()
-        if not watcher.done():
-            watcher.cancel()
-        pending = [task for task in (backend_task, watcher) if not task.done()]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        await front.stop()
-        logger.info("[AgentServer] stopped")
+                logger.warning(
+                    "[AgentServer] runtime trace shutdown root failed",
+                    exc_info=True,
+                )
+            shutdown_handle = (
+                trace_recorder.shutdown_handle
+                if trace_recorder is not None
+                else None
+            )
+
+            def _end_shutdown_step(
+                name: str, start_ns: int, outcome: str = "success"
+            ) -> None:
+                if trace_recorder is None or shutdown_handle is None:
+                    return
+                _end_startup_phase(
+                    trace_recorder,
+                    name,
+                    start_ns,
+                    outcome,
+                    parent=shutdown_handle,
+                    end_ns=time.monotonic_ns(),
+                )
+
+            try:
+                drain_start_ns = time.monotonic_ns()
+                try:
+                    begin_drain = getattr(front, "begin_drain", None)
+                    if callable(begin_drain):
+                        begin_drain()
+                    await asyncio.sleep(0)
+                except BaseException:
+                    _end_shutdown_step(
+                        "shutdown.step.drain", drain_start_ns, "error"
+                    )
+                    raise
+                _end_shutdown_step("shutdown.step.drain", drain_start_ns)
+
+                if (
+                    (stop_signal or startup_outcome == "cancelled")
+                    and trace_recorder is not None
+                    and trace_recorder.shutdown_handle is not None
+                    and not trace_recorder.shutdown_handle.ended
+                ):
+                    # Operator stop: end the shutdown root together with the
+                    # drain step. The launcher may kill Front while the slow
+                    # supervisor/front stop awaits run, and an open root is
+                    # never exported. Later steps then become their own roots
+                    # in the same run trace; the stop itself stays visible.
+                    trace_recorder.end(
+                        trace_recorder.shutdown_handle,
+                        "cancelled",
+                        attributes={"runtime.reason_code": "cancel_requested"},
+                    )
+
+                supervisor_start_ns = time.monotonic_ns()
+                try:
+                    if supervisor is None and backend_task is not None:
+                        if backend_task.done() and not backend_task.cancelled():
+                            try:
+                                supervisor = backend_task.result()
+                            except Exception:  # noqa: BLE001
+                                supervisor = None
+                    if supervisor is not None:
+                        # Detach only. The Worker keeps its loaded Runtime for the next Front.
+                        stop = getattr(supervisor, "stop", None)
+                        if callable(stop):
+                            await stop()
+                    elif backend_task is not None and not backend_task.done():
+                        backend_task.cancel()
+                    if watcher is not None and not watcher.done():
+                        watcher.cancel()
+                    pending = [
+                        task
+                        for task in (backend_task, watcher)
+                        if task is not None and not task.done()
+                    ]
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                except BaseException:
+                    _end_shutdown_step(
+                        "shutdown.step.supervisor_stop",
+                        supervisor_start_ns,
+                        "error",
+                    )
+                    raise
+                _end_shutdown_step(
+                    "shutdown.step.supervisor_stop", supervisor_start_ns
+                )
+
+                front_stop_start_ns = time.monotonic_ns()
+                try:
+                    await asyncio.wait_for(
+                        front.stop(), timeout=_FRONT_STOP_TIMEOUT_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[AgentServer] front stop exceeded %.1fs; continuing "
+                        "shutdown",
+                        _FRONT_STOP_TIMEOUT_SECONDS,
+                    )
+                    _end_shutdown_step(
+                        "shutdown.step.front_stop",
+                        front_stop_start_ns,
+                        "error",
+                    )
+                except BaseException:
+                    _end_shutdown_step(
+                        "shutdown.step.front_stop",
+                        front_stop_start_ns,
+                        "error",
+                    )
+                    raise
+                else:
+                    _end_shutdown_step(
+                        "shutdown.step.front_stop", front_stop_start_ns
+                    )
+            except BaseException:
+                shutdown_outcome = "error"
+                raise
+            logger.info("[AgentServer] stopped")
+    finally:
+        if trace_recorder is not None:
+            if not shutdown_entered:
+                _close_startup_root(trace_recorder, startup_outcome, startup_reason)
+            if shutdown_outcome == "error":
+                final_outcome, final_reason = "error", None
+            elif startup_outcome == "cancelled" or stop_signal:
+                final_outcome, final_reason = "cancelled", "cancel_requested"
+            elif startup_outcome == "error" and not shutdown_entered:
+                final_outcome, final_reason = "error", startup_reason
+            else:
+                final_outcome, final_reason = "success", None
+            try:
+                from jiuwenswarm.runtime_trace.config import _DRAIN_CAP_SECONDS
+                from jiuwenswarm.runtime_trace.lifecycle import (
+                    shutdown_runtime_trace,
+                )
+
+                # Blocking here is intentional: at final process teardown a
+                # cancellable await can be interrupted by a second Ctrl+C or
+                # loop cancellation, leaving the shutdown root open and the
+                # trace undrained. The call itself is bounded by the deadline.
+                shutdown_runtime_trace(
+                    deadline_mono=time.monotonic() + _DRAIN_CAP_SECONDS,
+                    outcome=final_outcome,
+                    reason_code=final_reason,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] runtime trace drain failed", exc_info=True
+                )
 
 
 def _detect_sandbox_local_ip() -> str | None:
@@ -362,7 +725,13 @@ def main() -> None:
 
     install_crash_exit_handler("agentserver")
     install_async_dump_handler("agentserver")
-    asyncio.run(_run(host=host, port=port))
+    try:
+        asyncio.run(_run(host=host, port=port))
+    except KeyboardInterrupt:
+        # Operator stop (Ctrl+C) is a normal shutdown, not a crash. Letting it
+        # reach the crash excepthook would exit with CRASH_EXIT_CODE and make
+        # the supervisor treat the stop as a crash.
+        raise SystemExit(0) from None
 
 
 if __name__ == "__main__":

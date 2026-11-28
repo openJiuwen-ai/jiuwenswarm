@@ -71,6 +71,16 @@ _ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
 # request for this long stays well inside the caller's patience.
 _RECOVERY_TIMEOUT = 90.0
 
+# Every wait in ``stop`` shares this budget. Front runs inside the launcher's
+# shutdown grace; an unbounded wait here turns a normal stop into a hard kill
+# that also truncates the runtime trace and the Worker's graceful shutdown.
+_STOP_BUDGET_SECONDS = 3.0
+
+
+def _remaining(deadline: float) -> float:
+    """Seconds left before ``deadline`` (monotonic), never negative."""
+    return max(0.0, deadline - time.monotonic())
+
 
 class RuntimeSupervisor:
     """Spawn, health-check, and route execution to the resident Worker.
@@ -93,6 +103,7 @@ class RuntimeSupervisor:
         stub_exit_on_request: bool = False,
         max_restarts: int = 3,
         connect_timeout: float = 30.0,
+        recorder: object = None,
     ) -> None:
         self._readiness = readiness
         self._forwarder = forwarder
@@ -104,6 +115,15 @@ class RuntimeSupervisor:
         self._stub_exit_on_request = stub_exit_on_request
         self._max_restarts = max_restarts
         self._connect_timeout = connect_timeout
+        self._recorder = recorder
+        self._current_launch: str | None = None
+        self._spawn_started_mono: float | None = None
+        self._terminal_events: dict[
+            tuple[int | None, str | None], set[str]
+        ] = {}
+        self._failed_events: set[
+            tuple[int | None, str | None, int | None]
+        ] = set()
         self._affinity = SessionAffinity()
         self._registry = WorkerRegistry()
         self._conn: IpcConnection | None = None
@@ -166,6 +186,120 @@ class RuntimeSupervisor:
 
     def worker_for_session(self, session_id: str | None) -> str:
         return self._affinity.worker_for(session_id)
+
+    # -- runtime trace helpers ------------------------------------------
+
+    def _trace_span(
+        self,
+        name: str,
+        *,
+        level: str,
+        attributes: dict[str, Any] | None = None,
+        outcome: str = "success",
+        reason_code: str | None = None,
+    ) -> None:
+        recorder = self._recorder
+        if recorder is None:
+            return
+        attrs = {key: value for key, value in (attributes or {}).items() if value is not None}
+        handle = recorder.start(name, level=level, attributes=attrs)
+        end_attrs = (
+            {"runtime.reason_code": reason_code} if reason_code else None
+        )
+        recorder.end(handle, outcome, attributes=end_attrs)
+
+    def _trace_key(self) -> tuple[int | None, str | None]:
+        if self._current_launch:
+            return (self._worker_pid, self._current_launch)
+        return (self._worker_pid, self._worker_instance)
+
+    def _claim_terminal(
+        self, event_name: str, key: tuple[int | None, str | None] | None = None
+    ) -> bool:
+        """Return True the first time *event_name* is seen for *key*."""
+        effective = key if key is not None else self._trace_key()
+        events = self._terminal_events.setdefault(effective, set())
+        if event_name in events:
+            return False
+        events.add(event_name)
+        return True
+
+    def _worker_attrs(
+        self, *, launch: str | None = None
+    ) -> dict[str, Any]:
+        attrs: dict[str, Any] = {}
+        if self._worker_pid is not None:
+            attrs["runtime.worker_pid"] = self._worker_pid
+        if self._worker_instance:
+            attrs["runtime.worker_instance"] = self._worker_instance
+        if self._peer_generation is not None:
+            attrs["runtime.generation"] = self._peer_generation
+        if launch:
+            attrs["runtime.launch"] = launch
+        return attrs
+
+    def _exited_owned_process(self) -> bool:
+        """Whether the owned child is confirmed exited (attached: never)."""
+        process = self._process
+        return bool(
+            self._owns_process
+            and process is not None
+            and process.returncode is not None
+        )
+
+    def _trace_worker_exit(
+        self,
+        pid: int | None,
+        launch: str | None,
+        code: int,
+        instance: str | None = None,
+    ) -> None:
+        key = (pid, launch) if launch else (pid, instance or self._worker_instance)
+        if not self._claim_terminal("worker.exited", key):
+            return
+        attrs: dict[str, Any] = {"runtime.exit_code": code}
+        if pid is not None:
+            attrs["runtime.worker_pid"] = pid
+        if launch:
+            attrs["runtime.launch"] = launch
+        if instance or self._worker_instance:
+            attrs["runtime.worker_instance"] = instance or self._worker_instance
+        self._trace_span(
+            "worker.exited",
+            level="terminal",
+            attributes=attrs,
+            reason_code="process_exit",
+        )
+
+    def _trace_restart(
+        self,
+        *,
+        reason_code: str,
+        outcome: str,
+        pid: int | None,
+        launch: str | None,
+        instance: str | None,
+        attempt: int,
+        backoff_ms: int,
+    ) -> None:
+        attrs: dict[str, Any] = {"runtime.backoff_ms": max(0, int(backoff_ms))}
+        if pid is not None:
+            attrs["runtime.worker_pid"] = pid
+        if launch:
+            attrs["runtime.launch"] = launch
+        if instance:
+            attrs["runtime.worker_instance"] = instance
+        if attempt >= 1:
+            attrs["runtime.attempt"] = attempt
+        if self._max_restarts >= 1:
+            attrs["runtime.budget"] = self._max_restarts
+        self._trace_span(
+            "worker.restart",
+            level="event",
+            attributes=attrs,
+            outcome=outcome,
+            reason_code=reason_code,
+        )
 
     async def run_until_ipc_ready(self) -> None:
         """Connect to a resident Worker, or spawn one, then return."""
@@ -334,6 +468,17 @@ class RuntimeSupervisor:
                 code=str(result.get("code") or "WORKER_CLOSED"),
             )
 
+    def request_stop(self) -> None:
+        """Mark this supervisor as stopping without awaiting the teardown.
+
+        Signal handlers call this synchronously. Without it, a Worker that
+        receives Ctrl+C first closes its IPC, the supervising loop treats the
+        EOF as a crash, and the restart path terminates a Worker that was
+        already shutting down gracefully.
+        """
+        self._stopping = True
+        self._ipc_ready.set()
+
     async def stop(self, *, terminate_worker: bool = False) -> None:
         """Detach from the Worker so this Front can exit.
 
@@ -344,16 +489,25 @@ class RuntimeSupervisor:
         A reattached Front does not own that process and cannot terminate it.
         Reaping a resident Worker on upgrade, uninstall, or final exit is a
         later lifecycle task.
+
+        Every wait is bounded by ``_STOP_BUDGET_SECONDS`` so that a stuck IPC
+        peer cannot hold Front past the launcher's shutdown grace.
         """
         self._stopping = True
+        deadline = time.monotonic() + _STOP_BUDGET_SECONDS
         conn = self._conn
         if conn is not None:
             try:
-                await conn.send({"kind": KIND_GATEWAY_DETACH, "remote": "front-stop"})
+                await asyncio.wait_for(
+                    conn.send({"kind": KIND_GATEWAY_DETACH, "remote": "front-stop"}),
+                    timeout=max(0.05, _remaining(deadline)),
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[Supervisor] gateway detach timed out; closing ipc")
             except (OSError, RuntimeError):
                 logger.info("[Supervisor] gateway detach skipped; worker ipc is down")
         if terminate_worker and self._owns_process:
-            await self._shutdown_owned_worker()
+            await self._shutdown_owned_worker(deadline=deadline)
         elif terminate_worker:
             logger.warning(
                 "[Supervisor] terminate_worker ignored: this Front reattached "
@@ -366,15 +520,31 @@ class RuntimeSupervisor:
             self._process = None
         self._conn = None
         if conn is not None:
-            await conn.close()
-        await self._cancel_side_tasks()
+            try:
+                await asyncio.wait_for(
+                    conn.close(), timeout=max(0.05, _remaining(deadline))
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[Supervisor] worker ipc close timed out")
+            except Exception:  # noqa: BLE001
+                logger.debug("[Supervisor] worker ipc close failed", exc_info=True)
+        await self._cancel_side_tasks(timeout=_remaining(deadline))
         task = self._loop_task
         if task is not None and not task.done():
             try:
-                await asyncio.wait_for(task, timeout=5.0)
+                await asyncio.wait_for(task, timeout=_remaining(deadline))
             except asyncio.TimeoutError:
                 task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(task, return_exceptions=True),
+                        timeout=_remaining(deadline),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[Supervisor] supervise loop did not stop within the "
+                        "shutdown budget; abandoning wait"
+                    )
         self._ipc_ready.set()
 
     async def _supervise(self) -> None:
@@ -383,7 +553,9 @@ class RuntimeSupervisor:
                 await self._bring_up()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[Supervisor] worker bring-up failed: %s", exc)
-                if not await self._schedule_restart(str(exc)):
+                if not await self._schedule_restart(
+                    str(exc), reason_code="bring_up_failed"
+                ):
                     break
                 continue
             self._ipc_ready.set()
@@ -400,7 +572,9 @@ class RuntimeSupervisor:
             if self._fatal:
                 self._readiness.mark_failed(self._fatal_reason or "runtime worker failed")
                 break
-            if not await self._schedule_restart("runtime worker closed"):
+            if not await self._schedule_restart(
+                "runtime worker closed", reason_code="ipc_eof"
+            ):
                 break
 
     async def _bring_up(self) -> None:
@@ -411,6 +585,10 @@ class RuntimeSupervisor:
                 self._conn = existing
                 self._owns_process = False
                 self._process = None
+                # A reattached Worker was not spawned by this run, so it has no
+                # launch id of ours; stale ids would mislabel its IPC events.
+                self._current_launch = None
+                self._spawn_started_mono = None
                 logger.info("[Supervisor] reattached to resident runtime worker")
             else:
                 process = WorkerProcess(
@@ -420,10 +598,21 @@ class RuntimeSupervisor:
                     stub=self._stub,
                     stub_ready_delay=self._stub_ready_delay,
                     stub_exit_on_request=self._stub_exit_on_request,
+                    recorder=self._recorder,
                 )
+                self._spawn_started_mono = time.monotonic()
                 await process.spawn()
                 self._process = process
                 self._owns_process = True
+                self._current_launch = process.launch
+                # Watch for an exit that happens between spawn and HELLO; the
+                # regular process watcher only starts after HELLO validation.
+                self._side_tasks.append(
+                    asyncio.create_task(
+                        self._watch_early_exit(process),
+                        name="runtime-process-watch-early",
+                    )
+                )
                 self._conn = await connect_with_retry(
                     self._socket_path, timeout=self._connect_timeout
                 )
@@ -464,6 +653,23 @@ class RuntimeSupervisor:
                 ready=False,
             )
         )
+        if self._owns_process:
+            attrs = self._worker_attrs(launch=self._current_launch)
+            if self._spawn_started_mono is not None:
+                attrs["runtime.elapsed_ms"] = round(
+                    (time.monotonic() - self._spawn_started_mono) * 1000.0, 1
+                )
+            self._trace_span(
+                "worker.ipc_ready",
+                level="event",
+                attributes=attrs,
+            )
+        else:
+            self._trace_span(
+                "worker.attach",
+                level="event",
+                attributes=self._worker_attrs(),
+            )
         self._start_side_tasks()
         if self._gateway_ws is not None:
             await conn.send({"kind": KIND_GATEWAY_ATTACH})
@@ -487,6 +693,22 @@ class RuntimeSupervisor:
             # Deliver already-received terminal frames on EOF when possible,
             # but never hold Worker recovery behind an unavailable Gateway.
             if not self._stopping and self._generation == generation:
+                # An owned child that is already known to have exited gets a
+                # worker.exited span with its exit code; do not steal that
+                # evidence with an exit-code-less ipc_lost.
+                if (
+                    not self._exited_owned_process()
+                    and self._claim_terminal("worker.ipc_lost")
+                ):
+                    self._trace_span(
+                        "worker.ipc_lost",
+                        level="terminal",
+                        attributes=self._worker_attrs(
+                            launch=self._current_launch
+                        ),
+                        outcome="error",
+                        reason_code="ipc_eof",
+                    )
                 try:
                     await asyncio.wait_for(queue.join(), _FORWARD_DRAIN_TIMEOUT)
                 except asyncio.TimeoutError:
@@ -749,26 +971,74 @@ class RuntimeSupervisor:
             self._fatal_reason = reason or "runtime worker failed"
             self._registry.mark_ready("primary", ready=False)
             self._readiness.mark_failed(self._fatal_reason)
+            key = (
+                self._worker_pid,
+                self._worker_instance,
+                self._peer_generation,
+            )
+            if key not in self._failed_events:
+                self._failed_events.add(key)
+                self._trace_span(
+                    "worker.failed",
+                    level="terminal",
+                    attributes=self._worker_attrs(),
+                    outcome="error",
+                    reason_code="worker_reported_failed",
+                )
 
-    async def _schedule_restart(self, reason: str) -> bool:
+    async def _schedule_restart(
+        self, reason: str, *, reason_code: str = "ipc_eof"
+    ) -> bool:
         if self._stopping or self._fatal:
             self._ipc_ready.set()
             return False
+        pid, launch, instance = (
+            self._worker_pid,
+            self._current_launch,
+            self._worker_instance,
+        )
         if self._restart_count >= self._max_restarts:
             self._fatal = True
             self._fatal_reason = reason
             self._readiness.mark_failed(reason)
             self._ipc_ready.set()
+            self._trace_restart(
+                reason_code="budget_exhausted",
+                outcome="error",
+                pid=pid,
+                launch=launch,
+                instance=instance,
+                attempt=self._max_restarts,
+                backoff_ms=0,
+            )
             return False
         self._restart_count += 1
+        backoff_ms = int(min(2.0, 0.2 * self._restart_count) * 1000)
         logger.info(
             "[Supervisor] restarting runtime worker (%s/%s): %s",
             self._restart_count,
             self._max_restarts,
             reason,
         )
+        self._trace_restart(
+            reason_code=reason_code,
+            outcome="success",
+            pid=pid,
+            launch=launch,
+            instance=instance,
+            attempt=self._restart_count,
+            backoff_ms=backoff_ms,
+        )
         self._readiness.mark_runtime_warming()
         self._readiness.note_warmup_retry(reason)
+        # Ctrl+C reaches the Worker too, and a pending stop-signal callback
+        # runs on this loop. Yield once so ``request_stop`` can mark us as
+        # stopping before we terminate a Worker that is already exiting: the
+        # kill would truncate its graceful shutdown and runtime trace.
+        await asyncio.sleep(0)
+        if self._stopping:
+            self._ipc_ready.set()
+            return False
         await self._stop_spawned_process()
         await asyncio.sleep(min(2.0, 0.2 * self._restart_count))
         return True
@@ -834,19 +1104,31 @@ class RuntimeSupervisor:
 
     def _start_side_tasks(self) -> None:
         generation = self._generation
-        self._side_tasks = [
-            asyncio.create_task(self._heartbeat(generation), name="runtime-heartbeat"),
-            asyncio.create_task(self._watchdog(generation), name="runtime-watchdog"),
-            asyncio.create_task(self._watch_process(generation), name="runtime-process-watch"),
-        ]
+        self._side_tasks.extend(
+            [
+                asyncio.create_task(self._heartbeat(generation), name="runtime-heartbeat"),
+                asyncio.create_task(self._watchdog(generation), name="runtime-watchdog"),
+                asyncio.create_task(self._watch_process(generation), name="runtime-process-watch"),
+            ]
+        )
 
-    async def _cancel_side_tasks(self) -> None:
+    async def _cancel_side_tasks(self, *, timeout: float | None = None) -> None:
         tasks = self._side_tasks
         self._side_tasks = []
         for task in tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if not tasks:
+            return
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        if timeout is None:
+            await gathered
+            return
+        try:
+            await asyncio.wait_for(gathered, timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[Supervisor] side tasks did not stop within the shutdown budget"
+            )
 
     async def _heartbeat(self, generation: int) -> None:
         while not self._stopping and generation == self._generation:
@@ -918,6 +1200,16 @@ class RuntimeSupervisor:
                 self._generation,
                 self._worker_pid,
             )
+            if self._claim_terminal("worker.unresponsive"):
+                attrs = self._worker_attrs(launch=self._current_launch)
+                attrs["runtime.stall_seconds"] = round(beat_age, 1)
+                self._trace_span(
+                    "worker.unresponsive",
+                    level="terminal",
+                    attributes=attrs,
+                    outcome="error",
+                    reason_code="loop_stall",
+                )
             self._log_diagnostics("worker business loop stalled")
             conn = self._conn
             if conn is not None:
@@ -935,6 +1227,27 @@ class RuntimeSupervisor:
             self._log_diagnostics("worker loop unresponsive")
         return False
 
+    async def _watch_early_exit(self, process: WorkerProcess) -> None:
+        """Report an exit that happens between spawn and HELLO.
+
+        The regular watcher starts only after HELLO validation; without this
+        window a Worker that dies during startup would produce no terminal
+        event. Both watchers share ``_terminal_events`` so the exit is counted
+        once.
+        """
+        pid = process.pid
+        launch = process.launch
+        while not self._stopping:
+            if self._process is not process:
+                return
+            code = await process.wait(timeout=1.0)
+            if code is None:
+                continue
+            if self._stopping or self._process is not process:
+                return
+            self._trace_worker_exit(pid, launch, code)
+            return
+
     async def _watch_process(self, generation: int) -> None:
         process = self._process if self._owns_process else None
         if process is None:
@@ -950,32 +1263,51 @@ class RuntimeSupervisor:
                 code,
                 process.stderr_path,
             )
+            self._trace_worker_exit(
+                process.pid,
+                getattr(process, "launch", None),
+                code,
+                instance=self._worker_instance,
+            )
             conn = self._conn
             if conn is not None:
                 await conn.close()
             return
 
-    async def _shutdown_owned_worker(self) -> None:
+    async def _shutdown_owned_worker(self, *, deadline: float | None = None) -> None:
         if not self._owns_process:
             return
         conn = self._conn
         process = self._process
         if conn is not None:
             try:
-                await conn.send({"kind": KIND_SHUTDOWN})
-            except (OSError, RuntimeError):
+                await asyncio.wait_for(
+                    conn.send({"kind": KIND_SHUTDOWN}),
+                    timeout=max(
+                        0.05, _remaining(deadline) if deadline is not None else 5.0
+                    ),
+                )
+            except (OSError, RuntimeError, asyncio.TimeoutError):
                 pass
         if process is None:
             self._owns_process = False
             return
-        if await process.wait(timeout=5.0) is None:
-            await process.stop()
+        wait_budget = _remaining(deadline) if deadline is not None else 5.0
+        if await process.wait(timeout=wait_budget) is None:
+            await process.stop(
+                timeout=_remaining(deadline) if deadline is not None else 5.0
+            )
         self._process = None
         self._owns_process = False
 
     async def _stop_spawned_process(self) -> None:
         process = self._process
         self._process = None
+        self._current_launch = None
+        self._spawn_started_mono = None
+        self._worker_pid = None
+        self._worker_instance = None
+        self._peer_generation = None
         if process is None:
             return
         await process.stop()

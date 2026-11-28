@@ -572,6 +572,38 @@ agent_observability:
   file_retention_days: 7            # file exporter 文件保留天数
 
 # ============================================================
+# AgentServer 运行时轨迹（Front / Worker 进程生命周期）
+# ============================================================
+# 默认关闭；使用 YAML 布尔值 true 显式开启。开关在进程启动时读取一次，
+# 启用或停用整个 AgentServer 时需重启 Front 与常驻 Worker。
+#
+# 独立顶层块，命名与 team_observability / agent_observability 一致。
+# 不要收敛成顶层 observability: 块：部署脚本 agentos_trace.py 一旦检测到
+# 该键，就只改写 observability.team/agent 而跳过 team_observability /
+# agent_observability，trace_otlp_endpoints 对真正生效的开关会失效。
+#
+# 外部导出的 collector 与 team_observability / agent_observability 相同，
+# 因此鉴权复用同一对 Langfuse key：两者都填才发送 Authorization: Basic。
+#
+# 与它们对齐的字段是 enabled / exporter / endpoint / service_name /
+# langfuse_public_key / langfuse_secret_key；以下字段刻意不提供：
+#   sample_rate —— 生命周期 span 固定全采样；
+#   redact_prompts / redact_completions / attribute_value_max_length —— 属性
+#     白名单已排除消息体与内容，无内容可脱敏；
+#   traces_dir / file_retention_days —— 本地用 SQLite，retention_days 已覆盖，
+#     P1 的 exporter 不支持 file。
+# ============================================================
+runtime_observability:
+  enabled: false                    # 仅接受 YAML 布尔 true
+  exporter: ""                      # otlp_grpc / otlp_http / console / none；空 = 继承 telemetry（要求 endpoint 非空）
+  endpoint: ""                      # 空 = 继承 telemetry.endpoint
+  service_name: ""                  # 空 = jiuwenswarm-agentserver-front / -worker；非空时追加角色后缀
+  langfuse_public_key: ""           # 与同 collector 的 team/agent observability 共用（可选）
+  langfuse_secret_key: ""           # 两个字段都填才生成 Basic Auth 头；只填一个则不加鉴权并告警
+  slow_task_ms: 1000                # 周期任务慢执行阈值，超过才落 span
+  retention_days: 7                 # 运行库保留天数
+
+# ============================================================
 # 单 Agent 轨迹观测 Web 数据面
 # ============================================================
 # enabled=true 会作为 Agent / Team OTel provider 的额外 demand，但仍完整复用

@@ -22,6 +22,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.backend import (
     AgentGenerationMismatchError, AgentFailedError, AgentCreateUncertainError,
     TRACE_ID_HEADER, bind_southbound_trace_id,
 )
+from jiuwenswarm.gateway.telemetry import inject_request_headers
 from jiuwenswarm.gateway.trace_context import outbound_trace_headers, resolve_trace_id
 
 
@@ -37,6 +38,20 @@ def trace_headers(headers: dict[str, str], trace_id: str | None = None) -> dict[
 
 def _resolve_trace_id(trace_id: str | None = None) -> str:
     return bind_southbound_trace_id(resolve_trace_id(trace_id))
+
+
+# Trace context varies per request; it must not split create replay identities.
+_TRACE_ENV_KEYS = ('TRACEPARENT', 'TRACESTATE')
+
+
+def creation_digest(body: dict) -> str:
+    """Hash the replay-sensitive create body without per-request trace context."""
+    stable = copy.deepcopy(body)
+    env = stable.get('env')
+    if isinstance(env, dict):
+        for key in _TRACE_ENV_KEYS:
+            env.pop(key, None)
+    return hashlib.sha256(json.dumps(stable, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 class AdxControlError(AgentApiError):
@@ -336,6 +351,11 @@ class AdxControlClient:
             # Both Supervisor and runsc AgentServers execute authenticated tool
             # SDK calls. Never put this credential into custom agents or tools.
             body['env']['JIUWENSWARM_ADX_API_TOKEN'] = self.config.token
+            # The sandboxed AgentServer roots its runtime trace at this Gateway
+            # request; without an upstream context it keeps its own run trace.
+            traceparent = inject_request_headers({}).get('traceparent')
+            if traceparent:
+                body['env']['TRACEPARENT'] = traceparent
         if local_rootfs is not None and not body.get('process', {}).get('commands'):
             raise ValueError('Local Agent rootfs requires process commands in its launch specification')
         return body
@@ -396,7 +416,7 @@ class AdxControlClient:
             self._terminal_creates.discard(instance)
         body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts,
                                    builtin=builtin, web_port=web_port)
-        digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        digest = creation_digest(body)
         operation, original_digest = self._creates.setdefault(instance, ('create-' + uuid.uuid4().hex, digest))
         if digest != original_digest:
             raise AdxControlError('Create specification changed while its outcome is unknown', code='CONFLICT')
