@@ -688,7 +688,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         payload,
       });
       if (!nodeBindings.has(request.nodeLeaseId!) || records.get(record.key)?.snapshot.localFrameId !== request.localFrameId) {
-        return { status: 'stale' };
+        return { status: 'stale', receipt };
       }
       return { status: 'sent', receipt };
     } catch (error) {

@@ -6,6 +6,7 @@
 
 import { Button as AntButton, type ButtonProps } from 'antd';
 import type { WebUIAdapterProps } from '../../types.ts';
+import { isWebUIInteractionFailed } from '../../../contracts/interaction.ts';
 import { buttonIcon } from './buttonIcon.tsx';
 import { useWebUIForms } from '../webuiForm/WebUIForm.tsx';
 import type { LocalizedText } from '../../../catalog/components/localizedText.ts';
@@ -54,7 +55,7 @@ export function WebUIButton({ node, context, emit, appearance }: WebUIAdapterPro
   const disabled = p.disabled === true || !context.connected;
   const submit = async (data: Record<string, unknown>) => {
     const result = await emit('ui.click', data);
-    if (result.status === 'sent' && result.receipt?.accepted && typeof node.props.openPanel === 'string') {
+    if (!isWebUIInteractionFailed(result) && typeof node.props.openPanel === 'string') {
       context.openPanel?.(node.props.openPanel);
     }
   };

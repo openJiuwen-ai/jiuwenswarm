@@ -3490,6 +3490,123 @@ for (const operation of ['expand', 'select']) {
   });
 }
 
+test('FileTree treats stale accepted receipt as success, clears stale error on new frame, and supports last-write-wins selection', async () => {
+  const selection = createComponentState({ selectedKey: null, expandedKeys: [] });
+  const makeTree = () => [
+    { key: 'file-a', title: 'A.md', path: 'A.md', kind: 'file' },
+    { key: 'file-b', title: 'B.md', path: 'B.md', kind: 'file' },
+  ];
+  const pending = [];
+  const onSelect = (key) => new Promise((resolve, reject) => { pending.push({ key, resolve, reject }); });
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(FileTree, {
+      treeData: makeTree(), selection, onSelect, onExpand: async () => ({ status: 'sent', receipt: { accepted: true } }),
+    })));
+    // 1. Stale result with accepted receipt (frame arrived before receipt) must not show error or roll back.
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="file-a"]'));
+    await act(async () => pending.shift().resolve({ status: 'stale', receipt: { accepted: true } }));
+    assert.equal(container.querySelector('[data-testid="webui-file-tree-message"]'), null);
+    assert.equal(selection.getSnapshot().selectedKey, 'file-a');
+
+    // 2. Last-write-wins: clicking file-b while file-a is in flight supersedes file-a without disabling the tree.
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="file-a"]'));
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="file-b"]'));
+    assert.equal(pending.length, 2);
+    const first = pending.shift();
+    const second = pending.shift();
+    await act(async () => first.resolve({ status: 'failed' }));
+    assert.equal(container.querySelector('[data-testid="webui-file-tree-message"]'), null, 'superseded request failure is ignored');
+    assert.equal(selection.getSnapshot().selectedKey, 'file-b');
+    await act(async () => second.resolve({ status: 'sent', receipt: { accepted: true } }));
+    assert.equal(selection.getSnapshot().selectedKey, 'file-b');
+
+    // 3. Stale result with unknown (null) receipt is treated as failed without rolling back newer frame state.
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="file-a"]'));
+    await act(async () => pending.shift().resolve({ status: 'stale', receipt: null }));
+    assert.ok(container.querySelector('[data-testid="webui-file-tree-message"]'));
+    assert.equal(selection.getSnapshot().selectedKey, 'file-a');
+
+    // 4. Thrown request rejects selection and shows error, then a new treeData frame clears the transient error.
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="file-a"]'));
+    await act(async () => pending.shift().reject(new Error('network')));
+    assert.ok(container.querySelector('[data-testid="webui-file-tree-message"]'));
+    assert.equal(selection.getSnapshot().selectedKey, 'file-a');
+    await act(async () => root.render(createElement(FileTree, {
+      treeData: makeTree(), selection, onSelect, onExpand: async () => ({ status: 'sent', receipt: { accepted: true } }),
+    })));
+    assert.equal(container.querySelector('[data-testid="webui-file-tree-message"]'), null);
+  } finally {
+    await act(async () => root.unmount()); container.remove();
+  }
+});
+
+test('FileTree concurrent directory expand retains pending sibling expansion across intermediate render frames', async () => {
+  const selection = createComponentState({ selectedKey: null, expandedKeys: [] });
+  const initialTree = () => [
+    { key: 'dir-a', title: 'DirA', path: 'dir-a', kind: 'directory', loaded: false },
+    { key: 'dir-b', title: 'DirB', path: 'dir-b', kind: 'directory', loaded: false },
+  ];
+  const treeWithALoaded = () => [
+    {
+      key: 'dir-a', title: 'DirA', path: 'dir-a', kind: 'directory', loaded: true,
+      children: [{ key: 'a-file', title: 'a.txt', path: 'dir-a/a.txt', kind: 'file' }],
+    },
+    { key: 'dir-b', title: 'DirB', path: 'dir-b', kind: 'directory', loaded: false },
+  ];
+  const pending = new Map();
+  const onExpand = (data) => new Promise((resolve) => { pending.set(data.key, resolve); });
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(FileTree, {
+      treeData: initialTree(), selection, onSelect: async () => ({ status: 'sent', receipt: { accepted: true } }), onExpand,
+    })));
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="dir-a"]'));
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="dir-b"]'));
+    assert.deepEqual(selection.getSnapshot().expandedKeys, ['dir-a', 'dir-b']);
+
+    // Frame with only dir-a loaded arrives while dir-b is still pending: dir-b must stay expanded.
+    await act(async () => root.render(createElement(FileTree, {
+      treeData: treeWithALoaded(), selection, onSelect: async () => ({ status: 'sent', receipt: { accepted: true } }), onExpand,
+    })));
+    assert.deepEqual(selection.getSnapshot().expandedKeys, ['dir-a', 'dir-b']);
+    await act(async () => pending.get('dir-a')({ status: 'stale', receipt: { accepted: true } }));
+    await act(async () => pending.get('dir-b')({ status: 'sent', receipt: { accepted: true } }));
+    assert.deepEqual(selection.getSnapshot().expandedKeys, ['dir-a', 'dir-b']);
+  } finally {
+    await act(async () => root.unmount()); container.remove();
+  }
+});
+
+test('FileTree concurrent directory expand rollback does not revert sibling expansion', async () => {
+  const selection = createComponentState({ selectedKey: null, expandedKeys: [] });
+  const treeData = [
+    { key: 'dir-a', title: 'DirA', path: 'dir-a', kind: 'directory', loaded: false },
+    { key: 'dir-b', title: 'DirB', path: 'dir-b', kind: 'directory', loaded: false },
+  ];
+  const pending = new Map();
+  const onExpand = (data) => new Promise((resolve) => { pending.set(data.key, resolve); });
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(FileTree, {
+      treeData, selection, onSelect: async () => ({ status: 'sent', receipt: { accepted: true } }), onExpand,
+    })));
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="dir-a"]'));
+    await click(container.querySelector('[data-testid="webui-file-tree-item"][data-variant="dir-b"]'));
+    assert.deepEqual(selection.getSnapshot().expandedKeys, ['dir-a', 'dir-b']);
+    await act(async () => pending.get('dir-a')({ status: 'sent', receipt: { accepted: false } }));
+    assert.deepEqual(selection.getSnapshot().expandedKeys, ['dir-b']);
+    assert.ok(container.querySelector('[data-testid="webui-file-tree-message"]'));
+    await act(async () => pending.get('dir-b')({ status: 'stale', receipt: { accepted: true } }));
+    assert.deepEqual(selection.getSnapshot().expandedKeys, ['dir-b']);
+  } finally {
+    await act(async () => root.unmount()); container.remove();
+  }
+});
+
 test('Dropdown with a non-preview Image trigger opens only its menu', async () => {
   const app = await setup({ component: 'Dropdown', props: { items: [{ key: 'one', label: 'One' }] }, events: { 'ui.select': events['ui.click'] },
     children: [{ component: 'Box', children: [
