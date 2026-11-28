@@ -12,6 +12,7 @@ Tests for:
 - InstanceLock concurrency control
 """
 
+import errno
 import json
 import multiprocessing
 import multiprocessing.queues
@@ -505,7 +506,7 @@ class TestPidFileManagement:
         def flaky_replace(source, destination):
             attempts.append(source)
             if len(attempts) < 3:
-                raise PermissionError(32, "The process cannot access the file")
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
             real_replace(source, destination)
 
         monkeypatch.setattr(os, "replace", flaky_replace)
@@ -527,15 +528,19 @@ class TestPidFileManagement:
             ports={},
         )
         write_pid_file(config, 111)
+        attempts = []
 
         def busy_replace(source, destination):
-            raise PermissionError(32, "The process cannot access the file")
+            attempts.append(source)
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
 
         monkeypatch.setattr(os, "replace", busy_replace)
         monkeypatch.setattr(time, "sleep", lambda _: None)
 
         with pytest.raises(PermissionError):
             write_pid_file(config, 222)
+
+        assert len(attempts) == 10
 
         data = read_pid_file(config)
         assert data is not None
