@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import urlsplit
 
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
@@ -427,6 +428,57 @@ def start_config_warm_up() -> None:
     threading.Thread(target=warm_up_config, name="config-warmup", daemon=True).start()
 
 
+def _bind_runtime_sandbox(sandbox: dict | None, deployment: dict) -> dict:
+    """Retain static user settings while applying managed node connectivity."""
+    managed = deployment.get("managed_connection")
+    if not isinstance(managed, dict):
+        if "managed_connection" in deployment:
+            raise ValueError("managed_connection must be a mapping")
+        return {**deployment, **sandbox} if isinstance(sandbox, dict) else deployment
+    if not isinstance(sandbox, dict) or str(sandbox.get("type", "")).strip().lower() != deployment.get("type"):
+        raise ValueError("AgentOS workspace sandbox requires deployment migration before startup")
+    context_file = os.getenv(managed["context_file_env"], "").strip()
+    if context_file:
+        with open(context_file, encoding="utf-8") as stream:
+            node = json.load(stream)
+        ingress = node.get("ingress_url")
+    else:
+        ingress = os.getenv(managed["url_env"], "").strip()
+    if not isinstance(ingress, str) or not ingress:
+        raise ValueError("Managed sandbox requires a launcher-injected node endpoint")
+    return _bind_sandbox_connection(sandbox, ingress, context_file, managed,
+                                   deployment.get("launcher_config"))
+
+
+def _bind_sandbox_connection(sandbox: dict, ingress: str, context_file: str, managed: dict,
+                            launcher_config: dict | None = None) -> dict:
+    parsed = urlsplit(ingress)
+    has_http_endpoint = parsed.scheme in ("http", "https") and bool(parsed.hostname)
+    has_credentials = bool(parsed.username or parsed.password)
+    has_resource = parsed.path not in ("", "/") or bool(parsed.query or parsed.fragment)
+    if not has_http_endpoint or has_credentials or has_resource:
+        raise ValueError("Managed sandbox ingress must be an HTTP(S) origin")
+    result = deepcopy(sandbox)
+    connection = result.get("connection") or {}
+    if not isinstance(connection, dict):
+        raise ValueError("sandbox.connection must be a mapping")
+    connection = {key: value for key, value in connection.items()
+                  if key not in managed.get("replace_connection_fields", [])}
+    use_tls = parsed.scheme == "https"
+    connection.update(use_tls=use_tls, verify_tls=use_tls)
+    result.update(url=ingress, connection=connection)
+    result.pop("endpoint_file", None)
+    if context_file:
+        result["endpoint_file"] = context_file
+    if isinstance(result.get("env"), dict):
+        credential_fields = managed.get("credential_fields") or []
+        result["env"] = {key: value for key, value in result["env"].items()
+                         if key not in credential_fields}
+    if launcher_config is not None:
+        result["launcher_config"] = deepcopy(launcher_config)
+    return result
+
+
 def get_config():
     """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
     from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
@@ -446,10 +498,9 @@ def get_config():
             if isinstance(defaults, dict) and defaults:
                 local = config_base.get(section)
                 if section == "sandbox":
-                    from jiuwenswarm.common.runtime_settings import bind_runtime_sandbox
                     if defaults.get("type") == "adx-environment" and "managed_connection" not in defaults:
                         raise ValueError("AgentOS ADX deployment requires managed_connection")
-                    config_base[section] = bind_runtime_sandbox(local, defaults)
+                    config_base[section] = _bind_runtime_sandbox(local, defaults)
                 else:
                     config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
 

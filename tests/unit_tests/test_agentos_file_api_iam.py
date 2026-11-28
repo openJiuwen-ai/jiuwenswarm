@@ -18,10 +18,8 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
 from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 from agent_gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
-from agent_gateway.extensions.yuanrong_frontend_client import (
-    AgentFileDownloadChunk,
-    SandboxInfo,
-)
+from agent_gateway.routing.container_files import AgentFileDownloadChunk
+from agent_gateway.southbound.control.managed import SandboxInfo
 
 
 class _FakeRegistry:
@@ -35,9 +33,9 @@ class _FakeRegistry:
         del service_id, kwargs
 
 
-class _FakeYuanrong:
+class _FileBackend:
     server_ready = True
-    frontend_endpoint = "http://yuanrong.test:8888"
+    frontend_endpoint = "https://backend.test"
     agent_namespace = "default"
 
     async def connect(self, uri: str) -> None:
@@ -70,7 +68,7 @@ def _make_router() -> AgentOSRouterClient:
         key_fields=("user_id", "agent_type", "session_id"),
     )
     router = AgentOSRouterClient(
-        _FakeYuanrong(),  # type: ignore[arg-type]
+        _FileBackend(),  # type: ignore[arg-type]
         _FakeRegistry(),  # type: ignore[arg-type]
         manager,
     )
@@ -181,7 +179,7 @@ async def test_file_api_iam_deny_does_not_call_router() -> None:
 
 
 @pytest.mark.asyncio
-async def test_file_api_iam_ok_uses_iam_user_id_without_yuanrong_passthrough() -> None:
+async def test_file_api_iam_ok_uses_iam_user_id_without_token_passthrough() -> None:
     router = _make_router()
     router.list_container_files = AsyncMock(return_value=[])  # type: ignore[method-assign]
     auth = _enable_auth(router, AuthResult(success=True, user_id="iam-user"))

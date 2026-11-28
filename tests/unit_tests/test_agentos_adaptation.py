@@ -4,6 +4,7 @@ import asyncio
 import copy
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,8 +17,7 @@ from agent_gateway.extensions.agentos.config_updater.client import FetchResult
 from agent_gateway.extensions.agentos.config_updater.service import ConfigUpdaterApplier, ConfigUpdaterService
 
 from jiuwenswarm.common import config
-from jiuwenswarm.common.runtime_settings import prepare_runtime_environment
-from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.dotenv_early import parse_dotenv_early
 from jiuwenswarm.common.etcd.client import EtcdError, _extract_watch_kvs
 
 
@@ -351,8 +351,8 @@ def test_dotenv_respects_launcher_owned_credentials(tmp_path, monkeypatch, profi
     monkeypatch.delenv('MODEL_NAME', raising=False)
     dotenv = tmp_path / '.env'
     dotenv.write_text('ADX_TOKEN=shared\nNODE_URL=shared\nMODEL_NAME=new\n')
-    prepare_runtime_environment()
-    load_dotenv_runtime(dotenv, override=True)
+    monkeypatch.setattr(sys, 'argv', ['jiuwenswarm-agentserver', '--dotenv', str(dotenv)])
+    parse_dotenv_early('jiuwenswarm-agentserver')
     assert os.environ['ADX_TOKEN'] == os.environ['NODE_URL'] == expected
     assert ('LAUNCH_TOKEN' in os.environ) == (profile == 'standalone')
     assert os.environ['MODEL_NAME'] == 'new'

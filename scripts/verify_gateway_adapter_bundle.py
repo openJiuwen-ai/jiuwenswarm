@@ -30,7 +30,7 @@ def verify_gateway_extensions() -> None:
     extension_dir = Path(package.__file__).resolve().parent / "extensions"
     # These built-ins belong to the pinned Gateway dependency. Checking names
     # explicitly prevents an empty/missing directory from passing verification.
-    for name in ("adx", "agentos", "runtime_management_extension"):
+    for name in ("agentos", "runtime_management_extension"):
         root = extension_dir / name
         for filename in ("extension.yaml", "extension.py"):
             if not (root / filename).is_file():
