@@ -30,10 +30,17 @@ Enforcement is driven by tool *arguments* (what the agent asks the tool to do).
 Credential-like text in a tool *result* (reading the rail's own source, a DPAPI
 error log, or a grep hit) is counted for observability only and never rewrites
 the result, otherwise normal diagnosis would be interrupted.
+
+For write tools only the destination path is enforced evidence: the body is the
+agent's own deliverable (a backup script, a hand-off document, an exclusion
+list), so credential filenames inside it are normal content, not probing.  A
+2026-11 incident (OA.05000090) tripped on ``write_file`` content that merely
+listed ``Login Data`` in an exclusion array.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import reprlib
 import time
@@ -49,7 +56,13 @@ _FATAL_ACCESS = re.compile(r"AUTH_SESSION_TERMINATED", re.IGNORECASE)
 # 凭证探测并提前结束排障任务。只匹配真实调用 DPAPI helper 或 Win32 API 的形态。
 _CREDENTIAL_PROBE = re.compile(
     r"session\.cookie|Network[\\/]Cookies|Local Storage[\\/]leveldb|"
-    r"Login Data|CryptUnprotectData|CryptProtectData|"
+    # "Login Data" 后紧跟分隔符或字符串尾才算目标；Login Data.txt /
+    # Login Database / LoginData 是普通文件或标识符，不是浏览器凭证库。
+    # 右侧刻意只排除 \w 与路径分隔符："-" 与 "." 必须保留命中，
+    # Login Data-journal（SQLite 事务期日志）、Login Data.bak 都是凭证库的
+    # 真实伴生文件（本次事故正文就把 Cookies-journal 列为凭证产物）。
+    # 只对明确是笔记/导出文本的 .txt 开例外。
+    r"Login Data(?![\w\\/]|\.txt\b)|CryptUnprotectData|CryptProtectData|"
     r"--mode[=\s]+[\"']?dpapi-(?:protect|unprotect)[\"']?\b",
     re.IGNORECASE,
 )
@@ -75,6 +88,28 @@ _RELEVANT_TOOLS = frozenset(
         "office_claw_list_wishes",
     }
 )
+
+# 写盘类工具的正文是模型产出物，不是“要做什么”的意图证据；只保留路径参数。
+_WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+_WRITE_PATH_KEYS = (
+    "file_path",
+    "path",
+    "filepath",
+    "filename",
+    "file",
+    "target_path",
+    "target",
+    "destination",
+    "destination_path",
+    "dir",
+    "directory",
+)
+
+# force_finish 的结构化码：relay-claw 按码分流，避免落入 unknown / OA.05000090。
+# 鉴权分支仍以 error 收尾（确实需要用户重新登录）；探测分支以 answer 收尾，
+# 码只用于前端/宿主区分“安全护栏主动收尾”与任务失败。
+CREDENTIAL_GUARD_AUTH_REQUIRED_CODE = "CREDENTIAL_GUARD_AUTH_REQUIRED"
+CREDENTIAL_GUARD_BLOCKED_CODE = "CREDENTIAL_GUARD_BLOCKED"
 
 _SCAN_LIMIT = 64 * 1024
 _TEXT_KEYS = ("content", "output", "error", "message", "stdout", "stderr", "result", "text")
@@ -168,7 +203,7 @@ def _flatten_text(value: Any, *, limit: int = _SCAN_LIMIT) -> str:
     return _head_tail("\n".join(parts), limit)
 
 
-def _tool_args_text(inputs: Any) -> str:
+def _raw_tool_args(inputs: Any) -> Any:
     tool_args = getattr(inputs, "tool_args", None)
     if not tool_args:
         tool_call = getattr(inputs, "tool_call", None)
@@ -176,6 +211,40 @@ def _tool_args_text(inputs: Any) -> str:
         if not tool_args:
             function = getattr(tool_call, "function", None)
             tool_args = getattr(function, "arguments", None)
+    return tool_args
+
+
+def _write_paths_text(inputs: Any) -> str:
+    """只拼写盘类工具的路径参数，刻意忽略 content / old_string 等正文。
+
+    正文里出现 Login Data / Cookies 是备份脚本、交付文档的正常内容；把它
+    当作探测证据会让“写排除清单”被判成“读凭证”（OA.05000090 事故）。
+    参数无法解析时返回空串，即 fail-open：不因解析失败而误熔断。
+    """
+    tool_args = _raw_tool_args(inputs)
+    if not tool_args:
+        return ""
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except (TypeError, ValueError):
+            return ""
+    if not isinstance(tool_args, dict):
+        return ""
+    paths: list[str] = []
+    for key in _WRITE_PATH_KEYS:
+        value = tool_args.get(key)
+        if isinstance(value, str) and value:
+            paths.append(value)
+        elif isinstance(value, (list, tuple)):
+            paths.extend(item for item in value if isinstance(item, str) and item)
+    return "\n".join(paths)
+
+
+def _tool_args_text(inputs: Any, tool_name: str = "") -> str:
+    if tool_name in _WRITE_TOOLS:
+        return _write_paths_text(inputs)
+    tool_args = _raw_tool_args(inputs)
     if not tool_args:
         return ""
     flattened = _flatten_text(tool_args)
@@ -227,7 +296,7 @@ class StalledAccessCircuitRail(DeepAgentRail):
             return
 
         result_text = _bounded_text(getattr(inputs, "tool_result", None))
-        args_text = _tool_args_text(inputs)
+        args_text = _tool_args_text(inputs, tool_name)
         now = time.monotonic()
 
         # 只有“工具要做什么”能作为强制执行依据；工具返回的纯文本里出现
@@ -259,7 +328,14 @@ class StalledAccessCircuitRail(DeepAgentRail):
                 self._result_probe_hits,
             )
             ctx.request_force_finish(
-                {"output": self._auth_output(), "result_type": "error"}
+                {
+                    "output": self._auth_output(),
+                    "result_type": "error",
+                    # 结构化码由 stream_utils.build_chat_error_event 透传为
+                    # payload.code；宿主据此给出“重新登录”指引，而不是落入
+                    # unknown（OA.05000090）。
+                    "code": CREDENTIAL_GUARD_AUTH_REQUIRED_CODE,
+                }
             )
             return
 
@@ -305,7 +381,11 @@ class StalledAccessCircuitRail(DeepAgentRail):
                 len(self._probe_at),
             )
             ctx.request_force_finish(
-                {"output": self._probe_guidance(), "result_type": "answer"}
+                {
+                    "output": self._probe_guidance(),
+                    "result_type": "answer",
+                    "code": CREDENTIAL_GUARD_BLOCKED_CODE,
+                }
             )
             return
 
@@ -326,7 +406,11 @@ class StalledAccessCircuitRail(DeepAgentRail):
             rewritten,
         )
         ctx.request_force_finish(
-            {"output": self._probe_guidance(), "result_type": "answer"}
+            {
+                "output": self._probe_guidance(),
+                "result_type": "answer",
+                "code": CREDENTIAL_GUARD_BLOCKED_CODE,
+            }
         )
 
     def _auth_output(self) -> str:
@@ -395,4 +479,8 @@ class StalledAccessCircuitRail(DeepAgentRail):
             return ""
 
 
-__all__ = ["StalledAccessCircuitRail"]
+__all__ = [
+    "CREDENTIAL_GUARD_AUTH_REQUIRED_CODE",
+    "CREDENTIAL_GUARD_BLOCKED_CODE",
+    "StalledAccessCircuitRail",
+]
