@@ -80,12 +80,11 @@ export function matchesMemberQuery(label: string, query: string): boolean {
 }
 
 /**
- * Group member search only matches the display name shown to the user.
- * member_name is an internal id (e.g. member-<uuid>) and must never produce a hit.
+ * Match the visible row label, including its fallback when no display name is set.
  */
 export function filterGroupMembers(members: GroupMember[], query: string): GroupMember[] {
   if (!query.trim()) return members;
-  return members.filter((member) => matchesMemberQuery(member.display_name ?? '', query));
+  return members.filter((member) => matchesMemberQuery(member.display_name || member.member_name, query));
 }
 
 export function selectedMentions(content: string, selected: string[], members: GroupMember[]): string[] {
