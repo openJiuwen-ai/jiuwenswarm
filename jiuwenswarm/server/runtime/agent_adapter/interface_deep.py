@@ -1103,6 +1103,7 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
             processors=user_processors if user_processors else None,
             preset=True,
             session_memory=session_memory_cfg,
+            history_flush=flush_history_writes_async,
         )
         logger.info(
             "[JiuWenSwarmDeepAdapter] ContextProcessorRail create success for agent mode, "
@@ -8357,6 +8358,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             if self._instance is None or getattr(self._instance, "react_agent", None) is None:
                 return
             ctx_eng = self._instance.react_agent.context_engine
+            live_ctx = ctx_eng.get_context(session_id=session_id)
+            live_baseline_msgs = list(live_ctx.get_messages()) if live_ctx is not None else []
 
             # ── 第一步：从 checkpointer 恢复基线（压缩态）+ 取轮次指针 ──
             from openjiuwen.core.single_agent import create_agent_session
@@ -8365,16 +8368,16 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
             await _presess.pre_run(inputs=None)
             last_rid = _presess.get_state("_last_committed_request_id")
+            last_history_timestamp = _presess.get_state("_last_committed_history_timestamp")
             await ctx_eng.create_context(
                 session=_presess,
             )
             baseline_ctx = ctx_eng.get_context(session_id=session_id)
-            baseline_msgs = (
-                list(baseline_ctx.get_messages()) if baseline_ctx is not None else []
-            )
+            checkpoint_msgs = list(baseline_ctx.get_messages()) if baseline_ctx is not None else []
+            baseline_msgs = live_baseline_msgs if not last_rid else checkpoint_msgs
 
-            if not baseline_msgs or not last_rid:
-                # 无基线 / 无指针（新会话或从未 commit）→ 降级全量重放
+            if not baseline_msgs:
+                # 无基线（新会话或活窗池为空）→ 降级全量重放
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] %s: no checkpointer baseline "
                     "(msgs=%d last_rid=%s) → fallback to full history replay session=%s",
@@ -8385,11 +8388,40 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     session_id, reason, _presess,
                 )
 
+            if not last_rid and not last_history_timestamp:
+                # 首轮尚未 commit 时，活窗已经包含压缩态和后续增量，仅预置不回写。
+                _presess._pre_run_done = True
+                _rewind_key = self._resolve_interrupt_session_id(session_id)
+                self._rewind_session[_rewind_key] = _presess
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] %s: 复用活窗压缩基线 "
+                    "session=%s history=%d",
+                    reason, session_id, len(baseline_msgs),
+                )
+                return
+
             # ── 第二步：用 request_id 定位历史中的增量起点 ──
             if not await flush_history_writes_async():
                 return
             records = await asyncio.to_thread(load_history_records, session_id)
             cut = self._entry_index_after_request(records, str(last_rid))
+            if isinstance(last_history_timestamp, (int, float)):
+                cut = None
+                for index, record in enumerate(records):
+                    timestamp = record.get("timestamp") if isinstance(record, dict) else None
+                    if isinstance(timestamp, (int, float)) and timestamp <= last_history_timestamp:
+                        cut = index + 1
+                if cut is None:
+                    # 时间戳游标未命中时，活窗基线比全量回放更完整。
+                    logger.info(
+                        "[JiuWenSwarmDeepAdapter] %s: history timestamp cursor not found "
+                        "→ using live baseline session=%s",
+                        reason, session_id,
+                    )
+                    _presess._pre_run_done = True
+                    _rewind_key = self._resolve_interrupt_session_id(session_id)
+                    self._rewind_session[_rewind_key] = _presess
+                    return
             if cut < 0:
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] %s: request_id=%s not found in history "
@@ -13809,6 +13841,13 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             role = rec.get("role")
             event_type = rec.get("event_type")
             request_id = rec.get("request_id")
+            if (
+                event_type in ("context.compact_summary", "context.compact_boundary")
+                or rec.get("transcript_only")
+                or rec.get("is_compact_summary")
+            ):
+                i += 1
+                continue
 
             # 用户消息
             if role == "user":
@@ -13883,10 +13922,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 if rec.get("is_goal_completed_message"):
                     i += 1
                     continue
-                if event_type in ("chat.final", "context.compact_summary", "context.rewind_summary") or not event_type:
-                    if event_type == "context.compact_boundary":
-                        i += 1
-                        continue
+                if event_type in ("chat.final", "context.rewind_summary") or not event_type:
                     # 该 chat.final 后紧跟同 request 的 tool_call 时，正文归 tool_call 消息，
                     # 这里跳过，避免重复出现两条相邻 assistant 消息。
                     nxt = records[i + 1] if i + 1 < n else None

@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+import textwrap
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -136,7 +137,28 @@ def test_run_one_round_save_contexts_uses_commit_session():
             ):
                 commit_call = call
 
-    assert save_call is not None and commit_call is not None
+    if save_call is None:
+        # ReAct 已有轮末保存；压缩 rail 负责在交互 session 上中继同一保存动作。
+        from openjiuwen.harness.rails.context_engineer.context_processor_rail import (
+            ContextProcessorRail,
+        )
+
+        rail_source = inspect.getsource(ContextProcessorRail.after_react_iteration)
+        rail_tree = ast.parse(textwrap.dedent(rail_source))
+        for node in ast.walk(rail_tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "save_contexts":
+                    save_call = node
+                if node.func.attr == "commit":
+                    commit_call = node
+        assert commit_call is not None
+        assert isinstance(commit_call.func.value, ast.Attribute)
+        assert commit_call.func.value.attr == "session"
+        assert isinstance(save_call.args[0], ast.Attribute)
+        assert save_call.args[0].attr == "session"
+        return
+
+    assert commit_call is not None
     assert save_call.args, "save_contexts 必须显式传入 session"
     first_arg = save_call.args[0]
     assert isinstance(first_arg, ast.Name) and first_arg.id == "session", (

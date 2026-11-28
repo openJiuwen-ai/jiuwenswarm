@@ -3129,7 +3129,7 @@ class JiuWenSwarm:
                             should_record = et.startswith("chat.")
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
-                            if et == "chat.error":
+                            if et == "chat.error" and not is_retry_notice_payload(data.payload):
                                 _schedule_rewind_for_error()
                             # DeepAgent round 级异常（round_execution_error，如模型调用失败）：
                             # agent-core 只以 execution.error 下发，客户端没有对应分支时会在
