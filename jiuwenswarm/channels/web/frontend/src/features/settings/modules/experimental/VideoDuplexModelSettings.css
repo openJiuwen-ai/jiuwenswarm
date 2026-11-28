@@ -117,3 +117,8 @@
   flex-shrink: 0;
   color: var(--color-feedback-success);
 }
+
+.video-duplex-model-settings__field input::placeholder {
+  color: var(--color-text-tertiary);
+  opacity: 1;
+}

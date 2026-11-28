@@ -16,6 +16,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import append_jsonl_log, get_user_workspace_dir
 from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure
 from jiuwenswarm.extensions.video_duplex.backend import (
+    doubao_realtime,
     joyai_action_helper,
     joyai_provider,
     settings,
@@ -257,9 +258,19 @@ def register_video_live_handler(
                          **context_payload},
             )
             return
-        config = QwenOmniRealtimeConfig.from_environment()
+        provider = settings.realtime_provider()
         try:
-            config.validate()
+            if provider == "doubao":
+                doubao_realtime.api_key()
+                url, model, voice = (
+                    doubao_realtime.DOUBAO_PROXY_PATH,
+                    doubao_realtime.model(),
+                    doubao_realtime.voice(),
+                )
+            else:
+                config = QwenOmniRealtimeConfig.from_environment()
+                config.validate()
+                url, model, voice = QWEN_OMNI_PROXY_PATH, config.model, config.voice
         except ValueError as exc:
             await channel.send_response(
                 ws,
@@ -269,16 +280,17 @@ def register_video_live_handler(
                 code="VIDEO_CONFIG_ERROR",
             )
             return
+        tools = qwen_omni_tools(queue_manager=True)
         await channel.send_response(
             ws,
             req_id,
             ok=True,
             payload={
-                "provider": "qwen_omni",
-                "url": QWEN_OMNI_PROXY_PATH,
-                "model": config.model,
-                "voice": config.voice,
-                "tools": qwen_omni_tools(queue_manager=True),
+                "provider": provider,
+                "url": url,
+                "model": model,
+                "voice": voice,
+                "tools": tools,
                 "reply_language": settings.reply_language(),
                 **context_payload,
             },

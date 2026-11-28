@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from jiuwenswarm.common.utils import get_env_file
 from jiuwenswarm.dotenv_early import get_parsed_dotenv
+from jiuwenswarm.extensions.video_duplex.backend import doubao_realtime
 
 
 SETTING_ENV_KEYS = {
@@ -19,6 +20,10 @@ SETTING_ENV_KEYS = {
     "qwen_omni_api_key": "QWEN_OMNI_API_KEY",
     "qwen_omni_model": "QWEN_OMNI_MODEL_NAME",
     "qwen_omni_voice": "QWEN_OMNI_VOICE",
+    "doubao_realtime_url": "DOUBAO_REALTIME_URL",
+    "doubao_model": "DOUBAO_REALTIME_MODEL",
+    "doubao_voice": "DOUBAO_REALTIME_VOICE",
+    "doubao_api_key": "DOUBAO_REALTIME_API_KEY",
     "reply_language": "VIDEO_DUPLEX_REPLY_LANGUAGE",
     "voice_protocol": "VOICE_PROTOCOL",
     "voice_asr_endpoint": "VOICE_ASR_ENDPOINT",
@@ -28,7 +33,15 @@ SETTING_ENV_KEYS = {
     "voice_tts_model": "VOICE_TTS_MODEL",
     "voice_tts_voice": "VOICE_TTS_VOICE",
 }
-SECRET_SETTINGS = {"joyai_api_key", "qwen_omni_api_key", "voice_api_key"}
+FIELD_DEFAULTS = {
+    "qwen_omni_realtime_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "qwen_omni_model": "qwen3.5-omni-flash-realtime",
+    "qwen_omni_voice": "Tina",
+    "doubao_realtime_url": doubao_realtime.DOUBAO_UPSTREAM_URL,
+    "doubao_model": doubao_realtime.DOUBAO_MODEL,
+    "doubao_voice": doubao_realtime.DOUBAO_VOICE,
+}
+SECRET_SETTINGS = {"joyai_api_key", "qwen_omni_api_key", "doubao_api_key", "voice_api_key"}
 ALLOWED_REPLY_LANGUAGES = frozenset({"match", "zh-CN", "en"})
 DEFAULTS = {
     "joyai_api_base": "",
@@ -38,6 +51,10 @@ DEFAULTS = {
     "qwen_omni_api_key": "",
     "qwen_omni_model": "",
     "qwen_omni_voice": "",
+    "doubao_realtime_url": "",
+    "doubao_model": "",
+    "doubao_voice": "",
+    "doubao_api_key": "",
     "reply_language": "match",
     "voice_protocol": "openai_http",
     "voice_asr_endpoint": "",
@@ -83,10 +100,14 @@ def _persist_env_updates(updates: Mapping[str, str]) -> None:
     os.replace(temporary, path)
 
 
+def realtime_provider() -> str:
+    selected = (os.getenv("VIDEO_REALTIME_PROVIDER") or "").strip().casefold()
+    return "doubao" if selected == "doubao" else "qwen_omni"
+
+
 def _provider() -> str:
     mode = (os.getenv("VIDEO_LIVE_MODE") or "realtime").strip().casefold()
-    realtime_provider = (os.getenv("VIDEO_REALTIME_PROVIDER") or "").strip().casefold()
-    return "qwen_omni" if mode == "realtime" and realtime_provider in {"", "qwen_omni"} else "joyai"
+    return realtime_provider() if mode == "realtime" else "joyai"
 
 
 def settings_payload(*, enabled: bool) -> dict[str, Any]:
@@ -108,6 +129,7 @@ def settings_payload(*, enabled: bool) -> dict[str, Any]:
         "enabled": enabled,
         "values": values,
         "configured_secret_lengths": configured_secret_lengths,
+        "defaults": dict(FIELD_DEFAULTS),
         "restart_required": False,
     }
 
@@ -125,8 +147,8 @@ def _validated_values(values: Mapping[str, Any]) -> dict[str, str]:
         normalized[key] = value.strip()
 
     provider = normalized.get("video_live_provider", _provider())
-    if provider not in {"joyai", "qwen_omni"}:
-        raise ValueError("video_live_provider must be joyai or qwen_omni")
+    if provider not in {"joyai", "qwen_omni", "doubao"}:
+        raise ValueError("video_live_provider must be joyai, qwen_omni or doubao")
     protocol = normalized.get(
         "voice_protocol",
         (os.getenv("VOICE_PROTOCOL") or "openai_http").strip().casefold(),
@@ -148,8 +170,8 @@ def update_settings(values: Mapping[str, Any], *, clear_secrets: bool = False) -
     normalized = _validated_values(values)
     provider = normalized.pop("video_live_provider", _provider())
     updates = {
-        "VIDEO_LIVE_MODE": "realtime" if provider == "qwen_omni" else "joyai",
-        "VIDEO_REALTIME_PROVIDER": "qwen_omni" if provider == "qwen_omni" else "",
+        "VIDEO_LIVE_MODE": "joyai" if provider == "joyai" else "realtime",
+        "VIDEO_REALTIME_PROVIDER": "" if provider == "joyai" else provider,
     }
     for key, value in normalized.items():
         if key in SECRET_SETTINGS and not value and not clear_secrets:

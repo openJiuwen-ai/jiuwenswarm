@@ -28,11 +28,10 @@ const joyai = {
   voice_tts_voice: '',
 };
 
-test('Qwen needs its own endpoint, model and key; default voice remains optional', () => {
+test('Qwen uses defaults for blank endpoint, model and voice, but requires its own key', () => {
   assert.equal(isConfigured(qwen, {}), true);
-  for (const key of ['qwen_omni_realtime_url', 'qwen_omni_model', 'qwen_omni_api_key']) {
-    assert.equal(isConfigured({ ...qwen, [key]: ' \t ' }, {}), false, key);
-  }
+  assert.equal(isConfigured({ ...qwen, qwen_omni_realtime_url: ' ', qwen_omni_model: '', qwen_omni_voice: '' }, {}), true);
+  assert.equal(isConfigured({ ...qwen, qwen_omni_api_key: ' \t ' }, {}), false);
 });
 
 test('saved keys count as configured, but keys for another provider do not', () => {
@@ -41,7 +40,14 @@ test('saved keys count as configured, but keys for another provider do not', () 
   assert.equal(isConfigured(draft, { qwen_omni_api_key: 0, joyai_api_key: 12 }), false);
 });
 
-test('saved JoyAI configurations cannot enable the Qwen-only frontend', () => {
+test('Doubao uses defaults for blank fields and requires its own API key', () => {
+  const draft = { video_live_provider: 'doubao', doubao_api_key: '', doubao_realtime_url: ' ', doubao_model: '', doubao_voice: '' };
+  assert.equal(isConfigured(draft, { doubao_api_key: 36 }), true);
+  assert.equal(isConfigured({ ...draft, doubao_api_key: 'new-key' }, {}), true);
+  assert.equal(isConfigured({ ...qwen, ...draft }, { qwen_omni_api_key: 12 }), false);
+});
+
+test('saved JoyAI configurations cannot enable the realtime model settings', () => {
   assert.equal(isConfigured(joyai, {}), false);
   assert.equal(isConfigured({ ...joyai, voice_protocol: 'native_ws', voice_tts_voice: 'speaker' }, {}), false);
   assert.equal(isConfigured({ ...qwen, ...joyai }, { joyai_api_key: 8, voice_api_key: 9 }), false);

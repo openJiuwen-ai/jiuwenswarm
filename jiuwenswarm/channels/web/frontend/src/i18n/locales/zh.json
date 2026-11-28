@@ -736,6 +736,8 @@
   },
   "videoLive": {
     "screenCapture": {
+      "modelUnsupported": "当前模型或接口不支持图像输入，已关闭画面共享，语音对话继续。服务信息：{{reason}}",
+      "imagePreviouslyRejected": "服务端已在本次连接中拒绝图像输入",
       "failed": "屏幕共享失败：{{reason}} [{{errorType}}]；原始错误：{{nativeMessage}}；阶段：{{stage}}；耗时：{{elapsedMs}} ms；诊断编号：{{captureId}}",
       "permissionOrCancel": "共享请求未获授权，可能是取消选择、浏览器拒绝或系统屏幕录制权限未授予，无法仅凭异常确定原因",
       "aborted": "屏幕采集请求被中止，可能是选择器取消、已有请求未结束或系统采集异常",
@@ -757,6 +759,7 @@
     "errors": {
       "startFailed": "Full-duplex 会话启动失败。",
       "joyaiTextNotAccepted": "文字输入未进入 JoyAI 会话",
+      "doubaoVoiceOnly": "豆包实时会话目前使用语音输入。文字消息请在普通聊天中发送。",
       "qwenTextNotAccepted": "文字输入未进入千问 Realtime 会话",
       "textSendFailed": "文字输入发送失败"
     },
@@ -1358,6 +1361,9 @@
       "ttsVoiceLabel": "语音播报音色",
       "qwenModelLabel": "Qwen 模型",
       "qwenVoiceLabel": "Qwen 音色",
+      "doubaoProvider": "豆包 Seed-Realtime",
+      "doubaoKeyLabel": "豆包语音 API Key",
+      "doubaoRequiredFields": "填写已开通实时音视频服务的豆包 API Key。其余字段留空时使用灰色显示的默认值。",
       "replyLanguageLabel": "回复语言",
       "replyLanguageDescription": "控制语音与文字回复使用的语言。下次启动全双工后生效。",
       "replyLanguageMatch": "跟随对话",
@@ -1365,7 +1371,7 @@
       "replyLanguageEn": "英语",
       "deleteTitle": "删除全双工模型配置",
       "deleteConfirm": "删除后将清除已保存的全双工模型地址、模型和密钥。",
-      "requiredFields": "带 * 的项目为必填项，填写完整后才能保存。已保存的 API 密钥无需重新输入。"
+      "requiredFields": "只需填写 API Key。其余字段留空时使用灰色显示的默认值。已保存的密钥无需重新输入。"
     },
     "fields": {
       "vision_enabled": {

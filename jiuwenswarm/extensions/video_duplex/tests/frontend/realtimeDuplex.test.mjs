@@ -73,7 +73,7 @@ test('provider speech and its pending automatic answer exclude notification resp
 test('cancel request does not free a response slot before cancellation acknowledgement', () => {
   const {session,sent}=createSession();
   session.handleEvent({type:'response.created',response:{id:'old'}});
-  session.interruptQwenResponse('turn',300,1000,80);
+  session.interruptResponse('turn',300,1000,80);
   session.enqueueOperationResult('op',{state: 'accepted', operation: 'query'});
   assert.equal(sent.filter(e=>e.type==='response.create').length,0);
   session.handleEvent({type:'response.done',response:{id:'old',status:'cancelled'}});
@@ -130,7 +130,7 @@ test('late and partial tool calls from an interrupted response cannot start work
   const errors = [];
   const { session, functionCalls } = createSession(null, { onError: e => errors.push(e) });
   session.handleEvent({ type: 'response.created', response: { id: 'interrupted' } });
-  session.interruptQwenResponse('new-input', 300, 1000, 80);
+  session.interruptResponse('new-input', 300, 1000, 80);
   session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'interrupted',
     name: 'jiuwen_delegate', call_id: 'stale', arguments: '{"task":"outdated request"}' });
   assert.equal(functionCalls.length, 0);
@@ -477,8 +477,9 @@ test('confirmed cancellation sends one terminal notice and rejects a late result
   assert.equal(session.enqueueToolResult({ jobId: 'stopped-job', callId: 'stopped-call', question: '已取消任务', brief: { summary: '迟到的成功结果' } }), false);
 });
 
-test('confirmed speech interrupts each response once, including responses that start mid-utterance', () => {
-  const { session, sent } = createSession();
+for (const provider of ['qwen_omni', 'doubao']) {
+test(`${provider}: local speech cancels each response once and clears queued playback`, async () => {
+  const { session, sent, posted } = createSession(null, {}, {provider});
   const gate = new SpeechGate();
   const feed = (probability, count, level = 1000) => {
     for (let i = 0; i < count; i++) session.handleSpeechDetection(gate.process(probability, level));
@@ -488,7 +489,12 @@ test('confirmed speech interrupts each response once, including responses that s
   feed(0.99, 3);
   feed(0.1, 12);
   assert.equal(sent.length, 0);
+  session.handleEvent({type:'response.output_item.added',response_id:'first',item:{type:'message'}});
+  session.handleEvent({type:'response.audio.delta',response_id:'first',delta:btoa('aa')});
   feed(0.95, 8);
+  await session.playbackOperation;
+  assert.equal(posted.filter(e => e.type === 'clear').length, 1);
+  assert.equal(posted.some(e => e.type === 'audio'), false);
   assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 1);
   session.handleEvent({ type: 'response.created', response: { id: 'second' } });
   assert.equal(session.userActivityActive, true);
@@ -499,6 +505,8 @@ test('confirmed speech interrupts each response once, including responses that s
   feed(0.95, 8);
   assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 3);
 });
+
+}
 
 test('audio arriving during ongoing speech is blocked, but speech hangover permits the next answer', async () => {
   const { session, posted } = createSession();
@@ -528,7 +536,7 @@ test('a stale speaking flag after a worker stall does not cancel a new answer', 
 test('cancelled response discards unclassified text and late audio', async () => {
   const { session, posted, assistantTexts } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'interrupted' } });
-  session.interruptQwenResponse('voice-test', 256, 1000, 80);
+  session.interruptResponse('voice-test', 256, 1000, 80);
   session.handleEvent({ type: 'response.audio.delta', response_id: 'interrupted', delta: btoa('aa') });
   session.handleEvent({ type: 'response.text.done', response_id: 'interrupted', text: '已经返回的文字' });
   await session.playbackOperation;
@@ -712,7 +720,7 @@ for (const ending of ['interrupt', 'failed']) {
     const delta = { type: 'response.text.delta', response_id: 'partial-text', delta: 'Partial answer' };
     session.handleEvent(added);
     session.handleEvent(delta);
-    if (ending === 'interrupt') session.interruptQwenResponse('new-turn', 200, 100, 80);
+    if (ending === 'interrupt') session.interruptResponse('new-turn', 200, 100, 80);
     else session.handleEvent({ type: 'response.done', response: { id: 'partial-text', status: 'failed' } });
     session.handleEvent(added);
     session.handleEvent(delta);
@@ -789,7 +797,7 @@ test('user interruption clears streaming audio and late item events cannot reope
   session.handleEvent(added);
   session.handleEvent({ type: 'response.audio.delta', response_id: 'interrupted-stream', delta: btoa('aa') });
   await session.playbackOperation;
-  session.interruptQwenResponse('new-turn', 200, 100, 80);
+  session.interruptResponse('new-turn', 200, 100, 80);
   assert.equal(session.messageOutputItems.size, 0);
   assert.ok(posted.some(item => item.type === 'clear'));
   session.handleEvent(added);
@@ -803,7 +811,7 @@ function finishResponse(session, id) {
   session.handleEvent({ type: 'response.done', response: { id, status: 'completed' } });
 }
 
-function createSession(videoFrame = null, callbackOverrides = {}) {
+function createSession(videoFrame = null, callbackOverrides = {}, config = {}) {
   const states = [];
   const posted = [];
   const sent = [];
@@ -813,7 +821,7 @@ function createSession(videoFrame = null, callbackOverrides = {}) {
   const diagnostics = [];
   const functionCalls = [];
   const session = new RealtimeDuplexSession(
-    { url: 'ws://example.test/realtime' },
+    { url: 'ws://example.test/realtime', ...config },
     {
       getVideoFrame: () => videoFrame,
       onAssistantText: (text, final, toolJobId, responseId) =>
@@ -996,8 +1004,8 @@ test('user speech cancels an active response and discards unclassified text', ()
   session.assistantPlaying = true;
   session.handleEvent({ type: 'response.text.done', response_id: 'qwen-speaking', text: '这是一段被用户打断的回答' });
 
-  assert.equal(session.interruptQwenResponse('voice-1', 240, 900, 350), true);
-  assert.equal(session.interruptQwenResponse('voice-1', 260, 900, 350), false);
+  assert.equal(session.interruptResponse('voice-1', 240, 900, 350), true);
+  assert.equal(session.interruptResponse('voice-1', 260, 900, 350), false);
 
   assert.deepEqual(sent, [{ type: 'response.cancel' }]);
   assert.deepEqual(posted, [{ type: 'clear', cancelResponse: false }]);
@@ -1012,7 +1020,7 @@ test('continuous speech cancels a reserved response only after response.created'
   const { session, sent, diagnostics } = createSession(undefined, { onError: (message) => errors.push(message) });
   session.enqueueOperationResult('alarm', { state: 'accepted', operation: 'query', job_id: 'alarm-job' });
   assert.equal(session.responseId, null);
-  for (let i = 0; i < 5; i++) session.interruptQwenResponse('next-speech', 256 + i * 32, 900, 80);
+  for (let i = 0; i < 5; i++) session.interruptResponse('next-speech', 256 + i * 32, 900, 80);
   assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 0);
   assert.equal(diagnostics.filter((event) => event.event === 'qwen_response_interrupted_by_user').length, 1);
   session.handleEvent({ type: 'response.created', response: { id: 'receipt-response' } });
@@ -1730,7 +1738,7 @@ test('invalid realtime event reports processing stage and native exception witho
   assert.equal(session.socket, socket);
 });
 
-function contextSocket() {
+function contextSocket(config = {}, callbacks = {}) {
   let socket;
   class Socket {
     static OPEN = 1;
@@ -1746,21 +1754,72 @@ function contextSocket() {
   const session = new RealtimeDuplexSession({
     url: 'ws://example.test/realtime',
     restoreInstructions: 'Do not acknowledge this background\n' + JSON.stringify({ session_id: 'conversation-a', memory: [{ role: 'user', text: 'My name is Alice' }] }),
+    ...config,
   }, {
     getVideoFrame: () => null, onAssistantText: text => texts.push(text),
     onUserText() {}, onError() {}, onState: state => states.push(state),
     onFunctionCall: call => calls.push(call),
+    ...callbacks,
   });
   const opening = session.openSocket();
   socket.onopen();
-  return { session, socket, opening, texts, calls, states };
+  const event = value => socket.onmessage({data: JSON.stringify(value)});
+  return { session, socket, opening, event, texts, calls, states };
 }
 
+async function readyContextSocket(config = {}, callbacks = {}) {
+  const context = contextSocket(config, callbacks);
+  context.event({type: config.provider === 'doubao' ? 'session.created' : 'session.updated'});
+  await context.opening;
+  return context;
+}
+
+test('Doubao restores context on session.created and returns native tool output before response.done', async () => {
+  const transcripts = [];
+  const { session, socket, opening, texts, calls, states, event } = contextSocket({
+    provider: 'doubao', model: '1.3.0.0', voice: 'doubao-voice',
+    tools: [{ type: 'function', name: 'jiuwen_delegate' }],
+  }, { onUserText: (text, final) => final && transcripts.push(text) });
+  const [init] = socket.sent;
+  assert.equal(init.type, 'session.create');
+  assert.equal(init.session.audio.output.format.type, 'pcm_s16le');
+  assert.match(init.session.instructions, /My name is Alice/);
+  assert.equal(init.extension.video.frame_format, 'JPEG');
+  assert.equal(session.sessionReady, false);
+  session.setMicrophoneMuted(true);
+  event({ type: 'session.created' });
+  await opening;
+  assert.equal(socket.sent.at(-1).type, 'input_audio_mute.commit');
+  session.setMicrophoneMuted(false);
+  assert.equal(socket.sent.at(-1).type, 'input_audio_unmute.commit');
+
+  event({ type: 'conversation.item.input_audio_transcription.started', item_id: 'spoken-1' });
+  event({ type: 'response.created', question_id: 'spoken-1' });
+  event({ type: 'response.function_call_arguments.done', items: [
+    { name: 'jiuwen_delegate', call_id: 'seed-1', arguments: '{"task":"Write a poem"}' },
+  ] });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].callId, 'seed-1');
+  session.enqueueOperationResult('seed-1', { state: 'accepted', job_id: 'job-1' });
+  assert.deepEqual(socket.sent.at(-1), {
+    type: 'conversation.item.create',
+    items: [{ role: 'tool', call_id: 'seed-1', content: [
+      { type: 'input_text', text: '{"state":"accepted","job_id":"job-1"}' },
+    ] }],
+  });
+  event({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'spoken-1', text: 'Write a poem' });
+  event({ type: 'response.output_text.done', question_id: 'spoken-1', response_id: 'native-id', text: 'Task submitted' });
+  event({ type: 'response.done', response: { usage: {} } });
+  assert.deepEqual(transcripts, ['Write a poem']);
+  assert.equal(texts.at(-1), 'Task submitted');
+  assert.equal(states.includes('speaking'), true);
+  assert.equal(socket.sent.some(message => message.type === 'response.create'), false);
+});
+
 test('context restore initializes silently and waits for session.updated', async () => {
-  const { session, socket, opening, texts, calls } = contextSocket();
+  const { session, socket, opening, texts, calls, event } = contextSocket();
   let ready = false;
   opening.then(() => { ready = true; });
-  const event = value => socket.onmessage({ data: JSON.stringify(value) });
   assert.equal(socket.sent.length, 1);
   assert.equal(socket.sent[0].type, 'session.update');
   assert.match(socket.sent[0].session.instructions, /My name is Alice/);
@@ -1868,9 +1927,6 @@ test('a permission card replaces a stale execution confirmation without carrying
 });
 
 
-
-
-
 test('successful task completion requests one spoken result after silent acceptance', () => {
   const { session, sent } = createSession();
   session.enqueueOperationResult('quiet-create', { state: 'accepted', job_id: 'quiet' });
@@ -1904,3 +1960,244 @@ test('successful queue writes do not announce their bootstrap query', () => {
 });
 
 function failedBrief(summary) { return { ...realtimeBrief(summary), status: "failed" }; }
+
+
+test('Doubao preserves user-before-assistant display when final ASR arrives late', async () => {
+  const order = [];
+  const {event} = await readyContextSocket({provider: 'doubao'}, {
+    onUserText: (text, final) => final && order.push(`user:${text}`),
+    onAssistantText: text => order.push(`assistant:${text}`),
+  });
+  event({type: 'conversation.item.input_audio_transcription.started', item_id: 'input'});
+  event({type: 'response.created', question_id: 'input'});
+  event({type: 'response.output_text.done', question_id: 'input', text: '能听见，你说吧。'});
+  event({type: 'response.done'});
+  assert.deepEqual(order, []);
+  event({type: 'conversation.item.input_audio_transcription.completed', item_id: 'input', text: '喂，你能听见吗？'});
+  assert.deepEqual(order, ['user:喂，你能听见吗？', 'assistant:能听见，你说吧。']);
+});
+
+test('Doubao reconnect is ready with restored context and speaks one completed task brief', async () => {
+  const {session, socket, states, event} = await readyContextSocket({provider: 'doubao'});
+  assert.equal(states.at(-1), 'listening');
+  const result = {jobId:'done-1',question:'查询结果',brief:realtimeBrief('任务已完成')};
+  assert.equal(session.enqueueToolResult(result), true);
+  assert.equal(session.enqueueToolResult(result), false);
+  assert.deepEqual(socket.sent.at(-1), {type:'speech_text_buffer.commit',text:'任务已完成'});
+  const context = socket.sent.find(e => e.items?.[0]?.role === 'user');
+  assert.match(JSON.stringify(context), /done-1/);
+  assert.ok(JSON.stringify(context).includes(result.brief.summary));
+  assert.equal(socket.sent.some(e => e.type === 'response.create' || e.item), false);
+  event({type:'response.created',question_id:'brief-1'});
+  session.enqueueToolResult({jobId:'done-2',question:'另一结果',brief:realtimeBrief('第二个任务完成')});
+  event({type:'response.output_audio.started',question_id:'brief-1'});
+  event({type:'response.output_audio.done',question_id:'brief-1'});
+  assert.deepEqual(socket.sent.at(-1), {type:'speech_text_buffer.commit',text:'第二个任务完成'});
+  assert.equal(socket.sent.some(e => e.type === 'response.create'), false);
+});
+
+test('Doubao announces and submits a pending form through the shared card interface', async () => {
+  const {session, socket, calls, event} = await readyContextSocket({provider: 'doubao'});
+  session.enqueueQuestion('job', {id:'form',request_id:'req',state:'pending',source:'ask_user_interrupt',
+    questions:[{question:'选择颜色', options:[{label:'红色'},{label:'蓝色'}]}]});
+  assert.equal(socket.sent.at(-1).type, 'speech_text_buffer.commit');
+  assert.match(socket.sent.at(-1).text, /选择颜色.*红色.*蓝色/);
+  assert.ok(socket.sent.some(e => e.type === 'session.update'));
+  event({type:'response.created',question_id:'question'});
+  event({type:'response.done'});
+  event({type:'conversation.item.input_audio_transcription.started',item_id:'answer'});
+  event({type:'conversation.item.input_audio_transcription.completed',item_id:'answer',text:'红色'});
+  assert.equal(calls.at(-1)?.name, 'jiuwen_form_answer');
+  assert.equal(socket.sent.some(e => e.type === 'response.create'), false);
+});
+
+
+test('Doubao stops its model session before closing transport and can reopen the same conversation', async () => {
+  const first = await readyContextSocket({provider:'doubao'});
+  let closed = false;
+  first.socket.close = () => { closed = true; };
+  first.session.stop();
+  assert.equal(first.socket.sent.at(-1).type, 'session.close');
+  assert.equal(closed, false);
+  first.event({type:'session.closed'});
+  assert.equal(closed, true);
+  const next = await readyContextSocket({provider:'doubao'});
+  assert.equal(next.session.sessionReady, true);
+  assert.match(next.socket.sent[0].session.instructions, /conversation-a/);
+});
+
+
+for (const provider of ['qwen_omni', 'doubao']) {
+  test(`${provider}: late receipts and cancellation use the shared context queue`, () => {
+    const {session, sent} = createSession(null, {}, {provider});
+    session.enqueueOperationResult('expired-call', {state:'rejected', error:'操作因目标不存在而失败'});
+    const contexts = sent.filter(e => e.type === 'conversation.item.create');
+    assert.match(JSON.stringify(contexts), /操作因目标不存在而失败/);
+    if (provider === 'doubao') {
+      assert.equal(contexts[0].items.length, 2);
+      assert.equal(sent.at(-1).type, 'speech_text_buffer.commit');
+    }
+    session.responseActive = false;
+    sent.length = 0;
+    session.cancelToolTask('cancelled-job', 'expired-call');
+    assert.match(JSON.stringify(sent), /cancelled-job/);
+    assert.equal(sent.some(e => ['response.create','speech_text_buffer.commit'].includes(e.type)), false);
+  });
+
+  test(`${provider}: a rejected spoken card answer can be corrected in the same input`, () => {
+    const {session, functionCalls} = createSession(null, {}, {provider});
+    const call = {name:'jiuwen_form_answer',callId:'voice-form:one',inputId:'same-input',
+      arguments:'{"answers":["红色"]}',task:'jiuwen_form_answer'};
+    session.forwardFunctionCall(call);
+    session.forwardFunctionCall({...call,callId:'voice-form:duplicate'});
+    assert.equal(functionCalls.length, 1);
+    session.enqueueOperationResult(call.callId, {state:'rejected',error:'请补全所有问题'});
+    session.forwardFunctionCall({...call,callId:'voice-form:retry'});
+    assert.equal(functionCalls.length, 2);
+  });
+}
+
+test('Doubao ASR failure releases pending text and service closing uses the existing reconnect hook', async () => {
+  const errors = [], text = [];
+  let renewals = 0;
+  const {session, socket, event} = await readyContextSocket({provider:'doubao'}, {
+    onAssistantText: value => text.push(value), onError: value => errors.push(value),
+    onIdleTimeout: () => renewals++,
+  });
+  assert.equal(session.supportsTextInput, false);
+  const before = socket.sent.length;
+  assert.equal(await session.sendTextTurn('文字请求'), false);
+  assert.equal(socket.sent.length, before);
+  event({type:'conversation.item.input_audio_transcription.started'});
+  session.emitAssistantText('请再说一遍', true, undefined, 'answer');
+  assert.deepEqual(text, []);
+  event({type:'conversation.item.input_audio_transcription.failed',error:{message:'识别失败'}});
+  assert.deepEqual(text, ['请再说一遍']);
+  assert.match(errors.at(-1), /识别失败/);
+  assert.equal(session.awaitingProviderResponse, false);
+  event({type:'session.closing'});
+  assert.equal(renewals, 1);
+});
+
+
+test('Doubao local speech finishes without an audio flush and releases queued result notices', () => {
+  const {session, sent} = createSession(null, {}, {provider:'doubao'});
+  const gate = new SpeechGate();
+  const feed = (p, n, level = 1000) => {
+    for (let i=0; i<n; i++) session.handleSpeechDetection(gate.process(p, level));
+  };
+  feed(0.95, 12);
+  session.enqueueToolResult({jobId:'after-speech',question:'结果',brief:realtimeBrief('任务已完成')});
+  assert.equal(sent.length, 0);
+  feed(0.1, 80, 0);
+  assert.equal(session.pendingSamples, 0);
+  assert.equal(session.turnHasUserActivity, false);
+  assert.equal(sent.at(-1).type, 'speech_text_buffer.commit');
+});
+
+
+test('shared tool schemas are flattened only by the Doubao wire adapter', () => {
+  const tool = {type:'function',function:{name:'jiuwen_delegate',parameters:{type:'object'}}};
+  for (const provider of ['qwen_omni','doubao']) {
+    const {session} = createSession(null, {}, {provider,tools:[tool]});
+    const event = session.sessionUpdate();
+    assert.equal(session.protocol.toolAvailable('jiuwen_delegate',[tool]),true);
+    assert.equal(session.protocol.toolAvailable('not_exposed',[tool]),false);
+    assert.deepEqual(event.session.tools, provider === 'doubao'
+      ? [{type:'function',...tool.function}] : [tool]);
+  }
+});
+
+
+for (const provider of ['qwen_omni', 'doubao']) {
+  test(`${provider} rejects image input once, keeps audio and the current reply alive`, () => {
+    const notices = [], errors = [];
+    const {session, sent} = createSession('aW1hZ2U=', {
+      onImageInputUnsupported: reason => notices.push(reason), onError: error => errors.push(error),
+    }, {provider});
+    const upload = () => {
+      session.sendAudio(new Int16Array([1, 2]), true);
+      session.protocol.video('aW1hZ2U=').forEach(event => session.send(event));
+    };
+    upload(); upload();
+    assert.ok(sent.some(event => event.type === 'input_image_buffer.append'));
+    assert.equal(session.supportsImageInput, true, 'No rejection means keep existing sharing behavior');
+    session.handleEvent({type:'response.created', response:{id:'speaking'}});
+    const rejection = {type:'error', error:{code:'unsupported_modality', message:'This model does not support image input'}};
+    session.handleEvent(rejection);
+    session.handleEvent(rejection);
+    assert.equal(notices.length, 1);
+    assert.deepEqual(errors, []);
+    assert.equal(session.responseActive, true);
+    assert.equal(session.supportsImageInput, false);
+    sent.length = 0;
+    session.handleEvent({type:'input_audio_buffer.speech_started',item_id:'next-turn'});
+    upload(); upload();
+    assert.deepEqual(sent.map(event => event.type), ['input_audio_buffer.append', 'input_audio_buffer.append']);
+  });
+}
+
+test('image failures from format, ordering, quota or authorization do not disable image input', () => {
+  for (const message of ['Unsupported image format', 'Image too large', 'Error append image before append audio.',
+    'Image quota exhausted', 'Unauthorized image input', 'Invalid base64 image', 'Internal image processing error']) {
+    const {session} = createSession('aW1hZ2U=');
+    session.sendAudio(new Int16Array([1]), true);
+    session.sendAudio(new Int16Array([1]), true);
+    session.handleEvent({type:'error',error:{message}});
+    assert.equal(session.supportsImageInput, true, message);
+  }
+});
+
+
+test('Doubao audio-only start event opens the same response and plays subsequent ID-less audio', () => {
+  const {session} = createSession(null, {}, {provider:'doubao',model:'1.2.6.1'});
+  for (const event of session.protocol.normalize({type:'response.output_audio.started',
+    question_id:'voice-question',response_id:'tts-response'}, null)) session.handleEvent(event);
+  assert.equal(session.responseId, 'voice-question');
+  assert.equal(session.responseActive, true);
+  assert.equal(session.messageOutputItems.has('voice-question'), true);
+  const audio = session.protocol.normalize({type:'response.output_audio.delta',delta:'AAE='},session.responseId);
+  assert.equal(audio[0].response_id,'voice-question');
+});
+
+
+test('Doubao tool-only output begins the shared response before forwarding its function call', () => {
+  const {session,functionCalls} = createSession(null, {}, {provider:'doubao',model:'1.2.6.1'});
+  const events = session.protocol.normalize({type:'response.function_call_arguments.done',question_id:'tool-only',
+    items:[{name:'jiuwen_delegate',call_id:'voice-call',arguments:JSON.stringify({task:'Tell a joke'})}]},null);
+  for (const event of events) session.handleEvent(event);
+  assert.equal(functionCalls.length,1);
+  assert.equal(functionCalls[0].callId,'voice-call');
+});
+
+for (const ack of ['session.created', 'session.updated']) {
+  test(`Qwen without restore accepts ${ack} and releases a queued result`, async () => {
+    const {session, socket, opening, event} = contextSocket({restoreInstructions: ''});
+    await opening;
+    session.enqueueToolResult({jobId: 'ready-result', question: 'result', brief: realtimeBrief('done')});
+    assert.equal(session.sessionReady, false);
+    assert.equal(socket.sent.some(e => e.type === 'response.create'), false);
+    event({type: ack});
+    assert.equal(session.sessionReady, true);
+    assert.equal(socket.sent.filter(e => e.type === 'response.create').length, 1);
+  });
+}
+
+for (const ending of ['response.done', 'error', 'response.cancelled', 'interrupt', 'stop']) {
+  test(`Doubao ${ending} discards pending notice text before the next response`, () => {
+    const {session, assistantTexts} = createSession(null, {}, {provider: 'doubao'});
+    session.requestResponse(false, 'old notice');
+    if (ending === 'interrupt') session.interruptResponse('new-input', 100, 1000, 80);
+    else if (ending === 'stop') {
+      const socket = session.socket;
+      socket.close = () => {};
+      session.stop();
+      socket.onmessage({data: JSON.stringify({type: 'session.closed'})});
+    }
+    else session.handleEvent({type: ending, error: {message: 'speech rejected'}});
+    assert.equal(session.notificationSpeechText, null);
+    assert.equal(session.notificationSpeechResponseId, null);
+    session.handleEvent({type: 'response.created', response: {id: 'next'}});
+    assert.equal(assistantTexts.some(item => item.text === 'old notice'), false);
+  });
+}

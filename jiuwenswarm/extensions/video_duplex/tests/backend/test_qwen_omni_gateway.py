@@ -25,17 +25,20 @@ def test_qwen_config_adds_model_query_and_preserves_existing_query(monkeypatch) 
     )
 
 
-def test_qwen_requires_model_but_uses_tina_when_voice_is_unset(monkeypatch) -> None:
-    monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://workspace.example/realtime")
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_qwen_uses_defaults_for_blank_optional_fields(monkeypatch, blank) -> None:
     monkeypatch.setenv("QWEN_OMNI_API_KEY", "secret")
-    monkeypatch.delenv("QWEN_OMNI_MODEL_NAME", raising=False)
-    monkeypatch.delenv("QWEN_OMNI_VOICE", raising=False)
-
+    for name in ("QWEN_OMNI_REALTIME_URL", "QWEN_OMNI_MODEL_NAME", "QWEN_OMNI_VOICE"):
+        if blank is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, blank)
     config = qwen_omni_gateway.QwenOmniRealtimeConfig.from_environment()
-    assert config.model == ""
-    assert config.voice == "Tina"
-    with pytest.raises(ValueError, match="QWEN_OMNI_MODEL_NAME"):
-        config.validate()
+    defaults = qwen_omni_gateway.FIELD_DEFAULTS
+    assert config.upstream_url == defaults["qwen_omni_realtime_url"]
+    assert config.model == defaults["qwen_omni_model"]
+    assert config.voice == defaults["qwen_omni_voice"]
+    config.validate()
 
 
 class _BrowserSocket:
@@ -100,10 +103,12 @@ class _UpstreamContext:
 
 
 @pytest.mark.asyncio
-async def test_gateway_injects_authorization_and_relays_both_directions(monkeypatch) -> None:
+@pytest.mark.parametrize("doubao", [False, True])
+async def test_gateway_injects_authorization_and_relays_both_directions(monkeypatch, doubao) -> None:
     monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://workspace.example/realtime")
     monkeypatch.setenv("QWEN_OMNI_API_KEY", "private-key")
     monkeypatch.setenv("QWEN_OMNI_MODEL_NAME", "qwen3.5-omni-flash-realtime")
+    monkeypatch.setenv("DOUBAO_REALTIME_API_KEY", "private-seed-key")
     browser = _BrowserSocket()
     upstream = _UpstreamSocket()
     connect_call = {}
@@ -114,13 +119,18 @@ async def test_gateway_injects_authorization_and_relays_both_directions(monkeypa
 
     monkeypatch.setattr(qwen_omni_gateway.websockets, "connect", fake_connect)
 
-    await qwen_omni_gateway.serve_qwen_omni_websocket(browser)
-
-    assert connect_call["url"].endswith("?model=qwen3.5-omni-flash-realtime")
-    assert connect_call["additional_headers"] == {"Authorization": "Bearer private-key"}
+    if doubao:
+        await qwen_omni_gateway.serve_doubao_websocket(browser)
+        assert connect_call["url"] == "wss://openspeech.bytedance.com/api/v3/realtime"
+        assert connect_call["additional_headers"] == {"X-Api-Key": "private-seed-key"}
+    else:
+        await qwen_omni_gateway.serve_qwen_omni_websocket(browser)
+        assert connect_call["url"].endswith("?model=qwen3.5-omni-flash-realtime")
+        assert connect_call["additional_headers"] == {"Authorization": "Bearer private-key"}
     assert json.loads(upstream.sent[0]) == {"type": "session.update"}
     assert browser.sent[0] == {"type": "session.created"}
-    assert browser.sent[-1]["error"]["code"] == "qwen_gateway_upstream_closed"
+    provider = "doubao" if doubao else "qwen"
+    assert browser.sent[-1]["error"]["code"] == f"{provider}_gateway_upstream_closed"
     assert browser.closed == (1000, "")
 
 

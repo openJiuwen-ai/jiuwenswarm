@@ -736,6 +736,8 @@
   },
   "videoLive": {
     "screenCapture": {
+      "modelUnsupported": "The current model or endpoint does not support image input. Screen sharing has stopped; voice chat continues. Service details: {{reason}}",
+      "imagePreviouslyRejected": "The service already rejected image input on this connection",
       "failed": "Screen sharing failed: {{reason}} [{{errorType}}]; native error: {{nativeMessage}}; stage: {{stage}}; elapsed: {{elapsedMs}} ms; diagnostic ID: {{captureId}}",
       "permissionOrCancel": "Sharing was not authorized: selection may have been cancelled, or browser/system screen-recording permission denied; the exception alone does not identify which",
       "aborted": "Capture was aborted: the picker may have been cancelled, a previous request may still be pending, or system capture may have failed",
@@ -757,6 +759,7 @@
     "errors": {
       "startFailed": "Failed to start the Full-duplex session.",
       "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.",
+      "doubaoVoiceOnly": "Doubao realtime sessions currently use voice input. Send text messages in regular chat.",
       "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.",
       "textSendFailed": "Failed to send the text input."
     },
@@ -1358,6 +1361,9 @@
       "ttsVoiceLabel": "Speech synthesis voice",
       "qwenModelLabel": "Qwen model",
       "qwenVoiceLabel": "Qwen voice",
+      "doubaoProvider": "Doubao Seed-Realtime",
+      "doubaoKeyLabel": "Doubao Voice API Key",
+      "doubaoRequiredFields": "Enter a Doubao API key with realtime audio/video access. Leave other fields blank to use the defaults shown in gray.",
       "replyLanguageLabel": "Reply language",
       "replyLanguageDescription": "Controls the spoken and written reply language. Takes effect the next time Full-duplex starts.",
       "replyLanguageMatch": "Match conversation",
@@ -1365,7 +1371,7 @@
       "replyLanguageEn": "English",
       "deleteTitle": "Delete full-duplex model settings",
       "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key.",
-      "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again."
+      "requiredFields": "Only the API key is required. Leave other fields blank to use the defaults shown in gray. Saved keys do not need to be entered again."
     },
     "fields": {
       "vision_enabled": {
