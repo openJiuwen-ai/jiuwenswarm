@@ -54,6 +54,15 @@ extensions:
   extension_dirs: "C:/dev/jiuwen-plugins;D:/team/plugins"
 ```
 
+`extension_dirs` 中的相对路径按 Gateway 进程的工作目录解析。随安装包发布的扩展由启动流程
+自动处理：若 `config/.env` 的 `EXTENSION_DIRS` 为空，`jiuwenswarm-start` / `jiuwenswarm-app`
+启动前以及 `jiuwenswarm-init` 结束时，会把本安装的扩展目录（源码为 `<仓库>/jiuwenswarm/extensions`，
+安装包为包内 `extensions`）以绝对路径写回该行，因此无需手工配置。在 `config/.env` 或
+`config.yaml` 中显式填写的值优先，不会被覆盖。
+
+单独使用 `jiuwenswarm-gateway` 启动（不经过 `jiuwenswarm-start` / `jiuwenswarm-init`，例如
+自行拉起的分体部署）时不会触发上述写入，需要在部署环境把 `EXTENSION_DIRS` 配成绝对路径。
+
 可通过以下通用接口检查发现结果和静态资源：
 
 ```text
