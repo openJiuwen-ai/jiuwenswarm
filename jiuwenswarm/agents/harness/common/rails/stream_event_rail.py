@@ -78,6 +78,9 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
 from jiuwenswarm.agents.harness.common.rails.tool_result_normalize_rail import (
     PRE_NORMALIZE_RESULT_KEY,
 )
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    business_failure_signal,
+)
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
     filter_todos_for_execution,
@@ -351,13 +354,32 @@ def _nonzero_exit(value: Any) -> bool | None:
     return None
 
 
+_NESTED_TEXT_SCAN_MAX_CHARS = 500
+_NESTED_FAILURE_PREFIXES = ("MCP error", "[ERROR]", "[TOOL_NOT_AVAILABLE]")
+
+
+def _nested_text_may_signal_error(text: str) -> bool:
+    """嵌套字符串值是否值得做失败扫描。
+
+    ``invoke_tool`` 的 ``result`` 里常是目标工具的完整正文（文件内容、日志、
+    代码片段）。对任意长正文套 ``exit code`` / ``success: False`` 正则，会把
+    "正文里恰好提到失败字样"误判成失败，因此只扫 JSON 文本、失败独有前缀和
+    短文本（与 ``tool_result_schema._normalize_text`` 的短文本阈值一致）。
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped[0] in "{[":
+        return True
+    if stripped.startswith(_NESTED_FAILURE_PREFIXES):
+        return True
+    return len(stripped) <= _NESTED_TEXT_SCAN_MAX_CHARS
+
+
 def _infer_tool_result_error(value: Any) -> bool | None:
     if isinstance(value, dict):
-        if "success" in value:
-            if _boolish_false(value.get("success")):
-                return True
-            if _boolish_true(value.get("success")):
-                return False
+        if _boolish_false(value.get("success")):
+            return True
         if _boolish_true(value.get("is_error")) or _boolish_true(value.get("isError")):
             return True
         if _boolish_false(value.get("ok")):
@@ -375,20 +397,47 @@ def _infer_tool_result_error(value: Any) -> bool | None:
             exit_failed = _nonzero_exit(value.get(key))
             if exit_failed is not None:
                 return exit_failed
-        for key in ("data", "raw_output", "rawOutput", "result"):
+        # 业务拒绝态（applied=false / status=rejected / failures 非空）：RPC 成功
+        # 不等于业务成功，见 tool_result_schema.business_failure_signal。
+        business_failed, _ = business_failure_signal(value)
+        if business_failed:
+            return True
+        # 嵌套信封：外层 success=True 只说明"包装调用"成功，内层失败仍然优先。
+        # 这段递归此前永远走不到——success 为真时在上方提前 return False，
+        # 导致 invoke_tool / MCP 包装里的真实失败被上报为成功。
+        # 键集合与顺序对齐 ``_unwrap_tool_failure``，且**任一键失败即失败**：
+        # 多键载荷可能同时带一个干净的 result 与一个被拒的 data，不能由首个
+        # 非 None 结论决定。
+        nested_results: list[bool | None] = []
+        for key in ("result", "data", "raw_output", "rawOutput"):
             nested = value.get(key)
             if isinstance(nested, (dict, list)):
                 nested_error = _infer_tool_result_error(nested)
-                if nested_error is not None:
-                    return nested_error
+            elif isinstance(nested, str) and _nested_text_may_signal_error(nested):
+                nested_error = _infer_tool_result_error(nested)
+            else:
+                continue
+            if nested_error is True:
+                return True
+            nested_results.append(nested_error)
+        if any(nested_error is False for nested_error in nested_results):
+            return False
+        if _boolish_true(value.get("success")):
+            return False
         return None
 
     if isinstance(value, list):
-        for item in value:
-            item_error = _infer_tool_result_error(item)
-            if item_error:
-                return True
-        return None
+        # 与 ``normalize_tool_result`` / ``business_failure_signal`` 的 list
+        # 分支同口径：全部单项失败才算失败。部分成功是真实业务语义，混合批量
+        # 结果不能在帧上标红而模型侧判成功。
+        if not value:
+            return None
+        item_results = [_infer_tool_result_error(item) for item in value]
+        if all(item_error is True for item_error in item_results):
+            return True
+        if all(item_error is None for item_error in item_results):
+            return None
+        return False
 
     if isinstance(value, str):
         text = value.strip()
@@ -399,9 +448,14 @@ def _infer_tool_result_error(value: Any) -> bool | None:
         except Exception:
             parsed = None
         if isinstance(parsed, (dict, list)):
-            parsed_error = _infer_tool_result_error(parsed)
-            if parsed_error is not None:
-                return parsed_error
+            # JSON 解析成功即返回：dict / list 分支已覆盖 success / is_error / status /
+            # exit_code / 业务拒绝态与嵌套信封。落到下面会重复解析同一文本
+            # （business_failure_signal 会对原文再 loads 一次），还会把正文里恰好出现的
+            # "success: False" 当成失败。
+            return _infer_tool_result_error(parsed)
+        business_failed, _ = business_failure_signal(text)
+        if business_failed:
+            return True
         if re.search(r"\bsuccess\s*[:=]\s*False\b", text, re.IGNORECASE):
             return True
         if text.startswith("[ERROR]"):

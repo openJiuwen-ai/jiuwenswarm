@@ -8,7 +8,7 @@
 | 编号 / slug | S_08 / tool-loop-circuit-breaking |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/execution_guard/circuit_breaker_rail.py`（rail + `ToolResultErrorDetector` + 三 dataclass）；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_build_circuit_breaker_rail` / `_circuit_breaker_config_from_mapping` / `_coerce_circuit_breaker_threshold`） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen.harness.rails.base.DeepAgentRail`、`openjiuwen.core.single_agent.rail.base.AgentCallbackContext / InvokeInputs`；互斥方 `agent_ras`（RAS 检测器族，`repeat_tool` / `llm_thinking_loop`） |
-| 最近一次修订日期 | 2026-10-24 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -48,7 +48,7 @@
 
 与四检测器不同的一条**失败专用**快停链，配置在 `execution_guard.tool_failure_loop`：
 
-- 计数键 = 目标工具名 + 规范化参数（`invoke_tool` 取内层目标，直接调用取工具名）；只统计**失败**结果（`_unwrap_tool_failure` 先经 `normalize_tool_result`，再剥 `result` / JSON 信封）。
+- 计数键 = 目标工具名 + 规范化参数（`invoke_tool` 取内层目标，直接调用取工具名）；只统计**失败**结果（`_unwrap_tool_failure` 先查 `business_failure_signal`，再经 `normalize_tool_result`，最后剥 `result` / JSON 信封，逐层递归）。
 - 错误判等用全文 sha256，展示/日志只用前 300 字符；错误变化、换工具/参数或中途成功都会重置。
 - 达到 `threshold`（默认 3）后 `ctx.request_force_finish({"result_type": "answer"})`，本轮结束。守卫整体 try/except fail-open，且放在 DeepResearch binding 释放之后，永不阻断工具生命周期。
 - **与 N1 的关系**：本链只对失败计数，不参与成功重复 / ping-pong / 无进展判定，通常先于 `agent_ras.repeat_tool` 的通用阈值触发并直接收轮，不构成同一循环的双重 force-finish；因此默认开，不受 N1「断路器默认关」约束。
@@ -86,6 +86,40 @@
 `_normalize` 归一链：None → dict 原样 → `model_dump()`（pydantic）→ 有 `success` 属性的对象取 `{success, data, error}` → 字符串：`{` 开头尝试 `json.loads`（失败弃）→ `success = False/True` 的 repr 正则（`^success\s*=\s*...`）→ 裸前缀（upper 后 startswith，N10）→ 不可归一返回 None。
 
 `_dict_has_error` 判定链（顺序即优先级）：`success` 键 boolish 定夺（false → True，true → False）→ `is_error` / `isError` boolish true → `status ∈ {error, failed, failure}` → `result_type == "error"` → `error` 非空且非 `"none"` → exit code（`exit_code` / `exitCode` / `returncode` / `return_code`）int 非 0 → `data` 嵌套递归（`check_data=False` 只下探**一层**）。boolish：`False` / `"false"` / `"0"` / `"no"` 与对偶。
+
+### `business_failure_signal`（业务拒绝态，与上面的判定互补）
+
+`tool_result_schema.business_failure_signal(value) -> (failed, error_text)` 专判"成功的 RPC +
+失败的业务态"——这类载荷没有通用错误键，且业务状态**不得**写进工具级 `status`（S1，见
+`tool_result_schema` 模块文档），所以既不进 `normalize_tool_result` 的 status 映射，也不能扩进
+`has_failure_signal`（后者与 `_dict_has_error` 逐字同源，扩了会同时改熔断器口径）。判定口径
+（三选一即失败）：
+
+- `status ∈ {rejected, denied, blocked}`；
+- `failures` / `errors` 列表非空；
+- `applied=false` 且非 dry-run（`dryRun` / `dry_run` 为真时 `applied:false` 是正常结果）。
+
+字符串入参先尝试 JSON 解析，解析不成走 `normalize_tool_result`（覆盖 `MCP error` / `[ERROR]` /
+`Exit code: N`）；list 与 `normalize_tool_result` 同口径——**全部单项失败才算失败**（部分
+成功是真实业务语义，见 S1/S6）；递归深度上限 4 层。**同一层显式 `success=true` 优先**
+（与 `has_failure_signal` / `_dict_has_error` 的 success 优先序一致，避免把
+`{"success": true, "errors": [...]}` 这类成功载荷误判成失败）；包装器自己的 `success`
+不掩盖内层失败——`_unwrap_tool_failure` 与 `_infer_tool_result_error` 都逐层下探同一组
+键 `result` / `data` / `raw_output` / `rawOutput`（两处必须保持一致，否则模型侧结论与
+`tool_result` 帧会分叉），且**任一键命中失败即失败**：多键载荷可能同时带一个干净的
+`result` 与一个被拒的 `data`，不能由首个非 None 结论决定。消费方是 `_unwrap_tool_failure`（模型可见的
+`invoke_tool.success`）与 `_infer_tool_result_error`（`tool_result` 帧，见 [[S_20]]）。
+新增业务态词表按 N10 的准入标准评估（失败独有、成功绝不出现），不要放宽成模糊匹配。
+
+`_infer_tool_result_error` 的字符串分支**JSON 解析成功即返回**：dict / list 分支已经覆盖
+`success` / `is_error` / `status` / exit code / 业务拒绝态与嵌套信封，落到文本正则既会
+重复解析同一字符串（每条 `tool_result` 帧都会触发），也会把正文里恰好出现的
+`success: False` 误判成失败。
+
+list 口径三处统一（`business_failure_signal` / `_unwrap_tool_failure` /
+`_infer_tool_result_error`）：**全部单项失败才算失败**，混合批量结果一律按部分成功处理。
+避免同一份 list 在模型侧（`invoke_tool.success` + `tool_failure_loop`）与帧侧
+（`tool_result.is_error`）给出相反结论。
 
 ### 装配（interface_deep）
 

@@ -10,7 +10,9 @@ tests pin the propagation contract that is observable without a live server.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.foundation.tool import McpServerConfig
@@ -34,7 +36,8 @@ def _restore_patch_bindings(monkeypatch):
 
     # 成对恢复绑定与 guard；实际函数标记保证重复 apply 不会叠加包装。
     for cls in (SseClient, StreamableHttpClient, ToolMgr):
-        for name in ("connect", "_do_connect", "disconnect", "call_tool", "list_tools", "_create_client"):
+        for name in ("connect", "_do_connect", "disconnect", "call_tool",
+                     "call_tool_with_meta", "list_tools", "_create_client"):
             if name in cls.__dict__:
                 monkeypatch.setattr(cls, name, cls.__dict__[name])
     for module, name in ((sse, "sse_client"), (streamable_http, "streamablehttp_client")):
@@ -114,6 +117,155 @@ class TestStampedTimeoutPropagation:
         await client.call_tool("delay_remote", {"seconds": 0})
 
         assert captured["timeout"] == pytest.approx(DEFAULT_CALL_TIMEOUT + 5.0)
+
+
+class TestMetaVariantCoverage:
+    """``call_tool`` 与 ``call_tool_with_meta`` 两层都必须被同一套保护覆盖。
+
+    agent-core 的 ``call_tool`` 委托给 ``call_tool_with_meta``；remote 适配器与
+    ``MCPTool.invoke`` 优先走 meta 版本。local venv 里的 openjiuwen 可能还没有
+    meta 版本，这里用等价 stub 注入，保证包装与“内层不重入锁”契约不依赖版本。
+    """
+
+    @pytest.mark.asyncio
+    async def test_meta_variant_is_wrapped_and_keeps_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+        async def call_tool_with_meta(self, tool_name, arguments, *, timeout=None):
+            return "mcp error payload", True
+
+        monkeypatch.setattr(SseClient, "call_tool_with_meta", call_tool_with_meta, raising=False)
+        apply_mcp_call_timeout_patch()
+
+        assert getattr(SseClient.call_tool_with_meta, "_jws_mcp_wrapper", None) == "call-timeout"
+        assert (SseClient, "call_tool_with_meta") in patch._wrapped_methods
+
+        client = _make_sse_client()
+        content, is_error = await asyncio.wait_for(client.call_tool_with_meta("echo", {}), 1)
+        assert (content, is_error) == ("mcp error payload", True)
+
+    @pytest.mark.asyncio
+    async def test_nested_call_tool_enters_io_section_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """agent-core 的 call_tool → call_tool_with_meta 不能重入同一个 IO 锁。"""
+        from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+        async def call_tool_with_meta(self, tool_name, arguments, *, timeout=None):
+            self._session.calls.append((tool_name, arguments))
+            return None, False
+
+        async def call_tool(self, tool_name, arguments, *, timeout=None):
+            content, _ = await self.call_tool_with_meta(
+                tool_name, arguments, timeout=timeout
+            )
+            return content
+
+        monkeypatch.setattr(SseClient, "call_tool_with_meta", call_tool_with_meta, raising=False)
+        monkeypatch.setattr(SseClient, "call_tool", call_tool, raising=False)
+        apply_mcp_call_timeout_patch()
+
+        seen: list[Any] = []
+        real_lock = patch._client_io_lock
+
+        def counting_lock(target: Any) -> Any:
+            seen.append(target)
+            return real_lock(target)
+
+        monkeypatch.setattr(patch, "_client_io_lock", counting_lock)
+
+        client = _make_sse_client()
+        assert await asyncio.wait_for(client.call_tool("echo", {}), 1) is None
+        assert client._session.calls == [("echo", {})]  # type: ignore[attr-defined]
+        # 只允许进入一次 IO 临界区；否则 asyncio.Lock（不可重入）会死锁。
+        assert seen == [client]
+
+    @pytest.mark.asyncio
+    async def test_streamable_owner_routes_meta_variant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+            StreamableHttpClient,
+        )
+
+        from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+        async def call_tool_with_meta(self, tool_name, arguments, *, timeout=None):
+            return None, False
+
+        monkeypatch.setattr(
+            StreamableHttpClient, "call_tool_with_meta", call_tool_with_meta, raising=False
+        )
+        apply_mcp_call_timeout_patch()
+        client = StreamableHttpClient(McpServerConfig(
+            server_id="meta-route", server_name="meta-route",
+            server_path="http://127.0.0.1:9/mcp", client_type="streamable-http",
+        ))
+        patch._install_streamable_http_owner(client)
+        # owner 必须把 meta 版本也挂到同一个串行队列上，不能走未串行的类方法。
+        assert "call_tool_with_meta" in client.__dict__
+        assert client.call_tool_with_meta is not StreamableHttpClient.call_tool_with_meta
+
+    @pytest.mark.asyncio
+    async def test_owner_routed_nested_meta_does_not_starve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """owner 路由 + ``call_tool`` 委托 ``call_tool_with_meta`` 不能饿死。
+
+        外层调用经 owner 队列执行，``_invoke_once`` 的 ``wait_for`` 子任务里
+        agent-core 的 ``call_tool`` 会委托 ``self.call_tool_with_meta``，而该属性
+        是 owner 挂的实例级 routed。若 ``submit`` 只认 owner 任务，内层请求入队后
+        永远等不到出队，只能空转到 timeout 再断连（merge-base 无此问题）。
+        """
+        from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+            StreamableHttpClient,
+        )
+
+        from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+        calls: list[str] = []
+
+        async def call_tool_with_meta(self, tool_name, arguments, *, timeout=None):
+            calls.append(tool_name)
+            return "payload", True
+
+        async def call_tool(self, tool_name, arguments, *, timeout=None):
+            content, _ = await self.call_tool_with_meta(
+                tool_name, arguments, timeout=timeout
+            )
+            return content
+
+        monkeypatch.setattr(
+            StreamableHttpClient, "call_tool_with_meta", call_tool_with_meta, raising=False
+        )
+        monkeypatch.setattr(StreamableHttpClient, "call_tool", call_tool, raising=False)
+        apply_mcp_call_timeout_patch()
+
+        client = StreamableHttpClient(McpServerConfig(
+            server_id="owner-nested", server_name="owner-nested",
+            server_path="http://127.0.0.1:9/mcp", client_type="streamable-http",
+        ))
+        # 已有会话即跳过 _ensure_connected 的真实连接。
+        client._session = object()
+        patch._install_streamable_http_owner(client)
+        monkeypatch.setattr(patch, "disconnect_remote_mcp_client", AsyncMock())
+
+        owner = client._jws_http_owner
+        try:
+            result = await asyncio.wait_for(client.call_tool("echo", {}), 1)
+        finally:
+            # owner 任务在第一次 submit 时才创建。
+            owner_task = owner.task
+            if owner_task is not None:
+                owner_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await owner_task
+
+        assert result == "payload"
+        # 底层只执行一次：内层委托必须内联，不能再排一次队。
+        assert calls == ["echo"]
 
 
 @pytest.mark.asyncio

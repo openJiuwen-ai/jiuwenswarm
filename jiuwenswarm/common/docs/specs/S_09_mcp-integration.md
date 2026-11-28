@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
 | 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch, mcp_http_hook}.py |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联 feature | F_01_deepresearch-mcp-delegation.md、F_03_mcp-registration-decoupled-from-chat.md |
 
 ## 范围 / 边界
@@ -90,6 +90,10 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   无论 scanner 是否启动都关闭全局 worker。
   `_jws_call_timeout` 印章、SDK read timeout、AbilityManager 截止桥、共享 client
   串行和死会话重试一次（at-least-once）保持；外部取消必须传播。
+  `call_tool_with_meta` 与 `call_tool` 受同一套包装覆盖（remote 适配器与
+  `MCPTool.invoke` 优先走 meta 版本）；两者都包装时内层只做单次 I/O——
+  用 ContextVar 记录已进入的 client IO 临界区，否则 `call_tool → call_tool_with_meta`
+  会重入同一个不可重入的 `asyncio.Lock` 而死锁。
   包装幂等性以当前方法/factory 的显式标记为准；即使 `_PATCHED` 与注册集合被重置，
   也不得重复包装或叠加 ToolMgr owner。旧 SDK 建连吞掉新收到的取消并返回 False 时，
   补丁须恢复该取消，让外层超时及用户取消保持原语义。
@@ -244,6 +248,7 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 | `mcp_config.py` | `RequestScopedOfficeClawMcpTool(..., runtime_params=None, catalog_host=False)` / `.catalog_host` / `office_claw_tool_identity_value(tool, key)` / `CONNECTOR_RUNTIME_PARAMS_INVALID` | N16 / N17；执行时参数此处只绑定，按 `via` 下发见后续能力（N13） |
 | `mcp_server_registry.py` | `runtime_delivery(declaration, values) -> (via, group)` / `GlobalMcpWorkerPool.acquire_grouped(server_name, params, group, max_workers, *, replace=None)` / `McpServerRegistry.acquire_group_worker(server_name, group, *, replace=None)` / `McpRegistrySettings.worker_group_size` | N19；返回的 worker 已占位 |
 | `mcp_config.py` | `_PooledMcpWorker.call_tool(name, arguments, *, meta=None, reserved=False)` / `RequestScopedOfficeClawMcpTool(..., runtime_via="", runtime_group="")` | N19；`meta` 只对 stdio 会话生效 |
+| `mcp_config.py` | `_RemoteMcpCallAdapter.call_tool(name, arguments)` / `_call_with_meta` | remote 路径的唯一形态对齐点：把 openjiuwen client 的裸返回值重新包成 `CallToolResult(content=[TextContent])`，并**必须透传 `isError`**（优先 `call_tool_with_meta`，缺失时回退 `call_tool` 且视为成功）。丢了标志，`RequestScopedOfficeClawMcpTool.invoke` 的失败补偿层永不触发，工具失败被上报为成功（[[B_11_mcp-tool-iserror-propagation]]） |
 | `mcp_server_registry.py` | `runtime_delivery(declaration, values, request_key="") -> (via, 池键后缀, 是否随请求关闭)` / `apply_runtime_params(params, via, values)` / `acquire_worker(name, *, force_rebuild=False, via="", values=None, variant="")` / `GlobalMcpWorkerPool.retire_variant(server_name, variant, *, reason="")` / `deepresearch_connect_params(params, declaration, values=None)` | N20–N22 |
 | `mcp_config.py` | `RequestScopedOfficeClawMcpTool(..., request_owned_worker=False)` / `.request_owned_worker` | N20；返回随请求关闭的连接的池键后缀，否则为空 |
 | `mcp_server_registry.py` | `rescan_servers(names, scan_params=None)` / `GlobalMcpWorkerPool.active_worker(server_name)` / `GlobalMcpWorkerPool.on_worker_event` | N23 |
@@ -277,6 +282,7 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 | remote URL 指向内网 / 元数据地址 | SSRF 屏蔽拒绝 | 准入测试（逃生 env 显式开） |
 | 企业版配置 stdio MCP | 拒绝（N2） | 企业分支测试 |
 | remote 调用挂死 | 保留超时，在 owner 清理；下次调用重连。死会话错误当轮重试一次 | `test_mcp_call_timeout_recovery.py` |
+| MCP 服务用 `isError` 声明工具级失败（RPC 本身成功） | `_RemoteMcpCallAdapter` 透传 `isError`，`invoke` 的补偿层产出 `status=error` / `error_code=mcp_tool_error` 信封 | `test_tool_result_business_failure.py` |
 | remote 生命周期取消/退出 | 进入和退出同任务，清理失败报错且禁止换任务复用残留上下文 | `test_mcp_remote_lifecycle.py`（真实 AnyIO TaskGroup + 内存传输） |
 | 共享 client 并发调用 | `_client_io_lock` 串行 | 同上 |
 | 扫描期工具列表失败 | 保留旧快照（N8） | `test_mcp_tool_list_refresh_patch.py` |
@@ -309,8 +315,15 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 
 ## 修改检查单
 
+- 改 remote 调用的封装（`_RemoteMcpCallAdapter` / worker 返回形状）→ 必须保留
+  `CallToolResult.isError`（或改用 `call_tool_with_meta`），并回归
+  `RequestScopedOfficeClawMcpTool.invoke` 的失败补偿分支（`status=error` /
+  `error_code=mcp_tool_error`）；只搬 `content` 会把工具失败伪装成成功。
 - 改 patch 目标（上游 SDK 升级）→ 属性名常量表（N8 G.CLS.11）同步 +
   `inspect` 确认新签名 + 两个 patch 测试文件回归 + 列出全部同构包装点逐个确认。
+  新增返回形状不同的公开方法（如 `call_tool_with_meta`）→ 同步加入
+  `_wrap_with_timeout` 与 `_install_streamable_http_owner` 的名单，并回归
+  “嵌套调用只进一次 IO 临界区”。
 - 自建 remote MCP client → **必须补 `_jws_call_timeout` 印章**（N7 契约耦合）。
 - 改 `_run_mcp_worker` / `shutdown_pooled_mcp_worker` 的取消分支 → 用真实 AnyIO task
   group 子任务崩溃（取消 owner 本身）回归：调用者拿到普通错误且 `cancelling()==0`，

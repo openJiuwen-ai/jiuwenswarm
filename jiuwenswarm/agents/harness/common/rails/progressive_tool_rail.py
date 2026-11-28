@@ -42,6 +42,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     vision_tool_targets_all_provided,
 )
 from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    business_failure_signal,
     normalize_tool_result,
 )
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
@@ -144,13 +145,24 @@ def _unwrap_tool_failure(value: Any) -> tuple[bool, str]:
     ``RequestScopedOfficeClawMcpTool`` returns ``{"result": "<json text>"}``,
     so a tool-level error sits one or more envelopes below the dict that this
     rail used to stamp as ``success: True``. Normalize first (covers
-    ``success: false`` / status / error keys / exit codes), then peel
-    ``result`` wrappers and JSON strings until a payload remains.
+    ``success: false`` / status / error keys / exit codes), then peel the
+    envelope keys (``result`` / ``data`` / ``raw_output`` / ``rawOutput`` —
+    same set as ``_infer_tool_result_error``) and JSON strings until a payload
+    remains.
+
+    Normalization alone is not enough for servers that report a rejected
+    operation as a *successful* RPC: ``{"applied": false, "status": "rejected",
+    "failures": [...]}`` carries no generic error key, and a bare
+    ``MCP error -32602 ...`` string never parses as JSON. Both are real tool
+    failures, so ``business_failure_signal`` is consulted at every level.
     """
     if value is None:
         return False, ""
     if isinstance(value, BaseException):
         return True, str(value).strip()
+    business_failed, business_text = business_failure_signal(value)
+    if business_failed:
+        return True, business_text
     normalized = normalize_tool_result(value)
     if normalized.get("status") != "success":
         text = (
@@ -161,13 +173,23 @@ def _unwrap_tool_failure(value: Any) -> tuple[bool, str]:
         )
         return True, str(text).strip()
     if isinstance(value, dict):
-        inner = value.get("result")
-        if isinstance(inner, str):
-            parsed = _try_parse_json_dict(inner)
-            if parsed is not None:
-                inner = parsed
-        if isinstance(inner, (dict, list)):
-            return _unwrap_tool_failure(inner)
+        # 下探键与 ``_infer_tool_result_error`` 对齐：``data`` 是 openjiuwen
+        # ToolOutput 的载荷键，``raw_output`` / ``rawOutput`` 是命令类工具的
+        # 原始输出键。任一键下探到失败即失败（多键载荷可能同时带 result 与
+        # data，不能只看第一个成功的键）。
+        for key in ("result", "data", "raw_output", "rawOutput"):
+            inner = value.get(key)
+            if inner is value:
+                continue
+            if isinstance(inner, str):
+                parsed = _try_parse_json_dict(inner)
+                if parsed is not None:
+                    inner = parsed
+            if not isinstance(inner, (dict, list, str)):
+                continue
+            failed, text = _unwrap_tool_failure(inner)
+            if failed:
+                return True, text
     return False, ""
 
 
