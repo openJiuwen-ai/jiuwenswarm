@@ -79,7 +79,8 @@ class ListFilesQuery(BaseModel):
 
 
 @router.post("/sandboxes", response_model=SandboxRef, status_code=201)
-async def create_sandbox(request: CreateSandboxRequest):
+async def create_sandbox(request: CreateSandboxRequest, response: Response):
+    response.headers["X-Jiuwenbox-Public-Error"] = "true"
     if request.sandbox_id is None or request.sandbox_id.strip() == "":
         sandbox_id = None
     else:
