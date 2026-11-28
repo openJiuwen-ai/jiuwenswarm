@@ -4,9 +4,10 @@ Pins that reply language follows ``preferred_response_language`` when it is
 ``en`` / ``zh``, and matches this turn's ``content`` when the field is
 ``match`` or omitted — not the UI ``preferred_language``.
 
-Also pins the normalization behaviour of the section builders so that raw
-settings such as ``"zh"`` / ``"EN"`` cannot silently fall into the English
-branch.
+Also pins that visible thinking / reasoning narration follows the same
+output-language section, and the normalization behaviour of the section
+builders so that raw settings such as ``"zh"`` / ``"EN"`` cannot silently
+fall into the English branch.
 """
 
 import pytest
@@ -24,6 +25,13 @@ NEW_CN_MATCH = (
 NEW_EN_MATCH = (
     "`match` or a missing field for the same language as this turn's `content`"
 )
+CN_THINKING_RULE = (
+    "可见的思考过程与推理叙述也遵循本小节，与最终回复同语；不得因模型习惯改用语种。"
+)
+EN_THINKING_RULE = (
+    "Visible thinking and reasoning narration follow this section and match "
+    "the final reply language; do not switch language out of model habit."
+)
 
 
 def _text(section) -> str:
@@ -39,6 +47,11 @@ def test_zh_output_rules_match_content_when_not_pinned():
     assert "`zh` 用简体中文" in text
     assert NEW_CN_MATCH in text
     assert OLD_CN_FALLBACK not in text
+    assert CN_THINKING_RULE in text
+    assert "## 思考 / 推理语言" not in text
+    assert "`reasoning_content`" not in text
+    assert "不得默认使用英文思考" not in text
+    assert text.count(NEW_CN_MATCH) == 1
 
 
 def test_en_output_rules_match_content_when_not_pinned():
@@ -49,6 +62,11 @@ def test_en_output_rules_match_content_when_not_pinned():
     assert "`zh` for Simplified Chinese" in text
     assert NEW_EN_MATCH in text
     assert OLD_EN_FALLBACK not in text
+    assert EN_THINKING_RULE in text
+    assert "## Reasoning / Thinking Language" not in text
+    assert "`reasoning_content`" not in text
+    assert "Do not default to English thinking" not in text
+    assert text.count(NEW_EN_MATCH) == 1
 
 
 def test_zh_input_docs_list_match_value():

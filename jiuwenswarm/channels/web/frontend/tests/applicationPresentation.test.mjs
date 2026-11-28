@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
@@ -65,6 +67,77 @@ test('only the most recent user message is readable and replacements invalidate 
   assert.equal(parts.join(''), full);
   assert.ok(parsePresentationRequest(request(1, 'reply', { conversationKey: 'user-last', replyId: id, offset: 0, role: 'user' })));
   assert.equal(parsePresentationRequest(request(1, 'reply', { conversationKey: 'user-last', replyId: id, offset: 0, role: 'system' })), null);
+});
+
+test('Team leader public finals are decoded without requiring a user recipient', () => {
+  const store = useChatStore.getState(); store.ensureRuntime('leader-final');
+  store.addMessage('leader-final', { id: 'question', role: 'user', content: '需求', timestamp: '1' });
+  const content = '队长公开回复🐝'.repeat(5000);
+  store.addMessage('leader-final', { id: 'team-leader-final', role: 'system', content: `team.leader:${JSON.stringify({ content })}`, timestamp: '2' });
+  for (const [id, event] of [['private', { type: 'team.message.p2p', from_member: 'developer', to_member: 'qa', content: 'private' }],
+    ['broadcast', { type: 'team.message.broadcast', from_member: 'team_leader', content: 'broadcast' }],
+    ['monitor', { type: 'team.member.created', from_member: 'team_leader', content: 'monitor' }]]) {
+    store.addMessage('leader-final', { id, role: 'system', content: `team.event:${JSON.stringify({ event })}`, timestamp: '3' });
+  }
+  const runtime = useChatStore.getState().runtimes['leader-final'];
+  const reader = createPresentationReplyReader(), replyId = reader.identify(lastPresentationReply(runtime));
+  const summary = presentationConversations([{ session_id: 'leader-final', mode: 'team' }], { 'leader-final': runtime }, 'New', reader.identify).at(-1);
+  assert.equal(summary.replyToMessageId, 'question');
+  assert.ok(summary.preview.startsWith('队长公开回复'));
+  let offset = 0; const parts = [];
+  do { const part = reader.read(runtime, replyId, offset); parts.push(part.content); offset = part.nextOffset; } while (offset !== null);
+  assert.equal(parts.join(''), content);
+  store.addMessage('leader-final', { id: 'team-leader-next', role: 'system', content: 'team.leader:{"content":"下一条"}', timestamp: '4' });
+  assert.throws(() => reader.read(useChatStore.getState().runtimes['leader-final'], replyId, 0), /REPLY_CHANGED/);
+});
+
+test('Team leader message events are public but ordinary member user messages remain in Team Ops', () => {
+  const store = useChatStore.getState(); store.ensureRuntime('leader-event');
+  store.addMessage('leader-event', { id: 'leader', role: 'system', timestamp: '1',
+    content: 'team.event:{"event":{"type":"team.message","from_member":"team_leader","content":"公开答复"}}' });
+  store.addMessage('leader-event', { id: 'member', role: 'system', timestamp: '2',
+    content: 'team.event:{"event":{"type":"team.message.p2p","from_member":"developer","to_member":"user","content":"成员定向答复"}}' });
+  store.addMessage('leader-event', { id: 'leader-private', role: 'system', timestamp: '3',
+    content: 'team.event:{"event":{"type":"team.message","from_member":"team_leader","to_member":"qa","content":"队长给成员的消息"}}' });
+  const runtime = useChatStore.getState().runtimes['leader-event'], reader = createPresentationReplyReader();
+  const id = reader.identify(lastPresentationReply(runtime));
+  assert.equal(reader.read(runtime, id, 0).content, '公开答复');
+});
+
+test('Team leader public process segments remain visible before a final and later segments preserve earlier text', () => {
+  const store = useChatStore.getState(); store.ensureRuntime('leader-process');
+  store.addMessage('leader-process', { id: 'question', role: 'user', inputRequestId: 'turn', content: '创建团队', timestamp: '1' });
+  store.addMessage('leader-process', { id: 'team-leader-intro', role: 'system', isStreaming: true, teamStream: { requestId: 'turn' },
+    content: '我来创建一个3人团队，让每人报一个数字。', timestamp: '2' });
+  const reader = createPresentationReplyReader();
+  const first = lastPresentationReply(useChatStore.getState().runtimes['leader-process']);
+  const firstId = reader.identify(first);
+  assert.equal(reader.read(useChatStore.getState().runtimes['leader-process'], firstId, 0).content, '我来创建一个3人团队，让每人报一个数字。');
+  store.updateMessage('leader-process', 'team-leader-intro', { isStreaming: false, teamStream: undefined });
+  store.addMessage('leader-process', { id: 'tool-log', role: 'system', content: 'internal tool log', timestamp: '3' });
+  store.addMessage('leader-process', { id: 'team-leader-followup', role: 'system', isStreaming: true, teamStream: { requestId: 'turn' }, content: '成员已加入。', timestamp: '4' });
+  const runtime = useChatStore.getState().runtimes['leader-process'], current = lastPresentationReply(runtime);
+  const id = reader.identify(current), summary = presentationConversations([{ session_id: 'leader-process', mode: 'team' }], { 'leader-process': runtime }, 'New', reader.identify).at(-1);
+  assert.equal(reader.read(runtime, id, 0).content, '我来创建一个3人团队，让每人报一个数字。\n\n成员已加入。');
+  assert.equal(summary.replyToMessageId, 'question');
+  assert.equal(reader.identify(lastPresentationReply({ ...runtime, isThinking: true })), id);
+  assert.throws(() => reader.read(runtime, firstId, 0), /REPLY_CHANGED/);
+});
+
+test('owner-mirrored Team events do not shadow the assistant final of an agent conversation', () => {
+  const store = useChatStore.getState(); store.ensureRuntime('agent-mirror');
+  store.addMessage('agent-mirror', { id: 'question', role: 'user', inputRequestId: 'turn', content: '帮我处理', timestamp: '1' });
+  store.addMessage('agent-mirror', { id: 'assistant-final', role: 'assistant', inputRequestId: 'turn',
+    content: '助手完整答复', timestamp: '2' });
+  store.setLastFinalReply('agent-mirror', '助手完整答复', 'turn');
+  // Owner mirroring keeps the role and the team.event prefix but clears teamId.
+  store.addMessage('agent-mirror', { id: 'owner-team-message-t1-m1', role: 'system', timestamp: '3',
+    content: 'team.event:{"event":{"type":"team.message","from_member":"team_leader","content":"队长公开答复"}}' });
+  const runtime = useChatStore.getState().runtimes['agent-mirror'], reader = createPresentationReplyReader();
+  const reply = lastPresentationReply(runtime);
+  const id = reader.identify(reply);
+  assert.equal(reader.read(runtime, id, 0).content, '助手完整答复');
+  assert.ok(runtime.messages.some((message) => message.role === 'system' && message.id === 'owner-team-message-t1-m1'));
 });
 
 test('workbench and forms share model validation and stable selection persistence', async () => {
@@ -209,6 +282,11 @@ test('the sandbox protocol accepts only explicit bounded operations and complete
   ]) assert.equal(parsePresentationRequest(value), null);
   assert.ok(parsePresentationRequest(request(2, 'resize', { width: 160, height: 960 })));
   assert.ok(parsePresentationRequest(request(3, 'workspace', {})));
+  const child = { id: 'member', title: '成员', width: 180, height: 200, config: { member: 'one' }, x: -1500, y: 500 };
+  assert.ok(parsePresentationRequest(request(4, 'children', { windows: [child] })));
+  for (const windows of [[child, child], [{ ...child, src: 'https://foreign/' }], [{ ...child, config: { huge: '中'.repeat(6000) } }]]) {
+    assert.equal(parsePresentationRequest(request(5, 'children', { windows })), null);
+  }
 });
 
 test('duplicate sends share one in-flight result and cannot change their content', async () => {
@@ -223,6 +301,16 @@ test('duplicate sends share one in-flight result and cannot change their content
   assert.equal((await ledger(request(1, 'send', { conversationKey: 'other', text: 'hello' }))).error.code, 'REQUEST_CONFLICT');
   finish(true);
   assert.deepEqual(await first, await duplicate);
+});
+
+test('new conversation requests require an explicit mode and bounded initial message', () => {
+  for (const mode of ['agent', 'team']) {
+    assert.ok(parsePresentationRequest(request(1, 'createConversation', { mode, text: '创建协作团队' })));
+  }
+  for (const params of [{ mode: 'swarm', text: 'hello' }, { mode: 'team', text: ' ' },
+    { mode: 'team', text: '中'.repeat(11000) }, { mode: 'team', text: 'hello', conversationKey: 'a' }]) {
+    assert.equal(parsePresentationRequest(request(1, 'createConversation', params)), null);
+  }
 });
 
 test('eviction stays bounded and expired ids cannot execute again', async () => {
@@ -252,7 +340,7 @@ test('one completed parallel tool does not clear the other pending tool', () => 
   assert.equal(conversationActivity(runtime), 'needsInput');
 });
 
-test('snapshots expose only single Agent summaries, with the last user message and no hidden reasoning', () => {
+test('snapshots expose visible Agent and Team sessions without hidden reasoning', () => {
   const chat = useChatStore.getState();
   chat.ensureRuntime('a'); chat.ensureTeamRuntime('a', 'expert'); chat.ensureRuntime('invisible');
   chat.addMessage('a', { id: 'u', role: 'user', content: '最近的问题', timestamp: '1' });
@@ -263,7 +351,8 @@ test('snapshots expose only single Agent summaries, with the last user message a
     { session_id: 'team', title: 'Team', mode: 'team' }], runtimes, 'New');
   assert.equal(snapshot.find(item => item.conversationKey === 'a').latestUserMessage, '最近的问题');
   assert.equal(snapshot.find(item => item.conversationKey === 'a').draft, 'draft');
-  assert.ok(!snapshot.some(item => item.teamId || item.sessionId === 'team' || item.sessionId === 'invisible'));
+  assert.equal(snapshot.find(item => item.sessionId === 'team').mode, 'team');
+  assert.ok(!snapshot.some(item => item.teamId || item.sessionId === 'invisible'));
   assert.ok(!JSON.stringify(snapshot).includes('private reasoning'));
 });
 
@@ -281,7 +370,7 @@ async function mountHost(onSend = async () => ({ accepted: true, conversationKey
   useWorkspaceStore.setState({ projectSessions: {}, pinnedSessions: [] });
   useChatStore.getState().ensureRuntime('a');
   useChatStore.getState().setInputValue('a', 'draft');
-  const requests = [], results = [], updates = [], closes = [], editorUpdates = [];
+  const requests = [], results = [], updates = [], closes = [], editorUpdates = [], movements = [];
   window.addEventListener('chat-input-sync', event => editorUpdates.push(event.detail));
   let resolveOpen, onRequest, onClosed, port;
   const api = {
@@ -291,7 +380,10 @@ async function mountHost(onSend = async () => ({ accepted: true, conversationKey
     update: async (_key, payload) => { updates.push(payload); return true; },
     respond: async (generation, result) => { results.push({ generation, ...result }); return true; },
     close: async key => { closes.push(key); return true; },
-    resize: async () => true, move: async () => true, hitTest: async () => true,
+    resize: async () => true, move: async (key, x, y) => { movements.push({ key, x, y }); return true; }, hitTest: async () => true,
+    children: async (key, generation, windows) => ({ windows: windows.map((item) => ({
+      id: item.id, key: `${key}:child:${item.id}`, generation: `child-${item.id}`,
+    })) }),
   };
   if (desktop) window.jiuwenDesktop = { presentation: api };
   function Probe(props) { port = usePresentationHost(); return liveSurface ? React.createElement(WebUIApplicationSurface, props) : null; }
@@ -315,13 +407,15 @@ async function mountHost(onSend = async () => ({ accepted: true, conversationKey
   let opening;
   if (activateInitial) await act(async () => { opening = port.activate(declaration); });
   return {
-    requests, results, updates, opening, closes, editorUpdates,
+    requests, results, updates, opening, closes, editorUpdates, movements,
     nativeApi: api, runtime, transport, target, declaration,
     register: (changes = {}) => port.update({ ...declaration, ...changes }),
     release: (key = declaration.key) => port.release(key),
     activate: (changes = {}) => port.activate({ ...declaration, ...changes }),
     ready: (generation = 'current') => resolveOpen({ generation }),
     receive: (message, generation = 'current') => onRequest({ key: declaration.key, generation, request: message }),
+    receiveChild: (message, id, parentGeneration = 'current') => onRequest({ key: `${declaration.key}:child:${id}`,
+      generation: `child-${id}`, parentKey: declaration.key, parentGeneration, request: message }),
     closed: (generation, reason = 'closed') => onClosed({ key: declaration.key, generation, reason }),
     unmount: () => root.unmount(),
     async dispose() {
@@ -333,6 +427,98 @@ async function mountHost(onSend = async () => ({ accepted: true, conversationKey
     },
   };
 }
+
+test('creating a Team prepares its mode before sending and selects the persisted conversation exactly once', async () => {
+  const calls = [];
+  const host = await mountHost(async (conversation, text) => {
+    calls.push(['send', conversation.sessionId, conversation.mode, text]);
+    useSessionStore.setState({ sessions: [{ session_id: 'created', title: 'Created', mode: 'team' }] });
+    return { accepted: true, conversationKey: 'created' };
+  }, undefined, { onSelect: async (conversation) => calls.push(['select', conversation.sessionId, conversation.mode]) });
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    calls.length = 0;
+    const create = request(1, 'createConversation', { mode: 'team', text: '协作需求' });
+    await act(async () => { await host.receive(create); });
+    await act(async () => { await host.receive(create); });
+    assert.deepEqual(calls, [['select', 'new', 'team'], ['send', 'new', 'team', '协作需求']]);
+    assert.deepEqual(host.results.at(-1).value, { conversationKey: 'created' });
+    assert.equal(host.updates.at(-1).state.selectedConversationKey, 'created');
+  } finally { await host.dispose(); }
+});
+
+test('a failed initial send keeps the draft and concurrent creation cannot switch its target', async () => {
+  let finish;
+  const host = await mountHost(() => new Promise(resolve => { finish = resolve; }));
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    await act(async () => { await host.receive(request(1, 'createConversation', { mode: 'team', text: '保留需求' })); });
+    await act(async () => { await host.receive(request(2, 'createConversation', { mode: 'team', text: '重复请求' })); });
+    assert.equal(host.results.at(-1).error.code, 'REQUEST_BUSY');
+    await act(async () => { await host.receive(request(3, 'select', { conversationKey: 'b' })); });
+    assert.equal(host.results.at(-1).error.code, 'REQUEST_BUSY');
+    await act(async () => { finish({ accepted: false, conversationKey: 'new' }); });
+    assert.equal(host.results.at(-1).error.code, 'SEND_FAILED');
+    assert.equal(useChatStore.getState().getRuntime('new').inputValue, '保留需求');
+  } finally { await host.dispose(); }
+});
+
+test('closing during new-conversation preparation prevents a stale first send', async () => {
+  let finish, sends = 0, preparing = false;
+  const host = await mountHost(async () => { sends += 1; return { accepted: true, conversationKey: 'created' }; }, undefined,
+    { onSelect: async () => { if (preparing) await new Promise(resolve => { finish = resolve; }); } });
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    preparing = true;
+    await act(async () => { await host.receive(request(1, 'createConversation', { mode: 'team', text: '需求' })); });
+    await act(async () => { await host.closed('current'); finish(); });
+    assert.equal(sends, 0);
+  } finally { await host.dispose(); }
+});
+
+test('the host forwards addressed Team messages through the existing send callback during execution', async () => {
+  const sent = [];
+  const host = await mountHost(async (conversation, text) => {
+    sent.push({ sessionId: conversation.sessionId, mode: conversation.mode, text });
+    return { accepted: true, conversationKey: conversation.conversationKey };
+  });
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    await act(async () => {
+      useSessionStore.setState({ sessions: [{ session_id: 'a', title: 'Team', mode: 'team' }] });
+      useSessionStore.getState().setMode('a', 'team');
+      useChatStore.getState().setProcessing('a', true);
+    });
+    await act(async () => { await host.receive(request(1, 'send', { conversationKey: 'a', text: '@research 请同步进展' })); });
+    await act(async () => {});
+    assert.deepEqual(sent, [{ sessionId: 'a', mode: 'team', text: '@research 请同步进展' }]);
+    assert.equal(host.results.find(item => item.id === 1).ok, true);
+  } finally { await host.dispose(); }
+});
+
+test('each child has its own request ledger and cannot route movement to a sibling or spawn children', async () => {
+  const sends = [];
+  const host = await mountHost(async (conversation, text) => {
+    sends.push(text); return { accepted: true, conversationKey: conversation.conversationKey };
+  });
+  try {
+    await act(async () => { host.ready(); await host.opening; });
+    const windows = ['one', 'two'].map((id) => ({ id, title: id, width: 180, height: 200, config: {} }));
+    await act(async () => { await host.receive(request(1, 'children', { windows })); });
+    await act(async () => { await host.receiveChild(request(1, 'send', { conversationKey: 'a', text: '@one hi' }), 'one'); });
+    await act(async () => { await host.receiveChild(request(1, 'send', { conversationKey: 'a', text: '@two hi' }), 'two'); });
+    assert.deepEqual(sends, ['@one hi', '@two hi']);
+    await act(async () => { await host.receiveChild(request(2, 'move', { deltaX: 20, deltaY: 30 }), 'one'); });
+    assert.deepEqual(host.movements, [{ key: 'bee:child:one', x: 20, y: 30 }]);
+    await act(async () => { await host.receiveChild(request(3, 'children', { windows: [] }), 'one'); });
+    assert.equal(host.results.find((item) => item.generation === 'child-one' && item.id === 3).error.code, 'TARGET_INACTIVE');
+    await act(async () => { await host.receiveChild(request(4, 'send', { conversationKey: 'a', text: 'stale parent' }), 'one', 'old'); });
+    assert.equal(sends.length, 2);
+    await act(async () => { await host.receive(request(2, 'children', { windows: [] })); });
+    await act(async () => { await host.receiveChild(request(5, 'send', { conversationKey: 'a', text: 'removed child' }), 'one'); });
+    assert.equal(sends.length, 2);
+  } finally { await host.dispose(); }
+});
 
 test('render-controlled desktop forms stay out of the launcher and retain the current page', async () => {
   const selections = [];

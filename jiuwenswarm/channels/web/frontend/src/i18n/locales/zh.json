@@ -8259,7 +8259,8 @@
       "STALE_REQUEST": "请求已过期，操作未重复执行",
       "MODEL_UNAVAILABLE": "这个模型已不可用，请重新选择",
       "REPLY_CHANGED": "回复已更新，请重新展开查看",
-      "REQUEST_BUSY": "操作尚在执行，请稍后再试"
+      "REQUEST_BUSY": "操作尚在执行，请稍后再试",
+      "WINDOWS_UNSUPPORTED": "请更新桌面客户端后使用多个悬浮窗"
     },
     "choose": "切换应用形态"
   },

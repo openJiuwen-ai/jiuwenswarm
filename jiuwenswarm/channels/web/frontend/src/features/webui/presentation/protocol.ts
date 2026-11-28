@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 import { isRecord, utf8ByteLength } from '../protocol/utils.ts';
 
 export const PRESENTATION_PROTOCOL = 'workswarm.presentation';
@@ -23,7 +24,17 @@ export function isWindowTransitionOptions(value: unknown): value is WindowTransi
     && value.durationMs >= 200 && value.durationMs <= 2000;
 }
 
-export type PresentationAction = 'select' | 'draft' | 'send' | 'stop' | 'reply' | 'model' | 'workspace' | 'resize' | 'move' | 'hitTest';
+export type PresentationAction = 'select' | 'draft' | 'send' | 'stop' | 'reply' | 'model' | 'workspace' | 'resize' | 'move' | 'hitTest' | 'children' | 'createConversation';
+export interface PresentationChild {
+  id: string;
+  title: string;
+  width: number;
+  height: number;
+  config: Record<string, unknown>;
+  x?: number;
+  y?: number;
+}
+export interface PresentationChildrenResult { windows: { id: string; key: string; generation: string }[] }
 export interface PresentationRequest {
   protocol: typeof PRESENTATION_PROTOCOL;
   version: 1;
@@ -91,6 +102,8 @@ export interface PresentationEnvelope {
   generation: string;
   key: string;
   request: unknown;
+  parentKey?: string;
+  parentGeneration?: string;
 }
 export interface PresentationNativeApi {
   open: (config: ApplicationSurfaceConfig) => Promise<{ generation: string }>;
@@ -101,12 +114,13 @@ export interface PresentationNativeApi {
   resize: (key: string, width: number, height: number) => Promise<boolean>;
   move: (key: string, deltaX: number, deltaY: number) => Promise<boolean>;
   hitTest: (key: string, interactive: boolean) => Promise<boolean>;
+  children?: (key: string, generation: string, windows: PresentationChild[]) => Promise<PresentationChildrenResult>;
   onRequest: (callback: (envelope: PresentationEnvelope) => void) => () => void;
   onClosed: (callback: (event: { generation: string; key: string; reason: string }) => void) => () => void;
 }
 export interface PresentationWindowApi {
   bootstrap: () => Promise<ApplicationSurfaceConfig & {
-    generation: string; initialWorkArea: PresentationWorkArea; host?: PresentationGeometry;
+    generation: string; initialWorkArea: PresentationWorkArea; host?: PresentationGeometry; isChild?: boolean;
   }>;
   ready: (options?: WindowTransitionOptions) => Promise<true | WindowTransition>;
   startTransition: (id: string) => Promise<boolean>;
@@ -123,6 +137,22 @@ export interface PresentationWindowApi {
 const integer = (value: unknown, min: number, max: number): boolean =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
 
+export function validPresentationChildren(value: unknown): value is PresentationChild[] {
+  if (!Array.isArray(value) || value.length > 24) return false;
+  try { if (utf8ByteLength(JSON.stringify(value)) > 250 * 1024) return false; } catch { return false; }
+  const ids = new Set<string>();
+  return value.every((item) => {
+    if (!isRecord(item) || Object.keys(item).some((key) => !['id', 'title', 'width', 'height', 'config', 'x', 'y'].includes(key))
+      || typeof item.id !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(item.id) || ids.has(item.id)
+      || typeof item.title !== 'string' || !item.title.trim() || utf8ByteLength(item.title) > 200
+      || !integer(item.width, 160, 960) || !integer(item.height, 120, 960) || !isRecord(item.config)) return false;
+    try { if (utf8ByteLength(JSON.stringify(item.config)) > 16 * 1024) return false; } catch { return false; }
+    if (('x' in item || 'y' in item) && (!integer(item.x, -100000, 100000) || !integer(item.y, -100000, 100000))) return false;
+    ids.add(item.id);
+    return true;
+  });
+}
+
 export function parsePresentationRequest(value: unknown): PresentationRequest | null {
   if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'action,id,params,protocol,type,version'
     || value.protocol !== PRESENTATION_PROTOCOL || value.version !== 1 || value.type !== 'request'
@@ -132,6 +162,13 @@ export function parsePresentationRequest(value: unknown): PresentationRequest | 
   const keyValid = typeof p.conversationKey === 'string' && !!p.conversationKey
     && utf8ByteLength(p.conversationKey) <= 800;
   switch (value.action) {
+    case 'createConversation':
+      if (keys !== 'mode,text' || (p.mode !== 'agent' && p.mode !== 'team') || typeof p.text !== 'string'
+        || !p.text.trim() || utf8ByteLength(p.text) > 32 * 1024) return null;
+      break;
+    case 'children':
+      if (keys !== 'windows' || !validPresentationChildren(p.windows)) return null;
+      break;
     case 'select': case 'stop':
       if (keys !== 'conversationKey' || !keyValid) return null;
       break;

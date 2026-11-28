@@ -93,7 +93,7 @@ Box provides bounded dimensions, padding, background-image fitting and explicit 
 - C-14：replace、clear、断连、渲染失败或所属消费者释放均使旧节点绑定失效。
   同 revision 重建也分配新的 localFrameId；旧显示确认和失败反馈不能作用于新代次。
 - C-15：每次合法组件回调独立发送，包括值相同且前一个请求未完成的回调。
-  等待回执期间绑定或代次失效时返回 `stale`，不表示服务端副作用已撤销。
+  等待回执期间绑定或代次失效时返回 `stale` 并保留已收到的回执，不表示服务端副作用已撤销。
 - C-16：渲染器只接受规范化节点，插件不能注入 className 或任意 style（Avatar 的受控 style 除外）；独立的宿主外观参数优先于组件默认样式。
   Box/Button 的 unstyled 外观使用原生元素，Button 仍保留禁用、可访问标签与事件派发语义。
 - C-17：WebUI 主题配置仅作用于 Provider 子树，使用宿主语义 token 和语言设置；

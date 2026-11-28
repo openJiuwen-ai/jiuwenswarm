@@ -41,8 +41,8 @@ def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     Use this fixture when testing initialization to ensure tests are isolated.
     """
     # Import before monkeypatching to get reference
-    import jiuwenswarm.common.paths as _paths_unused_marker
-import jiuwenswarm.common.utils as utils_module
+    import jiuwenswarm.common.paths as paths_module
+    import jiuwenswarm.common.utils as utils_module
 
     # Override HOME to use temporary directory
     monkeypatch.setenv("HOME", str(temp_home))

@@ -22,6 +22,7 @@ generated: true
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
+| [jiuwenswarm/agents/harness/common/prompt](#module-jiuwenswarm-agents-harness-common-prompt) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
 | [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
@@ -148,6 +149,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
+
+<a id="module-jiuwenswarm-agents-harness-common-prompt"></a>
+
+## jiuwenswarm/agents/harness/common/prompt
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261128_1501_thinking-language-match-content](jiuwenswarm/agents/harness/common/prompt/B_20261128_1501_thinking-language-match-content.md) | B | 思考过程语言不跟随 match / 输出语言规则 | whds5279 | 无独立 D：无独立 D；对既有 preferred_response_language（en/zh/match）输出语言契约的小范围补强，使可见思考叙述与最终回复同语。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 
@@ -306,6 +315,7 @@ generated: true
 | [B_20261127_1143_chat-reply-loss](jiuwenswarm/server/B_20261127_1143_chat-reply-loss.md) | B | 修复会话无回复与集群审批后未执行 | kdgmpw | 无独立 D：修复现有对话派发和计划审批流程，依据 Issue #7119 的原始日志与复现。 |
 | [B_20261128_0955_local-app-delete-safeguards](jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
 | [B_20261126_1750_source-skill-display-name-ledger](jiuwenswarm/server/runtime/skill/B_20261126_1750_source-skill-display-name-ledger.md) | B | 企业源技能广场改名后账本 display_name 冻结及前后端展示优先级不一致 | meizi6 | 无独立 D：线上缺陷（Issue |
+| [B_20261128_1430_webui-filetree-stale-receipt](extensions/B_20261128_1430_webui-filetree-stale-receipt.md) | B | WebUI FileTree 帧先于回执到达导致 stale 误报与状态机加固 | kusanagima | 无独立 D：基于现有 WebUI 组件交互与渲染帧契约的缺陷修复，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 
