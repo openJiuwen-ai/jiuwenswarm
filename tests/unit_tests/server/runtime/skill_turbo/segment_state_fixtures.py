@@ -1,5 +1,6 @@
 """真实SDK Session与序列化快照；每个测试独立checkpointer及故障注入。"""
 
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -44,9 +45,8 @@ class SnapshotCheckpointer(InMemoryCheckpointer):
 def storage(monkeypatch):
     cp = SnapshotCheckpointer()
     monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", cp)
-    monkeypatch.setattr(resume_context, "_state_write_locks", {})
-    monkeypatch.setattr(resume_context, "_state_callers", {})
-    monkeypatch.setattr(resume_context, "_state_keys", {})
+    monkeypatch.setattr(resume_context, "_state_scopes", weakref.WeakValueDictionary())
+    monkeypatch.setattr(resume_context, "_caller_scopes", weakref.WeakKeyDictionary())
     monkeypatch.setattr(skill_run_ledger, "_execution_owners", {})
 
     def session(sid="segment-session", card_id="segment-agent", *, turbo=True):

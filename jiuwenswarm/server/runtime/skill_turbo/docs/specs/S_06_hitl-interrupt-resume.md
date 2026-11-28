@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / hitl-interrupt-resume |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（executor.py、agent.py、plan_node.py、permission_bridge.py、resume_context.py、interactive_ask.py、hitl_dedup.py、rails/ask_user_rail.py、rails/permission_rail.py、skill_turbo_tools.py、context_binding.py、node_artifact_store.py）+ `agent_adapter/interface_deep.py`、`agent_adapter/interface.py` + `agents/harness/common/rails/stream_event_rail.py` + openjiuwen harness（`ToolInterruptHandler.handle_resume`） |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联 feature | [[F_01]]（fresh 调用产物守卫）、[[F_02]]（resume 统一走 handle_resume + 发卡去重收口）；关联 bugfix [[B_01]]（duplicate 占位不追加停止提示 + 防重三件套测试补齐）、[[B_04]]（fresh 守卫后续交付物放行，第 9 ContextVar 通道） |
 
 ## 范围 / 边界
@@ -463,3 +463,7 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 隔离通道的运行时 agent_id 读取由 resume_context 的 SDK 适配函数统一负责。锁定 SDK 的
 Session.get_agent_id() 返回原始 card ID，不含隔离后缀，不能替代运行时配置 ID。
 该接缝读取现有内部 Session 并验证 ID，不改变隔离键或同步主会话的边界。
+
+隔离通道的进程内 scope 随活跃操作、等待者及存活调用方保留，最后一个使用者释放后回收。
+存活调用方在后续提交时仍需同步快照，因此不能按单次提交完成或断点清理直接销毁 scope；
+回收不改变 checkpointer 的键、数据结构或暂停恢复语义，见 [[S_10]] N2。

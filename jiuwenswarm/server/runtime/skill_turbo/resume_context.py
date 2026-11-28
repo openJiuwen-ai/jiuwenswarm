@@ -84,9 +84,15 @@ class SkillStateError(RuntimeError):
     """隔离状态的身份、读写或提交确认失败。"""
 
 
-_state_write_locks: dict[tuple[str, str], asyncio.Lock] = {}
-_state_callers: dict[tuple[str, str], weakref.WeakSet] = {}
-_state_keys: dict[tuple[str, str], set[str]] = {}
+class _SkillStateScope:
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.callers = weakref.WeakSet()
+        self.keys: set[str] = set()
+
+
+_state_scopes: weakref.WeakValueDictionary[tuple[str, str], _SkillStateScope] = weakref.WeakValueDictionary()
+_caller_scopes: weakref.WeakKeyDictionary[Any, _SkillStateScope] = weakref.WeakKeyDictionary()
 
 
 def skill_state_identity(session: Any) -> tuple[str, str]:
@@ -118,22 +124,22 @@ def _new_isolated_session(session: Any) -> Any:
 class IsolatedSkillState:
     """一次隔离读改写；每个替换先删除旧键，提交后独立重读确认。"""
 
-    def __init__(self, caller: Any, session: Any, *, write: bool):
+    def __init__(self, caller: Any, session: Any, *, write: bool, scope: _SkillStateScope):
         self.caller = caller
         self.session = session
         self.write = write
-        self.identity = skill_state_identity(caller)
+        self.scope = scope
         self.replacements: dict[str, Any] = {}
         self.committed = False
 
     def get(self, key: str) -> Any:
-        _state_keys.setdefault(self.identity, set()).add(key)
+        self.scope.keys.add(key)
         return copy.deepcopy(self.session.get_state(key))
 
     def replace(self, key: str, value: Any) -> None:
         if not self.write or self.committed:
             raise SkillStateError("state is read-only or already committed")
-        _state_keys.setdefault(self.identity, set()).add(key)
+        self.scope.keys.add(key)
         self.replacements[key] = copy.deepcopy(value)
         self.session.update_state({key: None})
         if value is not None:
@@ -165,13 +171,13 @@ class IsolatedSkillState:
         confirmed = _new_isolated_session(self.caller)
         try:
             await confirmed.pre_run(inputs=None)
-            return {key: copy.deepcopy(confirmed.get_state(key)) for key in _state_keys[self.identity]}
+            return {key: copy.deepcopy(confirmed.get_state(key)) for key in self.scope.keys}
         finally:
             await confirmed.close_stream()
 
     def _sync_callers(self, current: dict) -> None:
         # 只同步已参与本通道且本身位于turbo键空间的Session，不污染主ReAct。
-        for caller in _state_callers.get(self.identity, ()):
+        for caller in self.scope.callers:
             if _runtime_agent_id(caller) != _runtime_agent_id(self.session):
                 continue
             for key, value in current.items():
@@ -184,15 +190,21 @@ class IsolatedSkillState:
 async def isolated_skill_state(session: Any, *, write: bool = False):
     """台账/新产物桶专用通道；读只关闭流，写单次提交，异常不提交。"""
     identity = skill_state_identity(session)
-    _state_callers.setdefault(identity, weakref.WeakSet()).add(session)
-    lock = _state_write_locks.setdefault(identity, asyncio.Lock())
+    scope = _state_scopes.get(identity)
+    if scope is None:
+        scope = _SkillStateScope()
+        _state_scopes[identity] = scope
+    scope.callers.add(session)
+    # 调用方仍存活时，后续提交必须同步其快照，不能在单次操作结束时销毁 scope。
+    _caller_scopes[session] = scope
+    lock = scope.lock
     if write:
         await lock.acquire()
     isolated = None
     try:
         isolated = _new_isolated_session(session)
         await isolated.pre_run(inputs=None)
-        state = IsolatedSkillState(session, isolated, write=write)
+        state = IsolatedSkillState(session, isolated, write=write, scope=scope)
         yield state
         if write:
             await state.commit()
