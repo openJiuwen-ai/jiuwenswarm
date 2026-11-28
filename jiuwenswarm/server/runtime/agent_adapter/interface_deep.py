@@ -12760,6 +12760,14 @@ class JiuWenSwarmDeepAdapter:
         provider = getattr(rail, "_provider", None)
         if provider is None:
             return
+        drain = getattr(rail, "drain_pending_syncs", None)
+        if callable(drain):
+            try:
+                await drain()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] pending memory sync drain failed: %s", exc
+                )
         sync_task = getattr(rail, "_sync_task", None)
         if sync_task is not None and not sync_task.done():
             try:
@@ -18839,22 +18847,23 @@ class JiuWenSwarmDeepAdapter:
             raise RootPermissionQueueError("permission_dispatch_handoff_missing")
         stream = None
         try:
-            # Ordinary and Smart interrupt answers wait for the old reader.
-            # An ACK-only inject into a lease with EOF already queued can lose
-            # all resumed output. Active Goal readers keep their live-owner
-            # injection path instead of waiting for a stream that stays open.
+            # An idle follow-on chat can arrive before the old reader has
+            # closed. It needs its own output lease before we send the input.
+            # Interrupt answers also wait unless an active Goal owns the stream.
             previous = getattr(self, "_interaction_output_handoff", None)
             if previous is not None and previous.owner is self._instance:
-                if (
-                    self._is_interrupt_resume_dispatch(request.params)
-                    and not self._goal_record_is_active()
-                ):
+                resume_interrupt = self._is_interrupt_resume_dispatch(request.params)
+                needs_new_reader = not send_without_output and not previous.drained.is_set() and (
+                    getattr(self._instance, "active_round", None) is None
+                )
+                if (resume_interrupt or needs_new_reader) and not self._goal_record_is_active():
                     await previous.wait()
             stream = await self._instance.attach_output()
-            if stream is None and (answer is not None or not send_without_output):
+            if stream is None:
                 if answer is not None:
                     raise RootPermissionQueueError("permission_queue_output_unavailable")
-                return None, False
+                if not send_without_output:
+                    raise RuntimeError("会话仍有活动的输出流，本条消息未执行，请稍后重试。")
             if (
                 stream is not None
                 and answer is None
@@ -21509,8 +21518,6 @@ class JiuWenSwarmDeepAdapter:
                         send_without_output=False,
                     )
                 )
-                if interaction_stream is None and not permission_dispatched:
-                    self._permission_dispatch.release(inputs)
             # ``update_state`` alone is process-local. Checkpoint the resolved
             # turn before waiting on the runner so a server restart cannot
             # reset this session's next turn number to 1.
@@ -23153,11 +23160,6 @@ class JiuWenSwarmDeepAdapter:
                         send_without_output=False,
                     )
                 )
-                if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
-                        yield chunk
-                    interaction_stream_abort = False
-                    return
                 server_logger.info(
                     "[AgentServer] message dispatched to runner streaming: session_id=%s "
                     "request_id=%s channel_id=%s mode=%s dispatch_ms=%.1f query=%s",

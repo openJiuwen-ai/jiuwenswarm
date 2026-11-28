@@ -49,10 +49,12 @@ Work/Code retain their existing mode switches and local-memory gate.
 `memory.builtin.jiuwen.portal.enabled` only controls the management page.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -454,9 +456,95 @@ class MemoryRailSpec:
 
 def _work_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSpec:
     from openjiuwen.harness.rails import JiuwenMemoryRail
+    from openjiuwen.harness.rails.memory import jiuwen_memory_rail as memory_module
 
     class SwarmJiuwenMemoryRail(JiuwenMemoryRail):
         """Route turn callbacks and tool defaults using the bound project path."""
+
+        MAX_PENDING_SYNCS = 16
+
+        def __init__(self, provider: Any, **kwargs: Any) -> None:
+            super().__init__(provider, **kwargs)
+            self._closing = False
+            self._sync_lock = asyncio.Lock()
+            self._pending_syncs: set[asyncio.Task[None]] = set()
+
+        async def after_invoke(self, ctx: Any) -> None:
+            if not self._initialized or not self._available:
+                return
+            completed = self._turn_buffer.finish(ctx)
+            if completed is None:
+                return
+            if self._closing:
+                logger.warning("[JiuwenRailBuilder] memory rail closing; skipping turn extraction")
+                return
+            if len(self._pending_syncs) >= self.MAX_PENDING_SYNCS:
+                logger.warning("[JiuwenRailBuilder] memory sync backlog full; skipping turn extraction")
+                return
+
+            query, output = completed
+            # Capture the project now. The next invocation may change it
+            # while this turn waits for its background write.
+            project = self._resolve_project(ctx)
+            task = asyncio.create_task(self._sync_completed_turn(query, output, project))
+            self._pending_syncs.add(task)
+            task.add_done_callback(self._pending_syncs.discard)
+
+        async def _sync_completed_turn(self, query: str, output: str, project: str | None) -> None:
+            async with self._sync_lock:
+                if self._sync_consecutive_failures >= getattr(memory_module, "_SYNC_BREAKER_THRESHOLD", 5):
+                    if time.monotonic() < self._sync_breaker_until:
+                        return
+                    self._sync_consecutive_failures = 0
+                try:
+                    await asyncio.wait_for(
+                        self._provider.sync_turn(
+                            query, output,
+                            user_id=self._user_id,
+                            scope_id=self._scope_id,
+                            agent_id=self._agent_id,
+                            session_id=self._session_id,
+                            project=project,
+                        ),
+                        timeout=getattr(memory_module, "_SYNC_TURN_TIMEOUT", 130.0),
+                    )
+                except asyncio.TimeoutError:
+                    self._record_sync_failure("sync_turn timed out")
+                except Exception as exc:
+                    self._record_sync_failure(str(exc))
+                else:
+                    self._sync_consecutive_failures = 0
+
+        async def drain_pending_syncs(self) -> None:
+            self._closing = True
+            tasks = tuple(self._pending_syncs)
+            if not tasks:
+                return
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(asyncio.gather(*tasks, return_exceptions=True)), timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[JiuwenRailBuilder] memory drain timed out; cancelling %s unfinished syncs",
+                    sum(not task.done() for task in tasks),
+                )
+            finally:
+                # Settle cancellation before the host shuts down the provider.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        def uninit(self, agent: Any) -> None:
+            self._closing = True
+            if self._pending_syncs:
+                logger.warning(
+                    "[JiuwenRailBuilder] cancelling %s pending memory syncs on unload",
+                    len(self._pending_syncs),
+                )
+            for task in self._pending_syncs:
+                task.cancel()
+            super().uninit(agent)
 
         @staticmethod
         def _resolve_project_from_agent(agent: Any) -> str | None:

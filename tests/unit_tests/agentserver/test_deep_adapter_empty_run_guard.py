@@ -429,6 +429,7 @@ async def test_moa_dispatch_cleanup_preserves_only_existing_output_owner(monkeyp
     progress = MoaProgress()
     adapter._moa_runtime = SimpleNamespace(progress=progress)
     adapter._instance.has_output_stream = lambda: existing_owner
+    monkeypatch.setattr(adapter, "_should_inject_into_existing_interaction", lambda _params: existing_owner)
     mailbox = progress.open()
     if existing_owner:
         dispatch = AsyncMock(return_value=(None, False))
