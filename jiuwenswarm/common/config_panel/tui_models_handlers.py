@@ -335,37 +335,18 @@ async def clear_agent_config_cache(
 
 
 def persist_env_updates(updates: dict[str, str]) -> None:
+    """Persist settings atomically; callers must observe disk failures."""
+    from jiuwenswarm.common.config import config_write_lock
+    from jiuwenswarm.common.config_persistence import atomic_write, env_content
     from jiuwenswarm.common.utils import get_env_file
 
     env_path = get_env_file()
     if not updates:
         return
-    try:
-        lines: list[str] = []
-        if env_path.is_file():
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        new_lines: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            found = False
-            for env_key, value in updates.items():
-                if stripped.startswith(env_key + "="):
-                    new_lines.append(
-                        f'{env_key}="{value}"\n' if value else f"{env_key}=\n"
-                    )
-                    found = True
-                    break
-            if not found:
-                new_lines.append(line)
-        for env_key, value in updates.items():
-            if not any(s.strip().startswith(env_key + "=") for s in new_lines):
-                new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
+    with config_write_lock(config_path=env_path.with_name("config.yaml")):
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-    except OSError as e:
-        logger.warning("[cli config.set] 写回 .env 失败: %s", e)
+        original = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        atomic_write(env_path, env_content(original, updates).encode())
 
 
 # --------------------------------------------------------------------------- #
@@ -699,9 +680,7 @@ async def config_set_handler(
                 "[cli config.set] 写回 config.yaml 失败 %s: %s", param_key, e
             )
 
-    for env_key, value in env_updates.items():
-        os.environ[env_key] = value
-    # env 变量直接写 os.environ 立即生效；YAML 改动需要 agent 重启/热重载才生效
+    # YAML 改动需要 agent 重启/热重载才生效；env 改动在落盘成功后立即生效
     applied_without_restart = not yaml_updated
 
     # ── 同步 env-only 模型/多模态/嵌入配置到 config.yaml ──
@@ -841,9 +820,14 @@ async def config_set_handler(
                 _yaml_sections_updated.append("embed")
         except Exception as e:
             logger.warning("[cli config.set] failed to sync models/embed: %s", e)
-            # env 变更先落盘，避免随 models/embed 失败一起丢失
+            # env 变更先落盘，避免随 models/embed 失败一起丢失；写盘失败不应掩盖主错误
             if env_updates:
-                persist_env_updates(env_updates)
+                try:
+                    await asyncio.to_thread(persist_env_updates, env_updates)
+                except (OSError, UnicodeError) as env_exc:
+                    logger.warning("[cli config.set] 写回 .env 失败: %s", env_exc)
+                else:
+                    os.environ.update(env_updates)
             await channel.send_response(
                 ws,
                 req_id,
@@ -856,9 +840,6 @@ async def config_set_handler(
     if _yaml_sections_updated:
         applied_without_restart = False  # YAML 改动需要热重载才生效
 
-    if env_updates:
-        persist_env_updates(env_updates)
-
     # 当 models / embed / yaml 配置改动时，后台通知 AgentServer 清缓存并热重载。
     # 必须在 send_response 之前 fire-and-forget：reload 在 AgentServer 端要重建
     # 全部 agent + session adapter（单次可达 25~44s），若同步 await 会阻塞当前
@@ -867,7 +848,9 @@ async def config_set_handler(
     # 写盘（上面 setter + persist_env_updates）已同步完成，config.get 直接读
     # config.yaml 即可立即验证；reload 仅用于 AgentServer 内存热更新，本就尽力而为，
     # 故丢后台不阻塞回包。与 command_model_handler._model_switch_background 对齐。
-    if yaml_updated or _yaml_sections_updated:
+    def _schedule_config_reload() -> None:
+        if not (yaml_updated or _yaml_sections_updated):
+            return
         real_client = _resolve_agent_client(agent_client)
 
         async def _config_set_reload_background() -> None:
@@ -883,6 +866,26 @@ async def config_set_handler(
                 )
 
         asyncio.create_task(_config_set_reload_background())
+
+    if env_updates:
+        try:
+            # 跨进程写锁与文件 IO 放到线程执行，避免阻塞事件循环
+            await asyncio.to_thread(persist_env_updates, env_updates)
+        except (OSError, UnicodeError) as exc:
+            logger.warning("[cli config.set] 写回 .env 失败: %s", exc)
+            # config.yaml 已落盘时仍需触发 reload，避免部分失败留下未生效的 YAML
+            _schedule_config_reload()
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="Failed to persist .env",
+                code="INTERNAL_ERROR",
+            )
+            return
+        os.environ.update(env_updates)
+
+    _schedule_config_reload()
 
     updated_param_keys = [
         k for k, e in CLI_CONFIG_SET_ENV_MAP.items() if e in env_updates
