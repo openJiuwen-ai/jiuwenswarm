@@ -4,5 +4,6 @@
 
 - [JiuwenSwarm 日报生成器开发实践](JiuwenSwarm日报生成器开发实践.md) — 多源日报/周报/月报，集成飞书推送。
 - [JiuwenSwarm 代码审查助手开发实践](JiuwenSwarm代码审查助手开发实践.md) — 分层静态分析、评分与 Markdown / 飞书报告。
+- [JiuwenSwarm 集群模式结果核验实践](JiuwenSwarm集群模式结果核验实践.md) — 用固定资料核验成员分工、执行失败与来源一致性。
 
 英文版: `docs/en/development-practices/`。
