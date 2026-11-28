@@ -546,6 +546,7 @@ generated: true
 | [B_20261121_1545_team-pause-teardown-admission-race](jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261121_1817_parked-team-busy-snapshot-reseed](jiuwenswarm/B_20261121_1817_parked-team-busy-snapshot-reseed.md) | B | 暂停后页面持续转圈：挂起团队忙闲快照读到内存名册残留 | zhanglongmin | 无独立 D：依据运行日志与逐跳代码核实定位，无独立设计文档；修复走 Core 既有公开契约，不修改 agent-core。 |
 | [B_20261128_1105_npc-team-attachment-mode](jiuwenswarm/runtime/B_20261128_1105_npc-team-attachment-mode.md) | B | 原生 NPC Team 只读订阅模式错配 | kdgmpw | 无独立 D：修复现有原生 NPC Team 的只读观察契约。 |
+| [B_20261128_1549_team-idle-question-recovery](jiuwenswarm/B_20261128_1549_team-idle-question-recovery.md) | B | Team 空闲后回答澄清问题仍残留处理中状态 | 刘瑜 | 无独立 D：日常缺陷修复，依据当前 Session 类型、Team 生命周期和恢复接口测试；未新建独立设计。 |
 
 <a id="module-jiuwenswarm-runtime-session"></a>
 
