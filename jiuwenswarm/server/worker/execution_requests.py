@@ -542,6 +542,8 @@ class ExecutionRequests:
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
+                # Application config reads remain available with an archived session ID.
+                "config.get",
                 # A released view only cleans up its existing association;
                 # its exact identity is checked even if the Session archived.
                 "session.detach",

@@ -24,7 +24,7 @@ from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 def _request(method: ReqMethod, **kwargs) -> AgentRequest:
     return AgentRequest(
         request_id="r1",
-        channel_id="web",
+        channel_id=kwargs.pop("channel_id", "web"),
         req_method=method,
         params={},
         **kwargs,
@@ -127,6 +127,57 @@ async def test_router_sends_project_git_status_to_admission() -> None:
     router = MethodRouter(Readiness(), _FakeAdmission())  # type: ignore[arg-type]
     await router.dispatch(object(), _request(ReqMethod.PROJECT_GIT_STATUS), object())
     assert recorded == [ReqMethod.PROJECT_GIT_STATUS]
+
+
+@pytest.mark.asyncio
+async def test_router_sends_tui_config_get_to_admission() -> None:
+    recorded: list[tuple[str | None, ReqMethod | None]] = []
+
+    class _FakeAdmission:
+        async def dispatch(self, ws, request, send_lock) -> None:
+            _ = ws, send_lock
+            recorded.append((request.channel_id, request.req_method))
+
+    router = MethodRouter(Readiness(), _FakeAdmission())  # type: ignore[arg-type]
+    await router.dispatch(object(), _request(ReqMethod.CONFIG_GET, channel_id="tui"), object())
+    assert recorded == [("tui", ReqMethod.CONFIG_GET)]
+
+
+@pytest.mark.parametrize(
+    "channel_id, method",
+    [
+        ("web", ReqMethod.CONFIG_GET),
+        ("tui", ReqMethod.SESSION_LIST),
+        ("tui", ReqMethod.LOCALE_GET_CONF),
+    ],
+)
+@pytest.mark.asyncio
+async def test_router_keeps_other_config_reads_on_control_plane(
+    channel_id: str, method: ReqMethod
+) -> None:
+    assert is_control_method(_request(method, channel_id=channel_id)) is True
+
+
+@pytest.mark.asyncio
+async def test_tui_config_get_response_carries_tui_contract() -> None:
+    """The TUI masks secrets through payload.schema; the Web panel payload has none."""
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
+
+    responses: list[object] = []
+
+    class _ExecutionPlaneAdmission:
+        async def dispatch(self, ws, request, send_lock) -> None:
+            _ = ws, send_lock
+            responses.append(await ConfigAdapter().handle(request))
+
+    router = MethodRouter(Readiness(), _ExecutionPlaneAdmission())  # type: ignore[arg-type]
+    await router.dispatch(object(), _request(ReqMethod.CONFIG_GET, channel_id="tui"), object())
+    assert len(responses) == 1
+    response = responses[0]
+    assert response.ok is True
+    schema = {item["key"]: item for item in response.payload["schema"]}
+    assert schema["api_key"]["sensitive"] is True
+    assert "auto_recap_enabled" in response.payload
 
 
 @pytest.mark.asyncio
