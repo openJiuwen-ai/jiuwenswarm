@@ -20,6 +20,14 @@ from jiuwenswarm.agents.harness.common.tools.archive_tools import (
 )
 
 
+@pytest.fixture(autouse=True)
+def archive_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep extraction inside this test's workspace, regardless of prior SDK state."""
+    monkeypatch.setattr(
+        "openjiuwen.core.sys_operation.cwd.get_workspace", lambda: str(tmp_path),
+    )
+
+
 def _create_sample_zip(tmp_path: Path) -> Path:
     """Create a sample zip archive containing files and subdirectories."""
     zip_path = tmp_path / "test_archive.zip"
@@ -230,6 +238,7 @@ async def test_extract_archive_workspace_boundary(tmp_path: Path) -> None:
         })
         assert "[ERROR]: extract_archive failed:" in result
         assert "outside runtime workspace" in result
+        assert not outside_dir.exists()
 
 
 @pytest.mark.asyncio

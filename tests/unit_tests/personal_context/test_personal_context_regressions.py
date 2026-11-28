@@ -19,8 +19,12 @@ import ast
 # --- from test_host_rail_smoke.py ---
 
 @pytest.mark.asyncio
-async def test_real_host_core_and_rail_connection(tmp_path: Path) -> None:
+async def test_real_host_core_and_rail_connection(tmp_path: Path, monkeypatch) -> None:
     """A configured Host starts Core and the Rail reads the same fixed Context root."""
+    from jiuwenswarm.server.personal_context import host_api as host_module
+
+    # This rules-only smoke must not select an ambient model from the user's config.
+    monkeypatch.setattr(host_module, "get_default_models", lambda: [])
 
     home = tmp_path / ".jiuwenswarm" / ".personal_context"
     source_root = tmp_path / "source"
