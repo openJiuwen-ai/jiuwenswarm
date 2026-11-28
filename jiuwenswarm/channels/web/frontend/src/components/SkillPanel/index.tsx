@@ -871,6 +871,22 @@ export function SkillPanel({
     [createUploadError],
   );
 
+  /** 释放两阶段上传的临时文件；失败由服务端 TTL 兜底，不打断用户流程 */
+  const discardTempFile = useCallback(async (path: string) => {
+    try {
+      const response = await gatewayFetch('/file-api/skills/upload-discard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      if (!response.ok) {
+        console.warn(`discard skill upload failed: HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.warn('discard skill upload failed', error);
+    }
+  }, []);
+
   const confirmEnterpriseOverwrite = useCallback(
     (message: string) =>
       new Promise<boolean>((resolve) => {
@@ -987,8 +1003,18 @@ export function SkillPanel({
   /** 上传技能 .zip 包：先上传到临时目录，再通过 WebSocket 调用 skills.import_upload */
   const handleSkillUpload = useCallback(
     (file: File) =>
-      importSkillPackage(file, async (picked) => ({ path: await uploadTempFile(picked) })),
-    [importSkillPackage, uploadTempFile],
+      importSkillPackage(file, async (picked) => {
+        const path = await uploadTempFile(picked);
+        return {
+          path,
+          cleanup: () => {
+            // 不等待释放请求，避免网络异常时把上传按钮的 loading 态拖住
+            void discardTempFile(path);
+            return Promise.resolve();
+          },
+        };
+      }),
+    [discardTempFile, importSkillPackage, uploadTempFile],
   );
 
   /** 企业版：把 ZIP 落到当前会话 uploads/ 后直接安装。 */
