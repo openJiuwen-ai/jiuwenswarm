@@ -92,9 +92,9 @@ def test_email_reads_twenty_mib_and_rejects_one_byte_more(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_email_rejects_unsupported_extension():
-    result = await email_tools.read_email.invoke({"file_path": "/uploads/mailbox.pst"})
-    assert result == {"error": "Select an uploaded .eml or .msg file."}
+async def test_email_rejects_msg():
+    result = await email_tools.read_email.invoke({"file_path": "/uploads/email.msg"})
+    assert result == {"error": "Select an uploaded .eml file."}
 
 
 @pytest.mark.asyncio

@@ -163,7 +163,6 @@ generated: true
 | [F_20261116_2130_safe-archive-tools](F_20261116_2130_safe-archive-tools.md) | F | 补齐安全归档与压缩包工具集 (inspect_archive 与 extract_archive) | zhuxiangju | 无独立 D：安全高效的压缩包预览与解压工具落地，严密防范路径穿越。 |
 | [F_20261116_2200_pptx-reading-tool](F_20261116_2200_pptx-reading-tool.md) | F | read_pptx PowerPoint Presentation Reading Tool | zhuxiangju | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 | [F_20261126_2117_enterprise-eml](F_20261126_2117_enterprise-eml.md) | F | Web 会话上传和读取 EML 邮件 | linda | 无独立 D：在需求会话中确认企业版和个人版共用实现，无独立设计文档。 |
-| [F_20261127_1459_outlook-msg](F_20261127_1459_outlook-msg.md) | F | Web 会话读取 Outlook MSG 邮件 | linda | 无独立 D：本次在已有会话邮件工具中增加一种文件格式，范围在需求会话中确认。 |
 
 <a id="module-jiuwenswarm-agents-harness-team"></a>
 
@@ -244,7 +243,6 @@ generated: true
 | [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 | [F_20261125_1245_memory-portal-team-migration](F_20261125_1245_memory-portal-team-migration.md) | F | 共享文档 Runtime 下的记忆 Portal 接入迁移 | Wang Tao | 无独立 D：无独立设计文档；本文记录 Portal 接入、页面开关及共享 Runtime 的设计取舍。 |
 | [F_20261126_2117_enterprise-eml](F_20261126_2117_enterprise-eml.md) | F | Web 会话上传和读取 EML 邮件 | linda | 无独立 D：在需求会话中确认企业版和个人版共用实现，无独立设计文档。 |
-| [F_20261127_1459_outlook-msg](F_20261127_1459_outlook-msg.md) | F | Web 会话读取 Outlook MSG 邮件 | linda | 无独立 D：本次在已有会话邮件工具中增加一种文件格式，范围在需求会话中确认。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
