@@ -70,7 +70,14 @@ def request_identity(request: AgentRequest) -> OwnerIdentity:
     user_id = str(identity.get("user_id") or params.get("user_id") or metadata.get("user_id") or "").strip()
     group_id = str(identity.get("group_id") or params.get("group_id") or "").strip()
     bot_id = str(identity.get("bot_id") or params.get("bot_id") or "").strip()
-    return OwnerIdentity(user_id=user_id, group_id=group_id, bot_id=bot_id)
+    # agent_id lives in metadata.routing (WEB_ROUTING_ID_FIELDS, issue #124);
+    # web_routing_identity already extracts it into identity, same path as
+    # user_id/group_id/bot_id. Do not read the top-level metadata nor params —
+    # gateway forwards agent_id only via routing, never as a top-level key,
+    # and params is client-controlled (untrusted), same trust boundary as
+    # bootstrap.py:136 (routing-only).
+    agent_id = str(identity.get("agent_id") or "").strip()
+    return OwnerIdentity(user_id=user_id, group_id=group_id, bot_id=bot_id, agent_id=agent_id)
 
 
 async def _reply(ctx: RequestContext, *, ok: bool, payload: dict[str, Any]) -> None:

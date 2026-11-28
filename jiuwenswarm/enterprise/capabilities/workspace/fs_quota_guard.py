@@ -65,9 +65,17 @@ def install_write_quota_guard(sys_operation: Any) -> None:
             add = estimate_text_write_additional(
                 path, payload, encoding=encoding, append=append
             )
+            # 写盘发生在 agent 异步执行工具调用时，请求信封已不在；但
+            # TenantContext 由 bind_request 在请求入口期绑定，async task 继承
+            # ContextVar 快照，故此处可读 current_agent_id()（issue #124）。
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            aid = TenantContext.current_agent_id()
             # 默认线程内读缓存；近限时线程内同步 du，避免堵事件循环。
             await asyncio.to_thread(
-                functools.partial(check_workspace_write, additional_bytes=add)
+                functools.partial(
+                    check_workspace_write, additional_bytes=add, agent_id=aid,
+                )
             )
         except WorkspaceQuotaExceeded as exc:
             logger.info(

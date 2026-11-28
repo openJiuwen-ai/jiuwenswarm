@@ -243,12 +243,20 @@ class TenantAgentPool:
     @asynccontextmanager
     async def tenant_scope(self, request: Any):
         """绑定 TenantContext（含明文三元组），yield Manager；退出时 reset 并续约 LRU."""
-        from jiuwenswarm.enterprise.tenant.tenant_identity import extract_triple
+        from jiuwenswarm.enterprise.tenant.tenant_identity import (
+            extract_agent_id,
+            extract_triple,
+        )
 
         tenant_key = self.extract_tenant_key(request)
         group_id, bot_id, user_id = extract_triple(request)
+        agent_id = extract_agent_id(request)
         ctx = TenantContext.bind(
-            tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+            tenant_key,
+            group_id=group_id,
+            bot_id=bot_id,
+            user_id=user_id,
+            agent_id=agent_id,
         )
         try:
             manager = await self._ensure_agent_manager(tenant_key)

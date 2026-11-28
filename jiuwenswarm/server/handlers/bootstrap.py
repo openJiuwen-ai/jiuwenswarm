@@ -119,6 +119,7 @@ async def _reject_session_create_if_quota_blocked(ctx: RequestContext) -> bool:
 
     依赖请求信封上的明文三元组与租户根（``bind_request_tenant``）。
     """
+    from jiuwenswarm.common.request_identity import web_routing_identity
     from jiuwenswarm.enterprise.capabilities.workspace.quota import (
         WorkspaceQuotaExceeded,
         check_workspace_write,
@@ -129,11 +130,15 @@ async def _reject_session_create_if_quota_blocked(ctx: RequestContext) -> bool:
         return False
 
     request = ctx.request
+    # agent_id is carried in metadata.routing (WEB_ROUTING_ID_FIELDS, issue
+    # #124); read it via web_routing_identity, not the top-level metadata.
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    agent_id = str(web_routing_identity(metadata).get("agent_id") or "").strip()
     try:
         # 与 init_session_metadata 写盘门禁同量级的最小净增探测。
         # 冷缓存/近限时可能同步 du，放线程避免堵事件循环（对齐 fs_quota_guard）。
         await asyncio.to_thread(
-            functools.partial(check_workspace_write, additional_bytes=64)
+            functools.partial(check_workspace_write, additional_bytes=64, agent_id=agent_id)
         )
     except WorkspaceQuotaExceeded:
         resp = AgentResponse(

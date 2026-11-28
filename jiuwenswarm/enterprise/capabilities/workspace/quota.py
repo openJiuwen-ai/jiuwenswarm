@@ -88,7 +88,7 @@ class WorkspaceQuotaExceeded(Exception):
 
 
 def _get_quota_identity() -> dict[str, str]:
-    """Read plaintext triple from the multi-tenant request envelope."""
+    """Read plaintext triple + agent_id from the multi-tenant request envelope."""
     from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     group_id, bot_id, user_id = TenantContext.current_triple()
@@ -96,6 +96,7 @@ def _get_quota_identity() -> dict[str, str]:
         "user_id": user_id,
         "group_id": group_id,
         "bot_id": bot_id,
+        "agent_id": TenantContext.current_agent_id(),
     }
 
 
@@ -531,6 +532,7 @@ def _pick_policy(
     user_id: str,
     group_id: str,
     bot_id: str,
+    agent_id: str = "",
 ) -> dict[str, Any] | None:
     """命中 enabled 策略中 priority 最小的一条。
 
@@ -539,7 +541,12 @@ def _pick_policy(
     """
     from agent_gateway.config.enterprise.expressions import matches
 
-    identity = {"user_id": user_id, "group_id": group_id, "bot_id": bot_id}
+    identity = {
+        "user_id": user_id,
+        "group_id": group_id,
+        "bot_id": bot_id,
+        "agent_id": str(agent_id or ""),
+    }
     hits: list[tuple[int, dict[str, Any]]] = []
     for row in policies:
         if not bool(row.get("enabled", True)):
@@ -587,9 +594,10 @@ def _snapshot_for_used(
     user_id: str,
     group_id: str,
     bot_id: str,
+    agent_id: str = "",
 ) -> QuotaSnapshot:
     policies = get_db_policy_cache() if db_policies_loaded() else []
-    policy = _pick_policy(policies, user_id=user_id, group_id=group_id, bot_id=bot_id)
+    policy = _pick_policy(policies, user_id=user_id, group_id=group_id, bot_id=bot_id, agent_id=agent_id)
     if policy is None:
         return compute_quota_status(
             used,
@@ -612,6 +620,7 @@ def resolve_effective_quota(
     user_id: str = "",
     group_id: str = "",
     bot_id: str = "",
+    agent_id: str = "",
     used_bytes: int | None = None,
     tenant_root: Path | None = None,
     force_refresh: bool = False,
@@ -629,17 +638,18 @@ def resolve_effective_quota(
     uid = (user_id or identity.get("user_id") or "").strip()
     gid = (group_id or identity.get("group_id") or "").strip()
     bid = (bot_id or identity.get("bot_id") or "").strip()
+    aid = (agent_id or identity.get("agent_id") or "").strip()
 
     root = resolve_tenant_root(tenant_root)
     if used_bytes is not None:
         return _snapshot_for_used(
-            int(used_bytes), user_id=uid, group_id=gid, bot_id=bid
+            int(used_bytes), user_id=uid, group_id=gid, bot_id=bid, agent_id=aid
         )
 
     mark_usage_active(root, user_id=uid, group_id=gid, bot_id=bid)
     cached = has_cached_used(root)
     used = get_cached_used(root)
-    snap = _snapshot_for_used(used, user_id=uid, group_id=gid, bot_id=bid)
+    snap = _snapshot_for_used(used, user_id=uid, group_id=gid, bot_id=bid, agent_id=aid)
     need_du = bool(force_refresh) or (
         sync_on_near_limit
         and (not cached or snap.status in ("warn", "block"))
@@ -648,7 +658,7 @@ def resolve_effective_quota(
         used = measure_and_cache(
             root, user_id=uid, group_id=gid, bot_id=bid
         )
-        snap = _snapshot_for_used(used, user_id=uid, group_id=gid, bot_id=bid)
+        snap = _snapshot_for_used(used, user_id=uid, group_id=gid, bot_id=bid, agent_id=aid)
     return snap
 
 
@@ -659,6 +669,7 @@ def check_workspace_write(
     user_id: str = "",
     group_id: str = "",
     bot_id: str = "",
+    agent_id: str = "",
     used_bytes: int | None = None,
 ) -> QuotaGateDecision:
     """写盘前检查。拒绝时抛 ``WorkspaceQuotaExceeded``。"""
@@ -668,6 +679,7 @@ def check_workspace_write(
         user_id=user_id,
         group_id=group_id,
         bot_id=bot_id,
+        agent_id=agent_id,
         used_bytes=used_bytes,
         tenant_root=tenant_root,
     )
@@ -715,11 +727,14 @@ def check_path_write(
     encoding: str = "utf-8",
     append: bool = False,
     tenant_root: Path | None = None,
+    agent_id: str | None = None,
 ) -> QuotaGateDecision:
     add = estimate_text_write_additional(
         path, content, encoding=encoding, append=append
     )
-    return check_workspace_write(additional_bytes=add, tenant_root=tenant_root)
+    return check_workspace_write(
+        additional_bytes=add, tenant_root=tenant_root, agent_id=agent_id or "",
+    )
 
 
 __all__ = [

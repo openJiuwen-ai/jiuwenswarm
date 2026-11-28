@@ -62,6 +62,20 @@ def extract_triple(request: Any) -> tuple[str, str, str]:
     )
 
 
+def extract_agent_id(request: Any) -> str:
+    """从请求 ``metadata.routing`` 提取 ``agent_id``（issue #124）。
+
+    与 :func:`extract_triple` 的取值路径一致：``agent_id`` 只信任
+    ``metadata.routing``（``WEB_ROUTING_ID_FIELDS``），不读顶层 metadata / 请求
+    顶层属性 —— gateway 转发时 ``agent_id`` 只经 routing 通道下发。
+    """
+    from jiuwenswarm.common.request_identity import web_routing_identity
+
+    meta = getattr(request, "metadata", None)
+    meta = meta if isinstance(meta, dict) else {}
+    return str(web_routing_identity(meta).get("agent_id") or "").strip()
+
+
 def extract_tenant_key(request: Any) -> str:
     """从请求三元组拼出 tenant_key（有则用、无则 default）.
 
@@ -94,7 +108,9 @@ def bind_control_tenant(request: Any) -> Iterator[str]:
     """
     tenant_key = extract_tenant_key(request)
     group_id, bot_id, user_id = extract_triple(request)
+    agent_id = extract_agent_id(request)
     with TenantContext.scoped(
-        tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id
+        tenant_key, group_id=group_id, bot_id=bot_id, user_id=user_id,
+        agent_id=agent_id,
     ):
         yield tenant_key
