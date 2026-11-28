@@ -81,6 +81,7 @@ await build({
           './ExperimentalSettings': [
             'A2UISetting',
             'ExternalCliCustomAgentsItem',
+            'REASetting',
             'RSISetting',
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
@@ -317,11 +318,13 @@ test('experimental sections retain their order with a single computer control se
   assert.deepEqual(experimentalSectionIds, [
     'external-cli-custom-agents',
     'rsi',
+    'rea',
     'a2ui',
     'a4p',
     'trajectory-ui',
     'skill-pack',
     'kv-cache-affinity',
+    'team-message-delivery',
     'team-organization',
     'team-scheduled-dispatch',
     'multi-model-collaboration',

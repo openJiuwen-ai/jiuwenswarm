@@ -1833,6 +1833,16 @@ def test_leader_from_top_level_reference_is_unbounded():
     assert config["agents"]["agent_leader"]["max_iterations"] == 200
 
 
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_team_delivery_switch_reaches_new_team_spec(monkeypatch, enabled):
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    config = _agentos_test_config()
+    if enabled is not None:
+        config["experimental"] = {"team_message_delivery_enabled": enabled}
+    result = load_team_spec_dict(config_base=config)
+    assert result["enable_message_delivery_modes"] is (enabled is True)
+
+
 @pytest.mark.parametrize("mode,enabled", [("scheduled", True), ("autonomous", False)])
 def test_leader_goal_only_applies_to_scheduled_templates(mode: str, enabled: bool) -> None:
     from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
