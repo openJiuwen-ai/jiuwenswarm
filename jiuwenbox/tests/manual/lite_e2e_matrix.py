@@ -403,7 +403,9 @@ def bootstrap_pids():
         if len(parts) != 3:
             continue
         pid_s, ppid_s, args = parts
-        if "-I -B -c" in args and "python" in args:
+        # The engine launches the supervisor with ``-B -c`` (older builds used
+        # ``-I -B -c``); match both spellings so RUN-3 sees either variant.
+        if ("-B -c" in args or "-I -B -c" in args) and "python" in args:
             try:
                 pids[int(pid_s)] = int(ppid_s)
             except ValueError:
