@@ -198,8 +198,15 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
 
   const contextValue = useMemo<EnterpriseContextValue | null>(() => {
     if (!context || !provider) return null;
+    // Manager uses a reserved group ID for users without an organization.
+    const localizeGroupName = (item: EnterpriseAgentContext) => item.group_id === '__none__'
+      ? { ...item, group_name: t('enterpriseEntry.noOrganization') }
+      : item;
+    const selected = localizeGroupName(context.selected);
     return {
-      ...context,
+      user: context.user,
+      contexts: context.contexts.map((item) => item === context.selected ? selected : localizeGroupName(item)),
+      selected,
       contextError,
       contextSwitching,
       onContextChange: (key) => {

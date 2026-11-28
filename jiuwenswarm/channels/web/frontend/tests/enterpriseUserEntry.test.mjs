@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
@@ -8,21 +9,14 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 const appBase = process.env.TEST_APP_BASE ?? '';
+const locale = (language) =>
+  JSON.parse(readFileSync(new URL(`../src/i18n/locales/${language}.json`, import.meta.url), 'utf8'));
 
 await i18n.use(initReactI18next).init({
   lng: 'en',
   resources: {
-    en: {
-      translation: {
-        enterpriseEntry: {
-          emptyTitle: 'No Agent Available',
-          emptyTitleNoTemplate: 'No Agent',
-          noContext: 'No Agent is available for this account. Please grant access in the Manager console first.',
-          noContextNoTemplate:
-            'No Agent is available for this account. Please ask your administrator to add Agent Templates in the Manager console.',
-        },
-      },
-    },
+    en: { translation: locale('en') },
+    zh: { translation: locale('zh') },
   },
   interpolation: { escapeValue: false },
 });
@@ -121,6 +115,29 @@ test('bootstrap preserves an existing session deep link', async () => {
     assert.equal(window.location.pathname, `${appBase}/chat/existing-session`);
     assert.equal(navigations.length, 0);
   }, true, false, '/chat/existing-session');
+});
+
+test('only the reserved organization name follows the interface language', async () => {
+  const unassigned = { ...context, group_id: '__none__', group_name: '无组织' };
+  const realGroup = { ...context, group_name: '无组织' };
+  await render((url) => url.endsWith('/agent-contexts')
+    ? [200, { code: 200, data: { contexts: [unassigned, realGroup] } }]
+    : success(url), async (calls, getContext) => {
+    const requests = calls.length;
+    try {
+      for (const [language, expected] of [['en', 'No organization'], ['zh', '无组织'], ['en', 'No organization']]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        const { selected, contexts } = getContext();
+        assert.equal(selected, contexts[0]);
+        assert.equal(selected.group_id, '__none__');
+        assert.equal(selected.group_name, expected);
+        assert.equal(contexts[1].group_name, '无组织');
+      }
+      assert.equal(calls.length, requests);
+    } finally {
+      await act(async () => { await i18n.changeLanguage('en'); });
+    }
+  });
 });
 
 for (const pathname of ['/chat/existing-session', '/chat/new']) {

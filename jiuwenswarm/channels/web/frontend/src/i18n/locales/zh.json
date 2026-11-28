@@ -29,6 +29,7 @@
     "noContextNoTemplate": "当前账号没有可用的 Agent，请联系管理员在管理面新增 Agent 模板。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
+    "noOrganization": "无组织",
     "errorTitle": "无法进入工作空间",
     "loadingTitle": "正在加载工作空间",
     "loading": "正在读取当前账号可用的 Agent。",
