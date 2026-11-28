@@ -130,25 +130,51 @@ PVC/NFS，跨 Pod 存活），系统数据留在数据根原位（企业版不�
 
 升级兼容（migrate_profile_data_root_layout，幂等）：
    - 版本初始化时，老目录结构存在（且非软链）→ 剪切迁移到 profile 新结构；
-   - 迁移后创建老路径 → 新目录的兼容软链：个人版安装新版本运行一段时间后
-     再回滚老版本时，新数据都已落在 profile 下，老版本沿老路径经软链继续
-     读写同一份数据；回滚期间老版本写入的数据同样经软链汇入 profile 新
-     目录，之后再升级回新版本时无缝衔接——降级/升级双向均不丢不断；
+   - 迁移后创建老路径 → 新目录的兼容软链（目录与 sqlite/json 状态文件均
+     支持出链）：个人版安装新版本运行一段时间后再回滚老版本时，新数据
+     都已落在 profile 下，老版本沿老路径经软链继续读写同一份数据；回滚
+     期间老版本写入的数据同样经软链汇入 profile 新目录，之后再升级回新
+     版本时无缝衔接——降级/升级双向均不丢不断；
+   - 兼容链"目标存在才建链"（无数据不建链）；建链失败按数据零丢失原则
+     报错中止，不静默降级；
+   - 旧版 ``agent/workspace/symphony/`` 子目录（图谱工件 graph/ 等）搬入
+     新版 ``symphony/runtime/`` 根（de8b221aa 起 artifact_root 布局）；
    - 个人版迭代三个正式版本后删除软链创建逻辑。
 
-兼容软链目录树（老版本回滚后沿这些路径访问 profile 新数据）：
+兼容软链目录树（老版本回滚后沿这些路径访问 profile 新数据；
+config/runtime_state 由 ensure_config_runtime_state_compat_link 单独
+建链，其余经 _LEGACY_COMPAT_LINKS 清单）：
     .jiuwenswarm/
     ├── config/
     │   └── runtime_state -> ../profile/runtime_state
     ├── workspace -> profile
     ├── agent -> profile/agent
-    │   ├── .logs -> ../../logs/agent
+    │   ├── .logs -> ../../logs/agent          （agent 链落点内，物理位置 profile/agent/.logs）
     │   └── process_cli_logs -> ../../logs/process_cli
     ├── application_plugins -> profile/application_plugins
     ├── .agent_teams -> profile/.agent_teams
     ├── .agent_history -> profile/.agent_history
+    ├── rsi -> profile/rsi
+    ├── agents -> profile/agents
+    ├── designer -> profile/designer
+    ├── lifecycle -> profile/lifecycle
+    ├── sub_agents -> profile/sub_agents
+    ├── symphony -> profile/symphony
+    ├── teams -> profile/teams
+    ├── apps -> profile/apps
+    ├── app_market -> profile/app_market
+    ├── tasks -> profile/tasks
+    ├── jiuwenmate -> profile/jiuwenmate
+    ├── .personal_context -> profile/.personal_context
+    ├── organization-owner-inbox.sqlite3 -> profile/organization-owner-inbox.sqlite3
+    ├── recommendation.db -> profile/recommendation.db
+    ├── session_messages.sqlite3 -> profile/session_messages.sqlite3
+    ├── voice-agent-tasks.sqlite -> profile/voice-agent-tasks.sqlite
+    ├── cli_trusted_dirs_state.json -> profile/cli_trusted_dirs_state.json
     └── logs/
         └── logs -> core
+    （rsi/tasks/jiuwenmate 等散落目录与 sqlite/json 状态文件为既有版本
+      写在数据根的业务项，回滚读写经链接汇入 profile 同名落点）
 
 日志统一收敛到数据根 ``logs/`` 桶
 """
@@ -156,15 +182,24 @@ PVC/NFS，跨 Pod 存活），系统数据留在数据根原位（企业版不�
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import re
 import shutil
 import stat
-from collections.abc import Mapping
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Callable, Mapping, Sequence
+from ctypes import wintypes
 from pathlib import Path
+from typing import TypeVar
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 # --- 目录名常量 ---
@@ -1033,6 +1068,311 @@ _legacy_migration_done: bool = False
 _partition_migration_done: bool = False
 
 
+class WorkspaceMigrationError(RuntimeError):
+    """工作区布局迁移/兼容软链建立失败。
+
+    用户数据零丢失：迁移未成功绝不允许带病启动（否则页面配置、会话等
+    用户数据可能整体缺失）。入口处捕获本异常后应打印醒目错误并退出进程。
+    """
+
+
+# --- Windows 迁移前置支持：占用进程清杀 + 符号链接权限 ---
+# 迁移会剪切/删除老布局数据；Windows 上源文件被其他进程（如仍在运行的老版本）
+# 以非 FILE_SHARE_DELETE 方式打开时 move/unlink 报 WinError 32/33/5。
+_WIN32_LOCK_WINERRORS = frozenset({5, 32, 33})
+
+# Restart Manager 单次注册的文件数上限（保守值，避免接口超限）
+_RM_REGISTER_BATCH = 25
+
+# 迁移前占用扫描的文件数上限（防御异常超大目录拖慢启动）
+_RM_SCAN_FILE_LIMIT = 20000
+
+# 外部工具绝对路径（G.EDV.05：不依赖 PATH 解析；仅 Windows 分支使用）
+_WIN32_SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+_TASKKILL_EXE = str(_WIN32_SYSTEM32 / "taskkill.exe")
+_WHOAMI_EXE = str(_WIN32_SYSTEM32 / "whoami.exe")
+_POWERSHELL_EXE = str(_WIN32_SYSTEM32 / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+_windows_symlink_grant_attempted: bool = False
+
+
+def _is_windows_lock_error(exc: BaseException) -> bool:
+    """Return whether exc is a Windows sharing/lock violation (WinError 32/33/5)."""
+    if sys.platform != "win32":
+        return False
+    winerror = getattr(exc, "winerror", None)
+    return isinstance(winerror, int) and winerror in _WIN32_LOCK_WINERRORS
+
+
+class RMUniqueProcess(ctypes.Structure):
+    _fields_ = [
+        ("dwProcessId", wintypes.DWORD),
+        ("ProcessStartTime", wintypes.FILETIME),
+    ]
+
+
+class RMProcessInfo(ctypes.Structure):
+    _fields_ = [
+        ("Process", RMUniqueProcess),
+        ("strAppName", wintypes.WCHAR * 256),
+        ("strServiceShortName", wintypes.WCHAR * 64),
+        ("ApplicationType", wintypes.DWORD),
+        ("AppStatus", wintypes.ULONG),
+        ("TSSessionId", wintypes.DWORD),
+        ("bRestartable", wintypes.BOOL),
+    ]
+
+
+_rm_dll = None
+
+
+def _restart_manager_dll():
+    """Bind rstrtmgr signatures once; win32-only callers must guard first."""
+    global _rm_dll
+    if _rm_dll is None:
+        rm = ctypes.windll.rstrtmgr
+        rm.RmStartSession.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR]
+        rm.RmStartSession.restype = wintypes.DWORD
+        rm.RmRegisterResources.argtypes = [
+            wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
+            wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p,
+        ]
+        rm.RmRegisterResources.restype = wintypes.DWORD
+        rm.RmGetList.argtypes = [
+            wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+            ctypes.POINTER(RMProcessInfo), ctypes.POINTER(wintypes.DWORD),
+        ]
+        rm.RmGetList.restype = wintypes.DWORD
+        rm.RmEndSession.argtypes = [wintypes.DWORD]
+        rm.RmEndSession.restype = wintypes.DWORD
+        _rm_dll = rm
+    return _rm_dll
+
+
+def _win32_processes_locking_files(paths: Sequence[Path]) -> list[tuple[int, str]]:
+    """Return (pid, display name) of processes holding open handles to any path.
+
+    通过 Windows Restart Manager 查询占用进程；尽力而为——任何 API 失败都
+    返回空列表，由调用方保持既有的重试/报错行为。
+    """
+    if sys.platform != "win32":
+        return []
+    files = [str(p) for p in paths if p is not None]
+    if not files:
+        return []
+    try:
+        rm = _restart_manager_dll()
+    except (AttributeError, OSError):
+        return []
+    session = wintypes.DWORD(0)
+    session_key = ctypes.create_unicode_buffer(33)  # CCH_RM_SESSION_KEY + 1
+    try:
+        if rm.RmStartSession(ctypes.byref(session), 0, session_key) != 0:
+            return []
+    except OSError:
+        return []
+    try:
+        for start in range(0, len(files), _RM_REGISTER_BATCH):
+            batch = files[start:start + _RM_REGISTER_BATCH]
+            batch_arr = (wintypes.LPCWSTR * len(batch))(*batch)
+            try:
+                rm.RmRegisterResources(session, len(batch), batch_arr, 0, None, 0, None)
+            except OSError:
+                continue
+        needed = wintypes.UINT(0)
+        count = wintypes.UINT(32)
+        reasons = wintypes.DWORD(0)
+        infos = (RMProcessInfo * count.value)()
+        try:
+            code = rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), infos, ctypes.byref(reasons))
+            if code == 234:  # ERROR_MORE_DATA: 缓冲不足，按 needed 重新取
+                count = wintypes.UINT(needed.value)
+                infos = (RMProcessInfo * count.value)()
+                code = rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), infos, ctypes.byref(reasons))
+        except OSError:
+            return []
+        if code != 0 or count.value == 0:
+            return []
+        return [
+            (int(infos[i].Process.dwProcessId), str(infos[i].strAppName))
+            for i in range(count.value)
+        ]
+    finally:
+        try:
+            rm.RmEndSession(session)
+        except OSError:
+            pass
+
+
+def _win32_protected_pids() -> set[int]:
+    """PIDs that must never be killed: self, system idle/kernel, and ancestors."""
+    protected = {0, 4, os.getpid()}
+    try:
+        import psutil
+
+        current = psutil.Process(os.getpid())
+        for _ in range(16):
+            parent = current.parent()
+            if parent is None or parent.pid in protected:
+                break
+            protected.add(parent.pid)
+            current = parent
+    except Exception:  # noqa: BLE001 - 尽力而为：psutil 不可用时仅保护自身
+        pass
+    return protected
+
+
+def _win32_kill_process_tree(pid: int, name: str = "") -> bool:
+    """Forcefully terminate pid and its child tree via taskkill /F /T."""
+    try:
+        result = subprocess.run(
+            [_TASKKILL_EXE, "/F", "/T", "/PID", str(pid)],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("[Migration] failed to terminate pid %d (%s): %s", pid, name or "unknown", exc)
+        return False
+    if result.returncode == 0:
+        logger.warning(
+            "[Migration] terminated process holding workspace data: %s (pid %d)",
+            name or "unknown", pid,
+        )
+        return True
+    logger.warning(
+        "[Migration] failed to terminate pid %d (%s): %s",
+        pid, name or "unknown", (result.stderr or result.stdout or "").strip(),
+    )
+    return False
+
+
+_LEGACY_LAYOUT_MARKERS = (
+    # 旧布局残留标志：任一项真实存在（非链接）说明仍有数据待迁移；
+    # 注意 logs/ 是新布局本体目录，不在标志内。
+    "workspace",
+    "agent",
+    "application_plugins",
+    ".agent_teams",
+    ".agent_history",
+    "runtime_state",
+    "config/runtime_state",
+    ".checkpoint",
+    ".logs",
+)
+
+
+def _has_unmigrated_legacy_layout(root: Path) -> bool:
+    """Return whether root still carries real (non-link) legacy-layout entries."""
+    if not root.is_dir():
+        return False
+    for name in _LEGACY_LAYOUT_MARKERS:
+        candidate = root / name
+        try:
+            if candidate.exists() and not _is_migration_link(candidate):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _win32_release_workspace_locks(root: Path) -> None:
+    """迁移前清场：扫描数据根内被其他进程占用的文件并强杀占用进程。
+
+    场景：老版本仍在后台运行时其日志/数据库句柄未释放，迁移 move/unlink
+    必然失败。仅当仍存在待迁移旧布局时才扫描（已迁移完成的机器不增加启动
+    开销）；自身进程及其祖先链上的进程绝不错杀。
+    """
+    if sys.platform != "win32" or not _has_unmigrated_legacy_layout(root):
+        return
+    files: list[Path] = []
+    for entry in root.rglob("*"):
+        try:
+            if entry.is_file():
+                files.append(entry)
+        except OSError:
+            continue
+        if len(files) >= _RM_SCAN_FILE_LIMIT:
+            break
+    if not files:
+        return
+    protected = _win32_protected_pids()
+    victims: dict[int, str] = {}
+    for start in range(0, len(files), _RM_REGISTER_BATCH):
+        for pid, name in _win32_processes_locking_files(files[start:start + _RM_REGISTER_BATCH]):
+            if pid not in protected:
+                victims.setdefault(pid, name)
+    if not victims:
+        return
+    summary = ", ".join(f"{name or 'unknown'}(pid {pid})" for pid, name in sorted(victims.items()))
+    logger.warning("[Migration] workspace locked by other processes, terminating: %s", summary)
+    for pid, name in victims.items():
+        _win32_kill_process_tree(pid, name)
+    # 等操作系统释放句柄后再进入搬迁
+    time.sleep(0.5)
+
+
+def _with_windows_lock_release(paths: Sequence[Path], op: Callable[[], _T]) -> _T:
+    """Run op; on Windows sharing-violation errors kill lockers and retry.
+
+    数据零丢失：move/unlink 因文件被占用而失败时，先查占用进程并结束之
+    （自身及祖先链除外），再重试原操作；查不到占用进程（如杀毒软件瞬时
+    扫描）则退避后重试，重试耗尽后按原异常抛出——由迁移上层报错退出。
+    """
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            return op()
+        except OSError as exc:
+            if attempt >= attempts - 1 or not _is_windows_lock_error(exc):
+                raise
+            lock_paths: list[Path] = [p for p in paths if p is not None]
+            exc_name = getattr(exc, "filename", None)
+            if exc_name:
+                try:
+                    exc_path = Path(exc_name)
+                    if exc_path not in lock_paths:
+                        lock_paths.append(exc_path)
+                except OSError:
+                    pass
+            lockers = _win32_processes_locking_files(lock_paths)
+            protected = _win32_protected_pids()
+            victims = [(pid, name) for pid, name in lockers if pid not in protected]
+            if lockers and not victims:
+                # 占用者全部是本栈自身进程（自身/祖先链，绝不能杀）：多半是
+                # 迁移目标撞上了本版本活跃使用的文件——点名占用者后中止。
+                holders = ", ".join(f"{name or 'unknown'}(pid {pid})" for pid, name in lockers)
+                logger.error(
+                    "[Migration] file locked by this application stack itself: %s (%s)",
+                    exc.filename, holders,
+                )
+                raise WorkspaceMigrationError(
+                    f"workspace file is held open by this application stack itself "
+                    f"({holders}): {exc.filename}——迁移不得移动本版本正在写入的文件"
+                ) from exc
+            killed = False
+            for pid, name in victims:
+                killed = _win32_kill_process_tree(pid, name) or killed
+            if not killed:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            time.sleep(0.3)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _shutil_move_locked(old: Path, new: Path) -> None:
+    """shutil.move with Windows lock-release retry."""
+    _with_windows_lock_release([old, new], lambda: shutil.move(str(old), str(new)))
+
+
+def _unlink_locked(path: Path) -> None:
+    """unlink with Windows lock-release retry."""
+    _with_windows_lock_release([path], path.unlink)
+
+
+def _rmdir_locked(path: Path) -> None:
+    """rmdir with Windows lock-release retry."""
+    _with_windows_lock_release([path], path.rmdir)
+
+
 def _is_migration_link(path: Path) -> bool:
     try:
         info = path.lstat()
@@ -1059,7 +1399,7 @@ def _migrate_absorb_file(old: Path, new: Path) -> None:
     if not new.exists():
         new.parent.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.move(str(old), str(new))
+            _shutil_move_locked(old, new)
         except FileNotFoundError:
             pass
         return
@@ -1072,7 +1412,7 @@ def _migrate_absorb_file(old: Path, new: Path) -> None:
     except OSError:
         is_duplicate = False
     if is_duplicate:
-        old.unlink()
+        _unlink_locked(old)
         return
     migrated = new.with_name(f"{new.name}.migrated")
     index = 1
@@ -1080,7 +1420,7 @@ def _migrate_absorb_file(old: Path, new: Path) -> None:
         index += 1
         migrated = new.with_name(f"{new.name}.migrated.{index}")
     new.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(old), str(migrated))
+    _shutil_move_locked(old, migrated)
 
 
 def _migrate_absorb(old: Path, new: Path) -> None:
@@ -1125,7 +1465,7 @@ def _move_if_absent(old: Path, new: Path) -> None:
         return
     new.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.move(str(old), str(new))
+        _shutil_move_locked(old, new)
     except FileNotFoundError:
         pass
 
@@ -1145,7 +1485,10 @@ def migrate_profile_data_root_layout() -> None:
 
     迁移完成后创建老路径 → 新目录的兼容软链（见
     ``_ensure_legacy_compat_symlinks``），支撑已商用老版本对老目录的访问。
-    失败仅降级告警，不抛出：迁移幂等，下次启动自动重试。
+    数据零丢失：Windows 先强杀占用数据的进程（如仍在运行的老版本）、并
+    预检符号链接权限；任一步骤失败即报错并抛出 :class:`WorkspaceMigrationError`
+    由入口中止启动——绝不带病启动导致用户页面配置整体缺失。迁移幂等，
+    修复外部条件后重启自动续跑。
     """
 
     from jiuwenswarm.enterprise.edition import is_enterprise
@@ -1160,19 +1503,32 @@ def migrate_profile_data_root_layout() -> None:
     _partition_migration_done = True
     try:
         _do_migrate_profile_data_root_layout()
-    except Exception:  # noqa: BLE001
-        logger.error(
-            "workspace profile migration failed; continuing with degraded layout"
-            " (retried on next start)",
+    except WorkspaceMigrationError:
+        _partition_migration_done = False
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _partition_migration_done = False
+        logger.critical(
+            "workspace profile migration failed; aborting startup instead of"
+            " continuing with a degraded layout",
             exc_info=True,
         )
+        raise WorkspaceMigrationError(f"workspace profile migration failed: {exc}") from exc
 
 
 def _do_migrate_profile_data_root_layout() -> None:
+    root = get_user_workspace_dir()
+
+    # Windows 迁移前置（数据零丢失，均在搬动任何数据之前执行）：
+    # 1) 清场——结束仍占用数据根的其他进程（如后台运行的老版本）；
+    # 2) 预检符号链接权限（缺失则尝试 UAC 提权授予，失败即中止）。
+    _win32_release_workspace_locks(root)
+    if sys.platform == "win32" and root.exists():
+        _win32_ensure_symlink_capability(root)
+
     # 旧平铺 .checkpoint/.logs 搬运（幂等）先于 profile 搬迁执行
     _migrate_legacy_checkpoint_and_logs()
 
-    root = get_user_workspace_dir()
     profile = get_profile_data_dir()
     if not root.exists():
         return
@@ -1191,7 +1547,7 @@ def _do_migrate_profile_data_root_layout() -> None:
             for child in top.iterdir():
                 _prune_empty_tree(child)
             if not any(top.iterdir()):
-                top.rmdir()
+                _rmdir_locked(top)
         except OSError:
             pass
 
@@ -1241,6 +1597,13 @@ def _do_migrate_profile_data_root_layout() -> None:
         _absorb_tree(legacy_process_cli_logs, get_process_cli_logs_dir())
         _prune_empty_tree(legacy_process_cli_logs)
     _move(root / _PERSONAL_CONTEXT_DIR_NAME, get_personal_context_dir())
+
+    # 2.3) 旧 symphony 子目录搬入新版 runtime/ 根（agent 树迁入后执行）：
+    #      agent/workspace/symphony/graph → symphony/runtime/graph。
+    #      新版默认 storage.artifact_root = symphony/runtime
+    #      （de8b221aa 适配 openjiuwen.symphony 接口引入）；不搬则图谱工件
+    #      停在老位置、新版按 runtime/graph 读取为空。
+    _migrate_legacy_symphony_layout()
 
     # 2.1) 企业版旧租户根：<root>/workspace_{tk} → profile/profile_{tk}
     #      （旧目录名 workspace_{tk} 在新方案下更名 profile_{tk}）
@@ -1312,6 +1675,50 @@ def _migrate_legacy_checkpoint_and_logs() -> None:
     _move_if_absent(workspace / ".logs", get_agent_logs_dir())
 
 
+def _migrate_legacy_symphony_layout() -> None:
+    """把旧版 ``agent/workspace/symphony/`` 子目录搬入新版 ``runtime/`` 根（幂等）。
+
+    v0.2.9 的技能图谱工件存放在 ``agent/workspace/symphony/graph``（随 §2 的
+    agent 树迁入 profile），新版默认 ``storage.artifact_root`` 是
+    ``get_symphony_dir()/"runtime"``（de8b221aa 适配 openjiuwen.symphony
+    引入），图谱面板按 ``symphony/runtime/graph`` 读取——不搬则工件滞留
+    老位置。工件格式（``current.json`` + ``versions/<v>/``）两版兼容，
+    整体剪切即可；``skill_retrieval`` 等其他旧子目录一并搬移。
+    - 构建日志按新布局归位 ``symphony/runtime_jobs/graph/build_log.jsonl``；
+    - 搬移后在老位置留 ``symphony/<name> -> runtime/<name>`` 兼容软链，
+      回滚老版本经 agent 兼容链访问时读写不断；
+    - ``runtime/`` 下已有同名目录（新版本已重建）时走归并：新工件为正本
+      不覆盖，旧工件 ``.migrated`` 备份。
+    注意：本步骤只保证工件位置正确；Core 的 orchestration 开关门禁与
+    ``runtime.json`` 集合绑定由技能图谱读取侧负责（数据零丢失不受影响）。
+    """
+    symphony_dir = get_symphony_dir()
+    if not symphony_dir.is_dir():
+        return
+    runtime_root = symphony_dir / "runtime"
+    try:
+        children = list(symphony_dir.iterdir())
+    except OSError:
+        return
+    for child in sorted(children):
+        if child.name in ("runtime", "runtime_jobs"):
+            continue
+        try:
+            if _is_migration_link(child):
+                continue
+            if not (child.is_dir() or child.is_file()):
+                continue
+        except OSError:
+            continue
+        _move_if_absent(child, runtime_root / child.name)
+        # 老路径兼容软链（回滚后老版本沿 agent 兼容链读写同一份数据）
+        _ensure_compat_symlink(symphony_dir / child.name, Path("runtime") / child.name)
+    # 旧构建日志在 graph/ 内；新布局挂在 runtime_jobs/graph/ 下
+    moved_log = runtime_root / "graph" / "build_log.jsonl"
+    if moved_log.is_file():
+        _move_if_absent(moved_log, symphony_dir / "runtime_jobs" / "graph" / "build_log.jsonl")
+
+
 def _cleanup_team_files_under(base: Path, agent_dir: Path) -> None:
     """
     清理 base（数据根）下旧版本 team 遗留文件。
@@ -1364,6 +1771,26 @@ _LEGACY_COMPAT_LINKS = (
     ("application_plugins", Path(_PROFILE_DIR_NAME) / "application_plugins"),
     (".agent_teams", Path(_PROFILE_DIR_NAME) / ".agent_teams"),
     (".agent_history", Path(_PROFILE_DIR_NAME) / ".agent_history"),
+    # §2.2 散落业务项：迁移剪切进 profile/ 后，回滚老版本按老路径读写同一
+    # 份数据（rsi/tasks/jiuwenmate 等与上面五大项同等对待，缺链则回滚后
+    # 页面读空、新写入分叉到数据根）。目录与文件（sqlite/json 状态）均支持。
+    ("rsi", Path(_PROFILE_DIR_NAME) / "rsi"),
+    ("agents", Path(_PROFILE_DIR_NAME) / "agents"),
+    ("designer", Path(_PROFILE_DIR_NAME) / "designer"),
+    ("lifecycle", Path(_PROFILE_DIR_NAME) / "lifecycle"),
+    ("sub_agents", Path(_PROFILE_DIR_NAME) / "sub_agents"),
+    ("symphony", Path(_PROFILE_DIR_NAME) / "symphony"),
+    ("teams", Path(_PROFILE_DIR_NAME) / "teams"),
+    ("apps", Path(_PROFILE_DIR_NAME) / "apps"),
+    ("app_market", Path(_PROFILE_DIR_NAME) / "app_market"),
+    ("tasks", Path(_PROFILE_DIR_NAME) / "tasks"),
+    ("jiuwenmate", Path(_PROFILE_DIR_NAME) / "jiuwenmate"),
+    (".personal_context", Path(_PROFILE_DIR_NAME) / ".personal_context"),
+    ("organization-owner-inbox.sqlite3", Path(_PROFILE_DIR_NAME) / "organization-owner-inbox.sqlite3"),
+    ("recommendation.db", Path(_PROFILE_DIR_NAME) / "recommendation.db"),
+    ("session_messages.sqlite3", Path(_PROFILE_DIR_NAME) / "session_messages.sqlite3"),
+    ("voice-agent-tasks.sqlite", Path(_PROFILE_DIR_NAME) / "voice-agent-tasks.sqlite"),
+    ("cli_trusted_dirs_state.json", Path(_PROFILE_DIR_NAME) / "cli_trusted_dirs_state.json"),
 )
 
 
@@ -1391,10 +1818,11 @@ def _ensure_legacy_compat_symlinks(workspace_dir: Path, *, require_target: bool 
         profile.mkdir(parents=True, exist_ok=True)
     for old_name, target in _LEGACY_COMPAT_LINKS:
         tgt = workspace_dir / target
-        if not tgt.is_dir():
+        if not (tgt.is_dir() or tgt.is_file()):
             if require_target:
                 continue
-            tgt.mkdir(parents=True, exist_ok=True)
+            if not tgt.is_dir():
+                tgt.mkdir(parents=True, exist_ok=True)
         _ensure_compat_symlink(workspace_dir / old_name, target)
     ensure_config_runtime_state_compat_link(workspace_dir, require_target=require_target)
     _ensure_log_compat_symlinks(workspace_dir, require_target=require_target)
@@ -1440,9 +1868,14 @@ def _ensure_compat_symlink(link: Path, target: Path) -> None:
     """
     幂等创建/校正相对软链：已指向目标则跳过，真实路径绝不覆盖。
 
-    替换旧链采用"临时名先行"两步换入：Windows 未开开发者模式（无
-    SeCreateSymbolicLinkPrivilege）时建链会失败，若先 unlink 旧链再建新链，
-    失败会让老路径链接直接丢失——先在临时名下建新链，成功后才换入。
+    支持目录与文件目标（§2.2 散落 sqlite/json 状态文件同样出链，保证回滚
+    后老版本读写同一份状态）。替换旧链采用"临时名先行"两步换入：Windows
+    未开开发者模式（无 SeCreateSymbolicLinkPrivilege）时建链会失败，若先
+    unlink 旧链再建新链，失败会让老路径链接直接丢失——先在临时名下建新链，
+    成功后才换入。建链/换入失败一律抛 :class:`WorkspaceMigrationError`
+    （数据零丢失：兼容软链缺失会让回滚后的老版本读写不到新数据，不允许
+    静默降级；迁移前置检查 ``_win32_ensure_symlink_capability`` 已在动数据
+    之前确保权限就绪）。
     """
     if link.is_symlink():
         try:
@@ -1454,40 +1887,320 @@ def _ensure_compat_symlink(link: Path, target: Path) -> None:
         if staged.is_symlink():
             try:
                 staged.unlink()
-            except OSError:
-                logger.debug("[Compat] failed to clean stale staged symlink: %s", staged)
-                return
+            except OSError as exc:
+                raise WorkspaceMigrationError(
+                    f"failed to clean stale staged compat symlink {staged}: {exc}"
+                ) from exc
         elif staged.exists():
             # 临时名被真实路径占用（异常残留）：不动它，放弃本次校正
             return
         try:
-            staged.symlink_to(target, target_is_directory=True)
-        except (OSError, NotImplementedError):
-            logger.debug("[Compat] compat symlink replacement skipped at %s", link)
-            return
+            staged.symlink_to(target, target_is_directory=(link.parent / target).is_dir())
+        except (OSError, NotImplementedError) as exc:
+            raise WorkspaceMigrationError(
+                f"failed to create staged compat symlink {staged} -> {target}: {exc}"
+            ) from exc
         try:
             link.unlink()
-        except OSError:
-            logger.debug("[Compat] failed to replace stale symlink: %s", link)
+        except OSError as exc:
             try:
                 staged.unlink()
             except OSError:
                 pass
-            return
+            raise WorkspaceMigrationError(
+                f"failed to replace stale compat symlink {link}: {exc}"
+            ) from exc
         try:
             staged.replace(link)
-        except OSError:
-            logger.debug("[Compat] failed to swap in staged symlink: %s", link)
+        except OSError as exc:
+            raise WorkspaceMigrationError(
+                f"failed to swap in staged compat symlink {link}: {exc}"
+            ) from exc
     elif link.exists():
         # 老位置仍是真实目录/文件（含 Windows junction，is_symlink 对其恒为
         # False）：迁移未完成，软链会遮蔽数据
         return
     else:
         try:
-            link.symlink_to(target, target_is_directory=True)
+            link.symlink_to(target, target_is_directory=(link.parent / target).is_dir())
             logger.info("[Compat] linked legacy path: %s -> %s", link, target)
-        except (OSError, NotImplementedError):
-            logger.debug("[Compat] compat symlink not created at %s", link)
+        except (OSError, NotImplementedError) as exc:
+            raise WorkspaceMigrationError(
+                f"failed to create compat symlink {link} -> {target}: {exc}"
+            ) from exc
+
+
+def _compat_links_missing(root: Path) -> bool:
+    """Return whether any legacy compat symlink is absent or points elsewhere.
+
+    仅缺链/错链需要符号链接权限；老位置仍是真实目录/文件（迁移未完成）时由
+    迁移本身处理，此处不强制要求权限。目标目录/文件尚不存在时与
+    ``_ensure_legacy_compat_symlinks(require_target=True)`` 一致地跳过
+    （无数据即无链，不算缺失）。
+    """
+    candidates: list[tuple[Path, Path]] = []
+    for old_name, target in _LEGACY_COMPAT_LINKS:
+        tgt = root / target
+        if not (tgt.is_dir() or tgt.is_file()):
+            continue
+        candidates.append((root / old_name, target))
+    if (root / "config").is_dir():
+        candidates.append((root / "config" / "runtime_state", Path("..") / _PROFILE_DIR_NAME / "runtime_state"))
+    for link_rel, bucket in _LOG_COMPAT_LINKS:
+        candidates.append((root / link_rel, Path("..") / ".." / "logs" / bucket))
+    candidates.append((root / "logs" / "logs", Path("core")))
+    for link, target in candidates:
+        if link.is_symlink():
+            try:
+                if link.resolve() == (link.parent / target).resolve():
+                    continue
+            except OSError:
+                pass
+            return True
+        if link.exists():
+            continue
+        return True
+    return False
+
+
+def _win32_symlink_probe_ok(base: Path) -> bool:
+    """Probe whether the current process token may create directory symlinks."""
+    target = base / ".jiuwenswarm-link-probe-target"
+    link = base / ".jiuwenswarm-link-probe"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            if link.is_symlink():
+                link.unlink()
+        except OSError:
+            pass
+        try:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+        except OSError:
+            pass
+
+
+_GRANT_SYMLINK_PRIVILEGE_PS1 = r"""
+param(
+    [Parameter(Mandatory = $true)][string]$TargetSid,
+    [Parameter(Mandatory = $true)][string]$ResultPath
+)
+$ErrorActionPreference = 'Stop'
+$source = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class JiuwenSymLinkGrant
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LSA_UNICODE_STRING
+    {
+        public ushort Length;
+        public ushort MaximumLength;
+        public IntPtr Buffer;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LSA_OBJECT_ATTRIBUTES
+    {
+        public int Length;
+        public IntPtr RootDirectory;
+        public IntPtr ObjectName;
+        public int Attributes;
+        public IntPtr SecurityDescriptor;
+        public IntPtr SecurityQualityOfService;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern int LsaOpenPolicy(
+        ref LSA_UNICODE_STRING systemName,
+        ref LSA_OBJECT_ATTRIBUTES attributes,
+        int access,
+        out IntPtr policyHandle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern int LsaAddAccountRights(
+        IntPtr policyHandle,
+        IntPtr accountSid,
+        LSA_UNICODE_STRING[] userRights,
+        int countOfRights);
+
+    [DllImport("advapi32.dll")]
+    private static extern int LsaClose(IntPtr objectHandle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ConvertStringSidToSid(string stringSid, out IntPtr ptrSid);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr handle);
+
+    private const int POLICY_ALL_ACCESS = 0x000F0FFF;
+
+    public static bool Grant(string sid, string rightName)
+    {
+        IntPtr policyHandle;
+        LSA_UNICODE_STRING systemName = new LSA_UNICODE_STRING();
+        LSA_OBJECT_ATTRIBUTES attributes = new LSA_OBJECT_ATTRIBUTES();
+        attributes.Length = Marshal.SizeOf(typeof(LSA_OBJECT_ATTRIBUTES));
+        if (LsaOpenPolicy(ref systemName, ref attributes, POLICY_ALL_ACCESS, out policyHandle) != 0)
+        {
+            return false;
+        }
+        IntPtr sidPtr = IntPtr.Zero;
+        try
+        {
+            if (!ConvertStringSidToSid(sid, out sidPtr) || sidPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+            LSA_UNICODE_STRING right = new LSA_UNICODE_STRING();
+            right.Buffer = Marshal.StringToHGlobalUni(rightName);
+            right.Length = (ushort)(rightName.Length * 2);
+            right.MaximumLength = (ushort)((rightName.Length + 1) * 2);
+            try
+            {
+                return LsaAddAccountRights(policyHandle, sidPtr, new LSA_UNICODE_STRING[] { right }, 1) == 0;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(right.Buffer);
+            }
+        }
+        finally
+        {
+            LsaClose(policyHandle);
+            if (sidPtr != IntPtr.Zero)
+            {
+                LocalFree(sidPtr);
+            }
+        }
+    }
+}
+'@
+Add-Type -TypeDefinition $source
+$ok = $false
+try {
+    $ok = [JiuwenSymLinkGrant]::Grant($TargetSid, 'SeCreateSymbolicLinkPrivilege')
+    if (-not $ok) {
+        $ownSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if ($ownSid -and $ownSid -ne $TargetSid) {
+            $ok = [JiuwenSymLinkGrant]::Grant($ownSid, 'SeCreateSymbolicLinkPrivilege')
+        }
+    }
+} catch {
+    $ok = $false
+}
+Set-Content -LiteralPath $ResultPath -Value $(if ($ok) { 'OK' } else { 'FAIL' }) -Encoding Ascii
+exit $(if ($ok) { 0 } else { 1 })
+"""
+
+
+def _win32_current_user_sid() -> str | None:
+    """Resolve the current user's SID via ``whoami /user`` (no elevation needed)."""
+    try:
+        result = subprocess.run(
+            [_WHOAMI_EXE, "/user"], capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"S-1-\d+(?:-\d+)+", result.stdout or "")
+    return match.group(0) if match else None
+
+
+def _win32_grant_symlink_privilege() -> bool:
+    """Grant SeCreateSymbolicLinkPrivilege to the current user via one UAC prompt.
+
+    一次提权、永久生效（写入 LSA 账户权限）。UAC 被取消或策略受限时返回
+    False，由调用方按数据零丢失原则报错退出并给出手动修复指引。
+    """
+    global _windows_symlink_grant_attempted
+    _windows_symlink_grant_attempted = True
+    sid = _win32_current_user_sid()
+    if not sid:
+        logger.warning("[Migration] cannot resolve current user SID; skip symlink privilege grant")
+        return False
+    tmp_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm-symlink-grant-"))
+    helper = tmp_dir / "grant_symlink_privilege.ps1"
+    result_file = tmp_dir / "result.txt"
+    helper.write_text(_GRANT_SYMLINK_PRIVILEGE_PS1, encoding="ascii")
+    wrapper = (
+        '$ps = Join-Path $env:SystemRoot "System32\\WindowsPowerShell\\v1.0\\powershell.exe"; '
+        "$p = Start-Process $ps -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
+        "-ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "
+        f"'{helper}', '{sid}', '{result_file}'); exit $p.ExitCode"
+    )
+    proc = None
+    outcome = ""
+    ok = False
+    try:
+        proc = subprocess.run(
+            [_POWERSHELL_EXE, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", wrapper],
+            capture_output=True, text=True, timeout=300, check=False,
+        )
+        try:
+            outcome = result_file.read_text(encoding="ascii", errors="ignore").strip()
+        except OSError:
+            outcome = ""
+        ok = proc.returncode == 0 and outcome == "OK"
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("[Migration] symlink privilege elevation attempt failed: %s", exc)
+        ok = False
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    if ok:
+        logger.info("[Migration] SeCreateSymbolicLinkPrivilege granted to %s", sid)
+    else:
+        logger.warning(
+            "[Migration] symlink privilege grant not confirmed (rc=%s outcome=%r)",
+            proc.returncode if proc is not None else None, outcome,
+        )
+    return ok
+
+
+def _win32_ensure_symlink_capability(root: Path) -> None:
+    """迁移前置检查：确保本进程能创建兼容软链，否则在动数据前报错退出。
+
+    Windows 创建符号链接需要 SeCreateSymbolicLinkPrivilege（管理员默认
+    持有但 UAC 过滤令牌通常被剥离；或开启开发者模式）。缺失时尝试通过
+    一次 UAC 提权把该权限授予当前用户（一次提权永久生效）：
+    - 授权成功但当前进程令牌已固化（新权限只对新启动进程生效）→ 提示重启；
+    - 授权失败/取消 → 给出手动修复指引。
+    两种情况都在搬迁任何数据之前中止（数据零丢失）。
+    """
+    if not _compat_links_missing(root):
+        return
+    if _win32_symlink_probe_ok(root):
+        return
+    logger.warning(
+        "[Migration] 当前进程缺少 Windows 符号链接权限"
+        "（SeCreateSymbolicLinkPrivilege），无法建立兼容软链。"
+    )
+    if _windows_symlink_grant_attempted:
+        raise WorkspaceMigrationError(
+            "符号链接权限检查未通过（本次运行已尝试过自动授权）。"
+            "请以管理员身份运行或开启 Windows 开发人员模式后重试。"
+        )
+    logger.warning("[Migration] 正在请求通过 UAC 提权为当前用户授予该权限（一次提权永久生效），请在弹窗中确认…")
+    granted = _win32_grant_symlink_privilege()
+    if granted and _win32_symlink_probe_ok(root):
+        return
+    if granted:
+        raise WorkspaceMigrationError(
+            "符号链接权限已授予当前用户，但仅对新启动的进程生效；"
+            "为保护数据（数据零丢失），本次启动未搬迁任何数据，请重新启动 jiuwenswarm 完成迁移。"
+        )
+    raise WorkspaceMigrationError(
+        "无法创建 Windows 兼容符号链接（UAC 授权被取消或系统策略限制）。"
+        "修复方式（任选其一）后重新启动：1) 以管理员身份运行启动命令；"
+        "2) Windows 设置 → 系统 → 开发者选项 → 打开开发人员模式。"
+        "为保护数据，本次启动未搬迁任何数据。"
+    )
 
 
 def ensure_config_runtime_state_compat_link(workspace_dir: Path, *, require_target: bool = True) -> None:
@@ -1514,6 +2227,7 @@ def ensure_config_runtime_state_compat_link(workspace_dir: Path, *, require_targ
 
 
 __all__ = [
+    "WorkspaceMigrationError",
     "ensure_config_runtime_state_compat_link",
     "get_agent_history_dir",
     "get_agent_home_dir",

@@ -3650,5 +3650,13 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
 # a Windows junction that the installer process is not permitted to traverse.
 if not is_windows_installer_restore():
     # Migrate the legacy layout before logging creates any new directories.
-    migrate_profile_data_root_layout()
+    #
+    # 启动器/桌面/app-supervisor（先行的迁移方）会为子进程设置
+    # JIUWENSWARM_RUNTIME_WORKSPACE_READY=1；子进程不得重复迁移——并发
+    # 重跑会撞上兄弟/父进程自身持有的日志等文件句柄（Windows WinError 32）。
+    # 迁移失败由 migrate_profile_data_root_layout 内部记录 CRITICAL 日志并
+    # 抛出 WorkspaceMigrationError：本次导入失败，入口进程以非零退出终止
+    # （数据零丢失：迁移不成功绝不带病启动）。
+    if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+        migrate_profile_data_root_layout()
     setup_logger()
