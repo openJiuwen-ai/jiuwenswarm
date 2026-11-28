@@ -13,8 +13,26 @@ from openjiuwen.harness.subagent_runtime.models import (  # type: ignore[import-
     ResumeResult,
     SubagentStatus,
     SubagentStatusKind,
+    WaitResult,
 )
 from openjiuwen.harness.tools.subagent import _control_registry  # type: ignore[import-untyped]
+
+# An errored status whose carrier exception carried no message leaves the main
+# agent unable to tell *why* the subagent died (it ends up reverse-engineering
+# completion from file mtimes - issue #6685 P-4). Sanitize reasonless errored
+# statuses at the compat boundary so errored always carries a reason.
+REASONLESS_ERROR_MESSAGE = "unspecified runtime error (exception carried no message)"
+
+
+def with_error_reason(status: SubagentStatus) -> SubagentStatus:
+    """Backfill a reason on errored statuses that arrive without one."""
+    if status.kind is SubagentStatusKind.ERRORED and not (status.message or "").strip():
+        return replace(
+            status,
+            message=REASONLESS_ERROR_MESSAGE,
+            error_code=status.error_code or "UNKNOWN",
+        )
+    return status
 
 
 class CompatibleSubagentControl(SubagentControl):
@@ -42,6 +60,23 @@ class CompatibleSubagentControl(SubagentControl):
         await instance.status.set(idle)
         return replace(result, status=idle)
 
+    def get_status(self, subagent_id: str) -> SubagentStatus:
+        return with_error_reason(super().get_status(subagent_id))
+
+    async def wait(self, subagent_ids, *args, **kwargs) -> WaitResult:
+        result = await super().wait(subagent_ids, *args, **kwargs)
+        if any(
+            status.kind is SubagentStatusKind.ERRORED and not (status.message or "").strip()
+            for status in result.statuses.values()
+        ):
+            result = replace(
+                result,
+                statuses={
+                    sid: with_error_reason(status) for sid, status in result.statuses.items()
+                },
+            )
+        return result
+
 
 def install_subagent_control_compat_patch() -> None:
     """Use the compatible control for newly created parent-session runtimes."""
@@ -51,4 +86,5 @@ def install_subagent_control_compat_patch() -> None:
 __all__ = [
     "CompatibleSubagentControl",
     "install_subagent_control_compat_patch",
+    "with_error_reason",
 ]
