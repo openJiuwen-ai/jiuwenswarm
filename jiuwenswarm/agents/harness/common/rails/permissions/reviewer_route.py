@@ -51,6 +51,18 @@ USER_PATH_TOOLS = frozenset(
         "write_text_file",
     }
 )
+# Sensitive-file tokens that the native path extractor deliberately skips when
+# they appear in unexpanded variable form (``$HOME/.env``) or in commands it
+# does not treat as path-aware (``test -e ~/.env``).  Requiring an explicit
+# home-directory variable prefix keeps the fallback narrow: it never fires for
+# bare ``.env.example``/``.env.template`` templates or for ordinary paths that
+# the engine did extract and that the file_guard ``**/.env`` rule handles.
+_UNEXPANDED_SENSITIVE_PATH_RE = re.compile(
+    r"(?i)"
+    r"(?:\$(?:HOME|USERPROFILE)\b|\$[{]?(?:HOME|USERPROFILE)[}]?|~)"
+    r"[\\/]+\.env(?:[\\/.\w-]*)?"
+)
+
 DEFAULT_DELIVERY_EXCLUDED_PATHS = (
     ".git",
     ".github",
@@ -142,6 +154,13 @@ def reviewer_route(
     if structural_reason:
         return _manual(structural_reason)
 
+    # Fail closed when a shell command names a sensitive file (e.g. ``.env``)
+    # but the native extractor produced no external paths.  Path extraction
+    # skips unexpanded variables and non path-aware commands, which otherwise
+    # lets the built-in ``**/.env -> deny`` rule degrade silently to ``ask``.
+    if _unresolved_sensitive_path(facts):
+        return _deny("sensitive_path_extraction_failed")
+
     if domain_route is not None:
         if domain_route.is_hard_block:
             return _deny(domain_route.reason or "domain_policy_deny")
@@ -214,6 +233,23 @@ def _structural_manual_reason(facts: ToolDecisionFacts) -> str:
     ):
         return "unknown_operation"
     return ""
+
+
+def _unresolved_sensitive_path(facts: ToolDecisionFacts) -> bool:
+    """Whether a shell command names a sensitive file the engine failed to extract.
+
+    Only fires when the command text contains a sensitive path token *and* the
+    engine extracted no external paths.  If extraction succeeded, the ordinary
+    file_guard ``**/.env -> deny`` rule governs and no fallback is needed.
+    """
+    if facts.capability.category != "shell":
+        return False
+    # Only fail closed when the engine extracted nothing at all.  If it resolved
+    # a path (into read/write/external), the file_guard rules already govern and
+    # must not be bypassed by this fallback.
+    if facts.read_paths or facts.write_paths or facts.external_paths:
+        return False
+    return bool(_UNEXPANDED_SENSITIVE_PATH_RE.search(facts.command or ""))
 
 
 def _is_public_search(facts: ToolDecisionFacts) -> bool:
