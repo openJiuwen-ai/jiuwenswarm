@@ -383,7 +383,10 @@ async def handle_mcp_connect(ctx: RequestContext) -> None:
         name = str(params.get("name", "")).strip()
         if not name:
             raise ValueError("mcp name is required")
-        payload = await _run_mcp_connect_flow(services, name)
+        from jiuwenswarm.server.runtime.mcp.control import mcp_change_guard
+
+        async with mcp_change_guard(services.agent_manager, name):
+            payload = await _run_mcp_connect_flow(services, name)
         if payload.get("type") == "connect_failed":
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -558,54 +561,57 @@ async def handle_mcp_disconnect(ctx: RequestContext) -> None:
         name = str(params.get("name", "")).strip()
         if not name:
             raise ValueError("mcp name is required")
-        removed = await asyncio.to_thread(disconnect_mcp, name)
-        applied = True
-        error_message = ""
-        try:
-            # Phase-2: targeted unregister (no full reload). SSE/HTTP MCP
-            # removal can raise "Attempted to exit cancel scope in a
-            # different task" (openjiuwen closes the client TaskGroup from
-            # the wrong task) — that propagates as CancelledError and tears
-            # down this handler before it can reply. Shield + timeout so the
-            # state.json change (already done above) still lands and the
-            # frontend gets a response; the MCP server process is torn down
-            # by the agent's next reload even if this call fails.
-            await asyncio.wait_for(
-                asyncio.shield(services.agent_manager.apply_mcp_change(name, "remove")),
-                timeout=15.0,
-            )
-        except asyncio.TimeoutError:
-            applied = False
-            error_message = "MCP unregister timed out (state updated; server will clear on next reload)"
-            logger.warning("[mcp] apply_mcp_change after disconnect timed out for '%s'", name)
-        except asyncio.CancelledError:
-            # apply_mcp_change runs inside asyncio.shield, so an inner
-            # SSE cancel-scope error cannot surface here as a
-            # CancelledError (shield absorbs it). The only way this
-            # except fires is the *outer* request being cancelled (ws
-            # disconnect) — propagate it so the request unwinds cleanly
-            # instead of dragging through clear/refresh and sending a
-            # response to a dead socket.
-            logger.warning(
-                "[mcp] apply_mcp_change after disconnect CancelledError for '%s'", name
-            )
-            raise
-        except Exception as reload_exc:  # noqa: BLE001
-            applied = False
-            error_message = str(reload_exc)
-            logger.warning("[mcp] apply_mcp_change after disconnect failed: %s", reload_exc)
-        # Clear this MCP's token env vars from the agent process so a
-        # disconnected skill-only MCP's token doesn't linger.
-        try:
-            services.agent_manager.clear_mcp_credentials(name)
-        except Exception as clear_exc:  # noqa: BLE001
-            logger.warning("[mcp] clear_mcp_credentials after disconnect failed: %s", clear_exc)
-        # disconnect uninstalled the bundled skills + unregistered the dir;
-        # reload SkillUseRail so the agent stops seeing those skills.
-        try:
-            await services.agent_manager.refresh_skill_rails()
-        except Exception as skill_exc:  # noqa: BLE001
-            logger.warning("[mcp] refresh_skill_rails after disconnect failed: %s", skill_exc)
+        from jiuwenswarm.server.runtime.mcp.control import mcp_change_guard
+
+        async with mcp_change_guard(services.agent_manager, name):
+            removed = await asyncio.to_thread(disconnect_mcp, name)
+            applied = True
+            error_message = ""
+            try:
+                # Phase-2: targeted unregister (no full reload). SSE/HTTP MCP
+                # removal can raise "Attempted to exit cancel scope in a
+                # different task" (openjiuwen closes the client TaskGroup from
+                # the wrong task) — that propagates as CancelledError and tears
+                # down this handler before it can reply. Shield + timeout so the
+                # state.json change (already done above) still lands and the
+                # frontend gets a response; the MCP server process is torn down
+                # by the agent's next reload even if this call fails.
+                await asyncio.wait_for(
+                    asyncio.shield(services.agent_manager.apply_mcp_change(name, "remove")),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                applied = False
+                error_message = "MCP unregister timed out (state updated; server will clear on next reload)"
+                logger.warning("[mcp] apply_mcp_change after disconnect timed out for '%s'", name)
+            except asyncio.CancelledError:
+                # apply_mcp_change runs inside asyncio.shield, so an inner
+                # SSE cancel-scope error cannot surface here as a
+                # CancelledError (shield absorbs it). The only way this
+                # except fires is the *outer* request being cancelled (ws
+                # disconnect) — propagate it so the request unwinds cleanly
+                # instead of dragging through clear/refresh and sending a
+                # response to a dead socket.
+                logger.warning(
+                    "[mcp] apply_mcp_change after disconnect CancelledError for '%s'", name
+                )
+                raise
+            except Exception as reload_exc:  # noqa: BLE001
+                applied = False
+                error_message = str(reload_exc)
+                logger.warning("[mcp] apply_mcp_change after disconnect failed: %s", reload_exc)
+            # Clear this MCP's token env vars from the agent process so a
+            # disconnected skill-only MCP's token doesn't linger.
+            try:
+                services.agent_manager.clear_mcp_credentials(name)
+            except Exception as clear_exc:  # noqa: BLE001
+                logger.warning("[mcp] clear_mcp_credentials after disconnect failed: %s", clear_exc)
+            # disconnect uninstalled the bundled skills + unregistered the dir;
+            # reload SkillUseRail so the agent stops seeing those skills.
+            try:
+                await services.agent_manager.refresh_skill_rails()
+            except Exception as skill_exc:  # noqa: BLE001
+                logger.warning("[mcp] refresh_skill_rails after disconnect failed: %s", skill_exc)
         payload = {
             "type": "disconnected",
             "name": name,

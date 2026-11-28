@@ -9,6 +9,7 @@ from typing import Any
 
 
 CARD_MANIFEST = Path(__file__).resolve().parent.parent / "resources" / "rea" / "capability-cards.json"
+COMPONENT_MANIFEST = Path(__file__).resolve().parent.parent / "resources" / "rea" / "component-manifest.json"
 _READY_STATES = {"available", "configured", "installed", "ready", "reused"}
 _NEEDS_ACTION_STATES = {
     "cached",
@@ -16,6 +17,20 @@ _NEEDS_ACTION_STATES = {
     "downloaded_not_installed",
     "needs_action",
     "partial",
+}
+_MANUAL_INSTALL_MODES = {"manual", "manual_license", "system"}
+_COMPONENT_FUNCTIONAL_TOOLS: dict[str, list[str]] = {
+    "adb": ["inspect_adb_client"],
+    "apktool": ["inspect_apktool_client"],
+    "chrome": ["list_browser_targets"],
+    "cutter": ["list_cutter_sessions"],
+    "frida": ["list_frida_devices"],
+}
+_RIZIN_PERSISTENT_DEBUG_TOOLS = {
+    "start_rizin_debug_session",
+    "rizin_debug_command",
+    "rizin_debug_session_status",
+    "close_rizin_debug_session",
 }
 
 
@@ -28,6 +43,29 @@ def _load_manifest() -> dict[str, Any]:
 def _load_cards() -> list[dict[str, Any]]:
     cards = _load_manifest().get("cards")
     return [item for item in cards or [] if isinstance(item, dict)]
+
+
+@lru_cache(maxsize=1)
+def _prerequisite_components() -> frozenset[str]:
+    """Return components that are dependencies rather than card capabilities."""
+
+    try:
+        payload = json.loads(COMPONENT_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return frozenset()
+    requirement_components = {
+        "java-full-jdk": "java",
+        "java-full-jdk-21": "java",
+    }
+    prerequisites: set[str] = set()
+    for component in payload.get("components") or []:
+        if not isinstance(component, dict):
+            continue
+        for requirement in component.get("requires") or []:
+            component_id = requirement_components.get(str(requirement))
+            if component_id:
+                prerequisites.add(component_id)
+    return frozenset(prerequisites)
 
 
 def _tool_states(binary_session: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
@@ -52,11 +90,141 @@ def _tool_states(binary_session: dict[str, Any]) -> tuple[dict[str, dict[str, An
     return states, availability
 
 
-def _component_state(item: dict[str, Any] | None) -> str:
+def _provider_evidence(
+    binary_session: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]]]:
+    """Map live analysis providers to the tools they can serve."""
+
+    provider_states: dict[str, dict[str, Any]] = {}
+    tool_providers: dict[str, set[str]] = {}
+    candidates = binary_session.get("analysis_provider_candidates")
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        provider = candidate.get("provider")
+        provider = provider if isinstance(provider, dict) else {}
+        provider_id = str(provider.get("id") or "").strip()
+        if not provider_id:
+            continue
+        availability = candidate.get("availability")
+        availability = availability if isinstance(availability, dict) else {}
+        provider_states[provider_id] = availability
+        for capability in candidate.get("capabilities") or []:
+            if not isinstance(capability, dict):
+                continue
+            for group in capability.get("groups") or []:
+                if not isinstance(group, dict):
+                    continue
+                for operation in group.get("operations") or []:
+                    name = str(operation or "").strip()
+                    if name:
+                        tool_providers.setdefault(name, set()).add(provider_id)
+    return provider_states, tool_providers
+
+
+def _unavailable_component_state(item: dict[str, Any]) -> str:
+    """Map unavailable components without redefining the fixed status taxonomy."""
+
+    return (
+        "needs_action"
+        if str(item.get("install_mode") or "") in _MANUAL_INSTALL_MODES
+        else "missing"
+    )
+
+
+def _actual_tool_states(
+    tool_states: dict[str, dict[str, Any]],
+    provider_states: dict[str, dict[str, Any]],
+    tool_providers: dict[str, set[str]],
+    functional_probes: dict[str, dict[str, Any]] | None = None,
+    platform_id: str = "",
+) -> dict[str, dict[str, Any]]:
+    """Resolve target-dependent tools against live provider availability."""
+
+    actual: dict[str, dict[str, Any]] = {}
+    for name, state in tool_states.items():
+        resolved = dict(state)
+        if state.get("reason") == "target_required":
+            providers = tool_providers.get(name) or set()
+            availability = [
+                provider_states[provider_id]
+                for provider_id in providers
+                if provider_id in provider_states
+            ]
+            if availability:
+                if any(item.get("status") == "available" for item in availability):
+                    resolved["available"] = True
+                    resolved["actual_reason"] = "available"
+                elif all(item.get("code") == "unsupported_host" for item in availability):
+                    resolved["actual_reason"] = "unsupported_host"
+                else:
+                    resolved["actual_reason"] = "provider_unavailable"
+            else:
+                resolved["actual_reason"] = "target_required"
+        else:
+            resolved["actual_reason"] = resolved.get("reason") or (
+                "available" if resolved.get("available") else "missing"
+            )
+        probe = (functional_probes or {}).get(name)
+        if isinstance(probe, dict):
+            resolved["functional_verified"] = True
+            if probe.get("ok") is True:
+                resolved["available"] = True
+                resolved["actual_reason"] = "available"
+            else:
+                resolved["available"] = False
+                resolved["actual_reason"] = str(
+                    probe.get("reason") or "functional_probe_failed"
+                )
+                resolved["functional_error"] = str(probe.get("error") or "")
+        if (
+            platform_id.startswith("windows-")
+            and name in _RIZIN_PERSISTENT_DEBUG_TOOLS
+        ):
+            resolved["available"] = False
+            resolved["actual_reason"] = "unsupported_host"
+            resolved["platform_error"] = (
+                "Rizin persistent debug sessions require a Linux TTY; "
+                "use execute_rizin_command for one-shot CLI analysis on Windows"
+            )
+        actual[name] = resolved
+    return actual
+
+
+def _has_live_tool(
+    tool_names: list[str],
+    tool_states: dict[str, dict[str, Any]],
+) -> bool:
+    """Whether the live MCP can currently serve at least one listed tool."""
+
+    return any(bool((tool_states.get(name) or {}).get("available")) for name in tool_names)
+
+
+def _all_tools_unsupported(
+    tool_names: list[str],
+    tool_states: dict[str, dict[str, Any]],
+) -> bool:
+    states = [tool_states.get(name) for name in tool_names]
+    return bool(states) and all(
+        item is not None
+        and (
+            item.get("reason") == "unsupported_host"
+            or item.get("actual_reason") == "unsupported_host"
+        )
+        for item in states
+    )
+
+
+def _component_state(
+    item: dict[str, Any] | None,
+    confirmation_tools: list[str] | None = None,
+    tool_states: dict[str, dict[str, Any]] | None = None,
+    provider_states: dict[str, dict[str, Any]] | None = None,
+    *,
+    available_on_any_tool: bool = False,
+) -> str:
     if not item:
         return "missing"
-    if bool(item.get("available")):
-        return "available"
     code = str(item.get("code") or "")
     state = str(item.get("state") or item.get("local_state") or item.get("status") or "")
     inventory = item.get("inventory")
@@ -65,15 +233,69 @@ def _component_state(item: dict[str, Any] | None) -> str:
     )
     if code == "unsupported_host" or state == "unsupported" or inventory_state == "unsupported":
         return "unsupported"
+    if item.get("requires_install_evidence") is True and not (
+        bool(item.get("available"))
+        or state in _READY_STATES
+        or inventory_state in _READY_STATES
+    ):
+        return _unavailable_component_state(item)
+    tools = confirmation_tools or []
+    states = tool_states or {}
+    functional_states = [
+        states.get(name)
+        for name in tools
+        if isinstance(states.get(name), dict)
+        and (states.get(name) or {}).get("functional_verified") is True
+    ]
+    if functional_states:
+        if available_on_any_tool and any(
+            item.get("available") for item in functional_states
+        ):
+            return "available"
+        if any(
+            item.get("actual_reason") == "unsupported_host"
+            for item in (states.get(name) for name in tools)
+            if isinstance(item, dict)
+        ):
+            if any(item.get("available") for item in functional_states):
+                return "partial"
+        if any(item.get("available") for item in functional_states):
+            return "available"
+        if any(item.get("actual_reason") == "unsupported_host" for item in functional_states):
+            return "unsupported"
+        return _unavailable_component_state(item)
+    provider = (provider_states or {}).get(str(item.get("id") or ""))
+    if provider is not None:
+        status = str(provider.get("status") or "")
+        code = str(provider.get("code") or "")
+        if status == "available":
+            return "available"
+        if code == "unsupported_host" or status == "unsupported_host":
+            return "unsupported"
+        return _unavailable_component_state(item)
+    live_tools = sum(bool((states.get(name) or {}).get("available")) for name in tools)
+    if tools:
+        if live_tools == len(tools):
+            return "available"
+        if available_on_any_tool and live_tools:
+            return "available"
+        if live_tools:
+            return "partial"
+    if (
+        (not tools and bool(item.get("available")))
+        or state in _READY_STATES
+        or inventory_state in _READY_STATES
+    ):
+        if not tools:
+            return "available"
+        if _all_tools_unsupported(tools, states):
+            return "unsupported"
+        return _unavailable_component_state(item)
     if state == "failed":
         return "failed"
-    if state in _READY_STATES or inventory_state in _READY_STATES:
-        return "available"
     if state in _NEEDS_ACTION_STATES or inventory_state in _NEEDS_ACTION_STATES:
-        return "needs_action"
-    if str(item.get("install_mode") or "") in {"manual", "manual_license", "system"}:
-        return "needs_action"
-    return "missing"
+        return _unavailable_component_state(item)
+    return _unavailable_component_state(item)
 
 
 def _tool_member_state(
@@ -88,15 +310,10 @@ def _tool_member_state(
     applicable = [item for item in items if item and item.get("reason") != "unsupported_host"]
     if not applicable:
         return "unsupported"
-    if any(
-        item
-        and item.get("reason") in {"provider_missing", "provider_unavailable"}
-        for item in applicable
-    ):
-        return "needs_action"
+    if any(item and item.get("actual_reason") in {"provider_missing", "provider_unavailable"} for item in applicable):
+        return "missing"
     if all(
-        item
-        and item.get("reason") in {"available", "target_required"}
+        item and item.get("available")
         for item in applicable
     ):
         return "available"
@@ -110,18 +327,20 @@ def _card_state(
 ) -> str:
     if not platform_matches:
         return "unsupported"
-    if any(member["state"] == "failed" for member in members):
-        return "failed"
-    applicable = [member for member in members if member["state"] != "unsupported"]
-    if not applicable:
+    if not members or all(member["state"] == "unsupported" for member in members):
         return "unsupported"
-    ready = sum(member["state"] == "available" for member in applicable)
-    needs_action = any(member["state"] == "needs_action" for member in applicable)
-    incomplete = any(member["state"] in {"missing", "failed"} for member in applicable)
-    if ready == len(applicable) and not needs_action and not incomplete:
+    capability_members = [
+        member for member in members if not member.get("prerequisite")
+    ]
+    relevant = capability_members or members
+    ready = sum(member["state"] == "available" for member in relevant)
+    if ready == len(relevant):
         return "available"
     if ready > 0:
         return "partial"
+    if any(member["state"] == "failed" for member in relevant):
+        return "failed"
+    needs_action = any(member["state"] == "needs_action" for member in relevant)
     if needs_action:
         return "needs_action"
     return "not_installed"
@@ -251,7 +470,19 @@ def build_capability_cards(
         for item in scan.get("enhanced") or []
         if isinstance(item, dict) and item.get("id")
     }
-    tool_states, availability = _tool_states(binary_session)
+    raw_tool_states, availability = _tool_states(binary_session)
+    provider_states, tool_providers = _provider_evidence(binary_session)
+    functional_probes = binary_session.get("functional_probes")
+    functional_probes = (
+        functional_probes if isinstance(functional_probes, dict) else {}
+    )
+    tool_states = _actual_tool_states(
+        raw_tool_states,
+        provider_states,
+        tool_providers,
+        functional_probes,
+        platform_id,
+    )
     cards: list[dict[str, Any]] = []
     mapped_tools: set[str] = set()
     for definition in _load_cards():
@@ -260,6 +491,8 @@ def build_capability_cards(
             str(item) for item in platforms
         }
         members: list[dict[str, Any]] = []
+        member_items: dict[str, dict[str, Any] | None] = {}
+        prerequisites = _prerequisite_components()
         scenario_tools: set[str] = set()
         for member in definition.get("members") or []:
             if not isinstance(member, dict):
@@ -272,8 +505,21 @@ def build_capability_cards(
                     for item in member.get("tool_names") or []
                     if str(item).strip()
                 ]
+                if not confirmation_tools:
+                    confirmation_tools = list(
+                        _COMPONENT_FUNCTIONAL_TOOLS.get(component_id, [])
+                    )
                 mapped_tools.update(confirmation_tools)
-                state = _component_state(enhanced.get(component_id))
+                member_items[member_id] = enhanced.get(component_id)
+                state = _component_state(
+                    enhanced.get(component_id),
+                    confirmation_tools,
+                    tool_states,
+                    provider_states,
+                    available_on_any_tool=bool(
+                        member.get("available_on_any_tool")
+                    ),
+                )
                 for name in confirmation_tools:
                     reason = str((tool_states.get(name) or {}).get("reason") or "")
                     if reason == "target_required":
@@ -285,6 +531,7 @@ def build_capability_cards(
                         "kind": "component",
                         "state": state,
                         "tool_names": confirmation_tools,
+                        "prerequisite": component_id in prerequisites,
                     }
                 )
                 continue
@@ -294,7 +541,22 @@ def build_capability_cards(
                 if str(item).strip()
             ]
             mapped_tools.update(tool_names)
-            state = _tool_member_state(tool_names, tool_states)
+            member_items[member_id] = None
+            required_component = str(member.get("requires_component") or "").strip()
+            required_state = "available"
+            if required_component:
+                required_state = _component_state(
+                    enhanced.get(required_component),
+                    [],
+                    tool_states,
+                    provider_states,
+                )
+            if required_state == "available":
+                state = _tool_member_state(tool_names, tool_states)
+            elif required_state == "unsupported":
+                state = "unsupported"
+            else:
+                state = "missing"
             for name in tool_names:
                 reason = str((tool_states.get(name) or {}).get("reason") or "")
                 if reason == "target_required":
@@ -336,13 +598,30 @@ def build_capability_cards(
         if not platform_matches:
             for member in members:
                 member["state"] = "unsupported"
+        elif status_tools and not _has_live_tool(status_tools, tool_states):
+            # Component discovery alone is not enough: the registered MCP must
+            # expose a usable tool for this capability card.
+            for member in members:
+                if member["state"] == "available":
+                    if _all_tools_unsupported(status_tools, tool_states):
+                        member["state"] = "unsupported"
+                        continue
+                    item = member_items.get(str(member.get("id") or ""))
+                    mode = str((item or {}).get("install_mode") or "")
+                    member["state"] = (
+                        "needs_action"
+                        if mode in {"manual", "manual_license", "system"}
+                        else "missing"
+                    )
+
+        card_state = _card_state(members, platform_matches=platform_matches)
 
         cards.append(
             {
                 "id": str(definition.get("id") or ""),
                 "label": str(definition.get("label") or definition.get("id") or ""),
                 "description": str(definition.get("description") or ""),
-                "state": _card_state(members, platform_matches=platform_matches),
+                "state": card_state,
                 "ready_members": sum(member["state"] == "available" for member in members),
                 "total_members": len(members),
                 "unsupported_members": sum(

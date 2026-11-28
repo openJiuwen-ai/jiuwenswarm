@@ -11,7 +11,11 @@ import uuid
 from typing import Any
 
 from jiuwenswarm.common.rea_capability import build_capability_cards
-from jiuwenswarm.common.rea_mcp_probe import probe_rea_mcp_inventory
+from jiuwenswarm.common.rea_mcp_probe import (
+    binary_session_from_call_result,
+    probe_rea_mcp_inventory,
+    validate_tool_inventory,
+)
 from jiuwenswarm.common.rea_setup import (
     InstallCancelled,
     REA_MCP_NAME,
@@ -402,17 +406,113 @@ def _create_job(
         return dict(_JOBS[job_id])
 
 
-async def _verify_rea_mcp(workspace: str | None = None) -> dict[str, Any]:
-    """Verify the registered REA MCP through a temporary stdio connection."""
+async def _request_agent_mcp(
+    services: Any,
+    channel: Any,
+    params: dict[str, Any],
+    *,
+    label: str,
+    timeout_seconds: float = 120,
+) -> tuple[bool, dict[str, Any]]:
+    """Call the AgentServer MCP control plane through Gateway."""
+
+    if services is None or channel is None:
+        return False, {"error": "AgentServer services are unavailable"}
+    agent_client = getattr(services, "agent_client", None)
+    if agent_client is None:
+        return False, {"error": "AgentServer client is unavailable"}
+    from agent_gateway.common.request_method import parse_request_method
+    from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+    req_method = parse_request_method("command.mcp")
+    if req_method is None:
+        return False, {"error": "command.mcp is unavailable"}
+    return await fetch_agent_unary(
+        agent_client=agent_client,
+        req_method=req_method,
+        params=params,
+        session_id=None,
+        user_id=None,
+        channel_id=channel.channel_id,
+        label=label,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def _verify_rea_mcp(
+    workspace: str | None = None,
+    *,
+    services: Any = None,
+    channel: Any = None,
+) -> dict[str, Any]:
+    """Verify the REA MCP used by Workswarm, not a Gateway-only clone."""
 
     record = rea_mcp_record(workspace)
     if not record:
         return {"ok": False, "tool_count": 0, "error": "REA MCP record is missing"}
+
+    async def inspect_live() -> tuple[dict[str, Any] | None, str | None]:
+        if services is None or channel is None:
+            return None, None
+        try:
+            ok, payload = await _request_agent_mcp(
+                services,
+                channel,
+                {
+                    "action": "inspect_inventory",
+                    "name": REA_MCP_NAME,
+                },
+                label="rea.inspect_inventory",
+            )
+            if not ok:
+                error = payload.get("error") if isinstance(payload, dict) else payload
+                raise RuntimeError(str(error or "REA MCP inventory failed"))
+            tools = payload.get("tools")
+            if not isinstance(tools, list):
+                raise RuntimeError("REA MCP returned no tools")
+            binary_session = binary_session_from_call_result(
+                payload.get("binary_session_result") or {}
+            )
+            functional_probes = payload.get("functional_probe_results")
+            if isinstance(functional_probes, dict) and functional_probes:
+                binary_session["functional_probes"] = functional_probes
+            validation = validate_tool_inventory(tools, binary_session)
+            return {
+                "tools": tools,
+                "binary_session": binary_session,
+                **validation,
+            }, None
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)
+
+    async def inspect_configured() -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            return (
+                await asyncio.wait_for(
+                    asyncio.to_thread(probe_rea_mcp_inventory, record),
+                    timeout=150,
+                ),
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)
+
+    (live_inventory, live_error), (configured_inventory, configured_error) = (
+        await asyncio.gather(inspect_live(), inspect_configured())
+    )
+
+    # A long-lived AgentServer may still own a REA process launched with the
+    # pre-install environment. The configured record is what a newly selected
+    # session receives, so prefer it whenever it can be verified.
+    inventory = configured_inventory or live_inventory
+    verification_source = (
+        "configured-record" if configured_inventory is not None else "agent-live"
+    )
+    if inventory is None:
+        error = configured_error or live_error or "REA MCP inventory failed"
+        mark_rea_mcp_state("registered", workspace)
+        return {"ok": False, "tool_count": 0, "error": error}
     try:
-        inventory = await asyncio.wait_for(
-            asyncio.to_thread(probe_rea_mcp_inventory, record),
-            timeout=120,
-        )
         tools = inventory["tools"]
         if not tools:
             mark_rea_mcp_state("registered", workspace)
@@ -424,11 +524,68 @@ async def _verify_rea_mcp(workspace: str | None = None) -> dict[str, Any]:
             "tools": [str(tool.get("name") or tool.get("id") or "") for tool in tools[:8]],
             "inventory": inventory,
             "inventory_verified": inventory.get("inventory_verified") is True,
+            "verification_source": verification_source,
+            "agent_live_verified": live_inventory is not None,
+            "agent_live_error": live_error,
+            "configured_verified": configured_inventory is not None,
+            "configured_error": configured_error,
             "error": None,
         }
     except Exception as exc:  # noqa: BLE001
         mark_rea_mcp_state("registered", workspace)
         return {"ok": False, "tool_count": 0, "error": str(exc)}
+
+
+async def _reload_and_verify_rea_mcp(
+    workspace: str | None = None,
+    *,
+    services: Any = None,
+    channel: Any = None,
+) -> dict[str, Any]:
+    """Reload the registered REA MCP once, then validate its live tools."""
+
+    record = rea_mcp_record(workspace)
+    if not record:
+        return {"ok": False, "tool_count": 0, "error": "REA MCP record is missing"}
+    if services is None or channel is None:
+        return await _verify_rea_mcp(workspace)
+    ok, payload = await _request_agent_mcp(
+        services,
+        channel,
+        {
+            "action": "add",
+            "name": REA_MCP_NAME,
+            "enabled": bool(record.get("enabled", False)),
+            "transport": str(record.get("transport") or "stdio"),
+            "command": str(record.get("command") or ""),
+            "args": list(record.get("args") or []),
+            "env": dict(record.get("env") or {}),
+            "timeout_s": int(record.get("timeout_s") or 600),
+            "force_reload": True,
+        },
+        label="rea.reload_mcp",
+        timeout_seconds=180,
+    )
+    if not ok:
+        error = payload.get("error") if isinstance(payload, dict) else payload
+        mark_rea_mcp_state("registered", workspace)
+        return {
+            "ok": False,
+            "tool_count": 0,
+            "error": str(error or "REA MCP reload failed"),
+        }
+    if isinstance(payload, dict) and payload.get("applied") is False:
+        mark_rea_mcp_state("registered", workspace)
+        return {
+            "ok": False,
+            "tool_count": 0,
+            "error": str(payload.get("error") or "REA MCP reload was not applied"),
+        }
+    return await _verify_rea_mcp(
+        workspace,
+        services=services,
+        channel=channel,
+    )
 
 
 async def _attach_capability_cards(
@@ -453,7 +610,45 @@ async def _attach_capability_cards(
     return scan
 
 
-async def _run_base_job(job_id: str) -> None:
+async def _detected_available_component_ids(
+    *,
+    services: Any = None,
+    channel: Any = None,
+) -> list[str]:
+    """Return components already usable through the live REA MCP."""
+
+    verification = await _verify_rea_mcp(
+        services=services,
+        channel=channel,
+    )
+    if not verification.get("ok"):
+        return []
+    scan = await asyncio.to_thread(scan_rea_setup)
+    scan = await _attach_capability_cards(scan, verification)
+    available = {
+        str(item.get("id") or "")
+        for item in scan.get("enhanced") or []
+        if isinstance(item, dict) and item.get("available") is True
+    }
+    for card in scan.get("capability_cards") or []:
+        if not isinstance(card, dict):
+            continue
+        for member in card.get("members") or []:
+            if (
+                isinstance(member, dict)
+                and member.get("kind") == "component"
+                and member.get("state") == "available"
+            ):
+                available.add(str(member.get("id") or ""))
+    return sorted(item for item in available if item)
+
+
+async def _run_base_job(
+    job_id: str,
+    *,
+    services: Any = None,
+    channel: Any = None,
+) -> None:
     cancel_event = _JOB_CANCEL_EVENTS[job_id]
     try:
         _update_job(
@@ -483,10 +678,13 @@ async def _run_base_job(job_id: str) -> None:
             job_id,
             "verify_mcp",
             88,
-            "启动临时 REA MCP 并校验 tools/list 与 binary_session",
+            "重新加载 Workswarm 的 REA MCP 并校验实际工具与 binary_session",
             {"phase": "starting_mcp"},
         )
-        verification = await _verify_rea_mcp()
+        verification = await _reload_and_verify_rea_mcp(
+            services=services,
+            channel=channel,
+        )
         if cancel_event.is_set():
             raise InstallCancelled("安装已取消")
         _update_progress(
@@ -498,6 +696,8 @@ async def _run_base_job(job_id: str) -> None:
         )
         refreshed = await asyncio.to_thread(scan_rea_setup)
         refreshed = await _attach_capability_cards(refreshed, verification)
+        if cancel_event.is_set():
+            raise InstallCancelled("安装已取消")
         base_ready = bool(verification["ok"] and refreshed.get("ready"))
         _finish_steps(job_id, ok=base_ready)
         _update_job(
@@ -554,7 +754,13 @@ async def _run_base_job(job_id: str) -> None:
         )
 
 
-async def _run_enhanced_job(job_id: str, selected_ids: list[str] | None) -> None:
+async def _run_enhanced_job(
+    job_id: str,
+    selected_ids: list[str] | None,
+    *,
+    services: Any = None,
+    channel: Any = None,
+) -> None:
     cancel_event = _JOB_CANCEL_EVENTS[job_id]
     try:
         _update_job(
@@ -575,11 +781,25 @@ async def _run_enhanced_job(job_id: str, selected_ids: list[str] | None) -> None
                 raise InstallCancelled("安装已取消")
             _update_progress(job_id, stage, percent, message, details)
 
+        _update_progress(
+            job_id,
+            "enhanced_plan",
+            8,
+            "检测 Workswarm 已实际可用的增强能力",
+            {"phase": "scanning"},
+        )
+        available_component_ids = await _detected_available_component_ids(
+            services=services,
+            channel=channel,
+        )
+        if cancel_event.is_set():
+            raise InstallCancelled("安装已取消")
         installed = await asyncio.to_thread(
             install_enhanced_components,
             selected_ids=selected_ids,
             progress_callback=progress,
             cancel_check=cancel_event.is_set,
+            available_component_ids=available_component_ids,
         )
         if cancel_event.is_set():
             raise InstallCancelled("安装已取消")
@@ -590,9 +810,16 @@ async def _run_enhanced_job(job_id: str, selected_ids: list[str] | None) -> None
             "增强环境已写入，正在重新验证 REA MCP",
             {"phase": "starting_mcp"},
         )
-        verification = await _verify_rea_mcp()
+        verification = await _reload_and_verify_rea_mcp(
+            services=services,
+            channel=channel,
+        )
+        if cancel_event.is_set():
+            raise InstallCancelled("安装已取消")
         refreshed = await asyncio.to_thread(scan_rea_setup)
         refreshed = await _attach_capability_cards(refreshed, verification)
+        if cancel_event.is_set():
+            raise InstallCancelled("安装已取消")
         summary = dict(installed.get("summary") or {})
         completed = bool(verification["ok"])
         failed_count = int(summary.get("failed") or 0)
@@ -665,7 +892,7 @@ async def _run_enhanced_job(job_id: str, selected_ids: list[str] | None) -> None
         )
 
 
-def register_rea_setup_handlers(channel: Any) -> None:
+def register_rea_setup_handlers(channel: Any, services: Any = None) -> None:
     """Register status, base install, enhanced install, and assisted setup RPCs."""
 
     async def _rea_status_get(ws, req_id, params, session_id, user_id=None):
@@ -675,12 +902,17 @@ def register_rea_setup_handlers(channel: Any) -> None:
             if scope not in {"all", "base", "enhanced"}:
                 scope = "all"
             include_enhanced = scope != "base"
-            payload = await asyncio.to_thread(
-                scan_rea_setup,
-                include_enhanced=include_enhanced,
+            payload, verification = await asyncio.gather(
+                asyncio.to_thread(
+                    scan_rea_setup,
+                    include_enhanced=include_enhanced,
+                ),
+                _verify_rea_mcp(
+                    services=services,
+                    channel=channel,
+                ),
             )
             if payload.get("ready"):
-                verification = await _verify_rea_mcp()
                 if not verification["ok"]:
                     payload = await asyncio.to_thread(
                         scan_rea_setup,
@@ -732,7 +964,11 @@ def register_rea_setup_handlers(channel: Any) -> None:
             ws,
             req_id,
             kind="base",
-            runner=_run_base_job,
+            runner=lambda job_id: _run_base_job(
+                job_id,
+                services=services,
+                channel=channel,
+            ),
             steps=_base_steps(),
         )
 
@@ -758,7 +994,12 @@ def register_rea_setup_handlers(channel: Any) -> None:
                 ws,
                 req_id,
                 kind="enhanced",
-                runner=lambda job_id: _run_enhanced_job(job_id, selected_ids),
+                runner=lambda job_id: _run_enhanced_job(
+                    job_id,
+                    selected_ids,
+                    services=services,
+                    channel=channel,
+                ),
                 steps=_enhanced_steps(plan),
                 plan=plan,
             )
@@ -801,7 +1042,10 @@ def register_rea_setup_handlers(channel: Any) -> None:
             return
         try:
             await asyncio.to_thread(configure_component, component_id, values)
-            verification = await _verify_rea_mcp()
+            verification = await _reload_and_verify_rea_mcp(
+                services=services,
+                channel=channel,
+            )
             scan = await asyncio.to_thread(scan_rea_setup)
             scan = await _attach_capability_cards(scan, verification)
             await channel.send_response(
