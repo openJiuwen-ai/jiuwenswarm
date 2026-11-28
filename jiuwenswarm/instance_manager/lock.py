@@ -15,6 +15,7 @@ import os
 import platform
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -228,20 +229,34 @@ def write_pid_file(
     if metadata:
         data.update(metadata)
 
-    # Atomic write: temp file + rename
+    # Atomic write: unique temp file + replace. A fixed .tmp name let concurrent
+    # writers delete each other's file, and unlinking the target first left a
+    # window where readers saw no PID file at all.
     pid_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = pid_path.with_suffix(".tmp")
-    temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    # On Windows, need to remove existing file first
-    if pid_path.exists():
-        pid_path.unlink()
-    temp_path.rename(pid_path)
+    temp_path = pid_path.with_name(f".{pid_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _replace_with_retry(temp_path, pid_path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
     logger.info(
         "Wrote PID file for instance '%s': pid=%d, path=%s",
         config.name, pid, pid_path
     )
+
+
+def _replace_with_retry(source: Path, target: Path, max_attempts: int = 10) -> None:
+    """Retry the replace while another process or an indexer holds the PID file."""
+    for attempt in range(max(1, max_attempts)):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == max(1, max_attempts) - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def read_pid_file(config: InstanceConfig) -> Optional[Dict[str, Any]]:
