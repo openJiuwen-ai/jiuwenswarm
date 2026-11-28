@@ -165,10 +165,10 @@ async def prepare_team_memory(ctx, *, seed: dict | None = None) -> bool:
     return ready
 
 
-def apply_membership_revocation(api: Any, owner: tuple[str, str, str], kind: str, subject: str,
-                                team: str, project: str) -> None:
-    """Apply a journaled revocation against the listener's own store."""
-    from jiuwen_memory.api import Dimension, Scope, dimensions_of
+def apply_membership_change(api: Any, owner: tuple[str, str, str], kind: str, subject: str,
+                            team: str, project: str) -> None:
+    """Apply a journaled membership change against the listener's own store."""
+    from jiuwen_memory.api import Dimension, Member, Scope, dimensions_of
     from jiuwenswarm.common.team_memory_binding import team_memory_key
 
     org, space, user = owner
@@ -181,7 +181,12 @@ def apply_membership_revocation(api: Any, owner: tuple[str, str, str], kind: str
         return
 
     target = Scope(org=org, space=space, user=user, agent=subject)
-    if kind == "template":
+    if kind == "group_rejoin":
+        dimension = Dimension(org, space, "team", team)
+        departed = api.list_collective_members(dimension, status="departed", security=admin)
+        if any(member.scope == target for member in departed):
+            api.add_collective_members(dimension, [Member(target)], security=admin)
+    elif kind == "template":
         api.remove_collective_members(None, [target], security=admin)
     elif kind == "member":
         coordinates = {key: value for key, value in (("team", team), ("project", project)) if value}

@@ -23,7 +23,7 @@ from openjiuwen.harness import create_deep_agent
 from jiuwenswarm.agents.harness.common.memory import plugin
 from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import build_jiuwen_memory_rail
 from jiuwenswarm.agents.harness.common.memory.team_memory_members import (
-    apply_membership_revocation,
+    apply_membership_change,
     prepare_team_memory,
     revoke_expert_group_memory,
     revoke_expert_template_memory,
@@ -825,12 +825,12 @@ def test_revocation_uses_owner_space():
     api = Mock()
     api.list_collective_members.return_value = [SimpleNamespace(scope=member)]
 
-    apply_membership_revocation(api, owner, "group", "studio", "", "")
+    apply_membership_change(api, owner, "group", "studio", "", "")
     dimension = Dimension("org", "project-space", "team", team_memory_key(*owner, "studio"))
     assert api.list_collective_members.call_args.args == (dimension,)
     assert api.remove_collective_members.call_args.args == (dimension, [member])
 
-    apply_membership_revocation(api, owner, "template", "expert:writer", "", "")
+    apply_membership_change(api, owner, "template", "expert:writer", "", "")
     assert api.remove_collective_members.call_args.args == (None, [member])
 
 

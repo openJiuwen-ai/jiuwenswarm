@@ -19,6 +19,7 @@ generated: true
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
+| [jiuwenswarm/agents/harness/common/memory](#module-jiuwenswarm-agents-harness-common-memory) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-jiuwenswarm-agents-harness-common-tools-cron) |
@@ -114,6 +115,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
+
+<a id="module-jiuwenswarm-agents-harness-common-memory"></a>
+
+## jiuwenswarm/agents/harness/common/memory
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261128_1329_group-reinstall-team-memory](jiuwenswarm/server/runtime/agent_adapter/B_20261128_1329_group-reinstall-team-memory.md) | B | 专家团重装后恢复团队记忆访问 | zhengpeng | 无独立 D：沿用稳定团队身份和显式成员管理契约。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 
@@ -507,6 +516,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261110_1849_group-lock-cancellation](jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 | [B_20261116_1701_my-plugin-installed-only](jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
+| [B_20261128_1329_group-reinstall-team-memory](jiuwenswarm/server/runtime/agent_adapter/B_20261128_1329_group-reinstall-team-memory.md) | B | 专家团重装后恢复团队记忆访问 | zhengpeng | 无独立 D：沿用稳定团队身份和显式成员管理契约。 |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
