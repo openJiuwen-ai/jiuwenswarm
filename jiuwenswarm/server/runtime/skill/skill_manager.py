@@ -3510,7 +3510,9 @@ class SkillManager:
                 except ValueError as exc:
                     logger.warning("忽略无法归一化的在线技能结果: source=%s error=%s", source, exc)
                     continue
-                if not item["identifier"] and not item["name"]:
+                # identifier 是安装句柄：缺失的条目无法安装，且空 id 会让前端
+                # key/安装态互相串扰，宁可丢弃也不下发半残条目。
+                if not item["identifier"]:
                     continue
                 # ClawHub: collapse same slug across publishers; keep best owner for install.
                 identity_value = item["identifier"] or item["name"]

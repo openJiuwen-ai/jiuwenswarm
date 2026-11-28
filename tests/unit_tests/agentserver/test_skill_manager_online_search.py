@@ -481,3 +481,27 @@ def test_req_method_online_search_install_registered() -> None:
     from jiuwenswarm.common.schema.message import ReqMethod
 
     assert ReqMethod.SKILLS_ONLINE_SEARCH_INSTALL.value == "skills.online_search.install"
+
+
+def test_online_search_drops_items_without_install_identifier():
+    """缺安装句柄的条目不能下发：空 identifier 会让前端 key 与安装态互相串扰。"""
+    no_url = _skillnet_item("no-url", "missing-url")
+    no_url.pop("skill_url")
+
+    items = SkillManager._aggregate_online_search_results(
+        "target",
+        {
+            "skillnet": [
+                no_url,
+                _skillnet_item("usable", "kept"),
+            ],
+            "clawhub": [
+                {"summary": "no slug at all", "name": "slugless"},
+            ],
+        },
+        10,
+    )
+
+    assert [item["identifier"] for item in items] == [
+        "https://github.com/example/usable"
+    ]
