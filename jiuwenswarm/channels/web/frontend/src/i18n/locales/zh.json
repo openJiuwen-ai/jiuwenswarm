@@ -1018,7 +1018,7 @@
       "topicModelDelete": "将删除话题推荐模型配置并关闭话题推荐。",
       "display": "显示设置",
       "preferences": "界面与连接",
-      "language": "Language",
+      "language": "语言",
       "languageDescription": "设置应用程序界面的界面显示语言。",
       "chinese": "中文（简体）",
       "english": "English",
@@ -1401,7 +1401,7 @@
         "description": "选择支持此能力的多模态模型"
       },
       "preferred_language": {
-        "title": "Language",
+        "title": "语言",
         "description": "设置应用程序界面的显示语言。"
       },
       "max_context_size_mb": {
