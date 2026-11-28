@@ -2,6 +2,8 @@
 
 """Team completion must agree with the Worker's recovery snapshot."""
 
+import asyncio
+from contextlib import aclosing
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -11,6 +13,9 @@ import pytest
 from e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.runtime.interaction import interaction_ids
+from jiuwenswarm.runtime.session.coordinator import RuntimeSessionCoordinator
 from jiuwenswarm.runtime.session.model import (
     SessionExecutionHandle,
     SessionExecutionState,
@@ -18,6 +23,7 @@ from jiuwenswarm.runtime.session.model import (
     TeamExecutionDetails,
     TeamWaiterKind,
 )
+from jiuwenswarm.runtime.team_session_lifecycle import TeamSessionLifecycleAdapter
 from jiuwenswarm.server.ipc.protocol import dump_agent_request
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
 from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
@@ -121,6 +127,101 @@ async def test_completed_team_submission_clears_busy_after_execution_is_no_longe
     assert len(bridge.events.replay(request, after=0)) == 2
     bridge.events.register(request, "replacement-input")
     assert (await recovery_snapshot(dispatcher, request))["is_processing"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("idle_before_answer", [False, True])
+async def test_completed_team_question_round_recovers_idle_with_live_observer(idle_before_answer: bool):
+    coordinator = RuntimeSessionCoordinator()
+    request = team_request()
+    session = await coordinator.register_session(request.session_id, "web")
+    manager = Mock()
+    manager.is_generation_running.return_value = False
+    lifecycle = TeamSessionLifecycleAdapter(coordinator, manager)
+    report_round = manager.set_round_state_reporter.call_args.args[0]
+    bridge = WorkerGatewayBridge(ConnHolder())
+    dispatcher = WorkerDispatcher(bridge)
+    dispatcher._runtime = SimpleNamespace(
+        get_session_snapshot=coordinator.snapshot_session,
+        recoverable_control=coordinator.recoverable_control,
+        _session_runtime_lifecycle=lifecycle,
+    )
+    owner = bridge.events.register(request, "question-owner")
+    observer = replace(team_request("observer"), params={"mode": "team", "attach_only": True})
+    observer_record = bridge.events.register(observer, "observer-dispatch")
+    release = asyncio.Event()
+
+    async def operation(_context):
+        yield RuntimeEvent(
+            request_id=request.request_id, channel_id="web", session_id=request.session_id,
+            payload={"event_type": "chat.ask_user_question", "request_id": "question-id"},
+        )
+        await release.wait()
+        report_round(request.session_id, session.generation, False)
+        yield RuntimeEvent(
+            request_id=request.request_id, channel_id="web", session_id=request.session_id,
+            payload={"event_type": "chat.processing_status", "is_processing": False, "is_complete": True},
+        )
+
+    async def answer(_context):
+        report_round(request.session_id, session.generation, True)
+        yield RuntimeEvent(
+            request_id="answer", channel_id="web", session_id=request.session_id,
+            payload={"event_type": "chat.processing_status_deferred"},
+        )
+
+    stream = coordinator.run_team_stream(
+        request.session_id, request.request_id, SessionWorkKind.TEAM_REQUEST, operation,
+        details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT),
+        interaction_ids=interaction_ids, channel_id="web",
+    )
+    try:
+        question = await anext(stream)
+        state = coordinator.snapshot_session(request.session_id)
+        execution = next(item for item in state.executions if item.request_id == request.request_id)
+        bridge.events.append(
+            encode_agent_chunk_for_wire(
+                AgentResponseChunk(
+                    request_id=request.request_id, channel_id="web",
+                    payload={**question.payload, "execution_id": execution.execution_id},
+                ), response_id=request.request_id, sequence=1,
+            ), owner.dispatch_id,
+        )
+        if idle_before_answer:
+            report_round(request.session_id, session.generation, False)
+        answer_stream = coordinator.run_team_stream(
+            request.session_id, "answer", SessionWorkKind.TEAM_CONTROL, answer,
+            details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.NONE, control_id="question-id"),
+            interaction_ids=interaction_ids, channel_id="web",
+        )
+        async with aclosing(answer_stream):
+            async for _ in answer_stream:
+                pass
+        release.set()
+        async for event in stream:
+            bridge.events.append(
+                encode_agent_chunk_for_wire(
+                    AgentResponseChunk(
+                        request_id=request.request_id, channel_id="web", payload=event.payload,
+                    ), response_id=request.request_id, sequence=2,
+                ), owner.dispatch_id,
+            )
+        bridge.events.finish(owner.dispatch_id)
+
+        snapshot = await recovery_snapshot(dispatcher, request)
+
+        assert snapshot["is_processing"] is False
+        assert not snapshot.get("recovery_pending")
+        assert all(not item["pending_interactions"] for item in snapshot["dispatches"])
+        assert observer_record.active is True
+        state = coordinator.snapshot_session(request.session_id)
+        execution = next(item for item in state.executions if item.request_id == request.request_id)
+        assert execution.state is SessionExecutionState.SUCCEEDED
+        assert execution.waiting_control_ids == frozenset()
+    finally:
+        release.set()
+        await stream.aclose()
+        await coordinator.close()
 
 
 @pytest.mark.asyncio

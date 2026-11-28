@@ -1164,7 +1164,14 @@ class RuntimeSessionCoordinator:
         ):
             if handle.cancellation_requested or request_id not in handle.waiting_control_ids:
                 continue
-            if handle.state not in deliverable:
+            # Team idle parks the response owner before its question is answered.
+            # The matching control must still retire that owner's pending ID.
+            parked_team_control = (
+                handle.state is SessionExecutionState.WAITING_FOR_INPUT
+                and handle.team is not None
+                and handle.team.waiter_kind is TeamWaiterKind.PERSISTENT
+            )
+            if handle.state not in deliverable and not parked_team_control:
                 continue
             parents.append(handle)
         if not parents:
