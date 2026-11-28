@@ -4707,6 +4707,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               content: toolCall.description || toolCall.formatted_args || stringifyCompact(toolCall.arguments),
               tool_name: toolCall.name,
               tool_call_id: toolCall.id,
+              tool_arguments: toolCall.arguments,
             });
           }
           return;
@@ -4748,6 +4749,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         const toolResult = normalizeToolResultPayload(payload);
+        const toolResultPayload = isRecord(payload.tool_result) ? payload.tool_result : payload;
         const pendingSubagentQuery = toolResult.toolCallId
           ? pendingSubagentQueryRef.current.get(toolResult.toolCallId)
           : undefined;
@@ -4822,6 +4824,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               content: toolResult.summary || stringifyCompact(toolResult.result),
               tool_name: toolResult.toolName,
               tool_call_id: toolResult.toolCallId,
+              tool_success: toolResult.success,
+              ...(toolResult.toolName === 'send_message' ? {
+                tool_output: toolResultPayload.raw_output ?? toolResultPayload.rawOutput ?? toolResultPayload.result,
+              } : {}),
             });
           }
           if (shutdownMemberId) {

@@ -629,6 +629,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
             content,
             tool_name: toolName,
             tool_call_id: toolCallId || undefined,
+            tool_arguments: toolCall.arguments,
           });
         } else if (eventType === 'chat.tool_result') {
           const toolResult = isRecord(payload.tool_result) ? payload.tool_result : payload;
@@ -647,6 +648,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
             content,
             tool_name: toolName,
             tool_call_id: toolCallId || undefined,
+            tool_success: toolResult.success === true,
+            ...(toolName === 'send_message' ? {
+              tool_output: toolResult.raw_output ?? toolResult.rawOutput ?? toolResult.result,
+            } : {}),
           });
         } else if (eventType === 'chat.file') {
           const files = Array.isArray(payload.files)

@@ -217,6 +217,7 @@ function TeamLeaderPlainTextMessage({
   teamLeaderIdentity,
   teamGroupIdentity,
   sourceTeamId,
+  recipient,
 }: {
   member?: string;
   content: string;
@@ -231,7 +232,9 @@ function TeamLeaderPlainTextMessage({
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
   sourceTeamId?: string;
+  recipient?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <TeamMemberMessageFrame
       member={member}
@@ -240,6 +243,12 @@ function TeamLeaderPlainTextMessage({
       teamGroupIdentity={teamGroupIdentity}
       sourceTeamId={sourceTeamId}
     >
+      {recipient && (
+        <div className="mb-1 text-xs text-text-muted"
+          data-testid="chat-panel-human-delivery-recipient" data-variant={recipient}>
+          {t('team.process.sentTo', { member: recipient })}
+        </div>
+      )}
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList
           files={fileItems}
@@ -970,6 +979,8 @@ export const MessageItem = memo(function MessageItem({
 	                 renderTextActions={renderTextActions}
 	                 member={event.fromMember}
 	                 content={event.content}
+                     fileItems={message.fileItems}
+                     recipient={event.recipientIsHuman ? event.toMember : undefined}
 	                 messageId={id}
 	                 timestamp={timestamp}
 	                 isStreaming={isStreaming}

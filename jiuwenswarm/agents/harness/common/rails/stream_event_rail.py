@@ -1173,6 +1173,22 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 response_text = self._extract_response_text(ctx)
                 if response_text:
                     payload["content"] = response_text
+                if self._role == "leader":
+                    # Load the host event and session-statistics dependencies only for team usage.
+                    from jiuwenswarm.extensions_v2.event_types.context_usage import (
+                        MODEL_USAGE_COUNTERS, TEAM_LEADER_MODEL_USAGE_FIELD,
+                    )
+
+                    inputs = getattr(ctx, "inputs", None)
+                    call_id = getattr(inputs, "context_usage_request_id", None) or getattr(
+                        ctx, "context_usage_request_id", None,
+                    )
+                    usage = getattr(getattr(inputs, "response", None), "usage_metadata", None)
+                    counts = {name: getattr(usage, name, None) for name in MODEL_USAGE_COUNTERS}
+                    if isinstance(call_id, str) and call_id.strip() and all(
+                        type(count) is int and count >= 0 for count in counts.values()
+                    ):
+                        payload[TEAM_LEADER_MODEL_USAGE_FIELD] = {"request_id": call_id, **counts}
             await session.write_stream(
                 OutputSchema(type=phase, index=0, payload=payload)
             )

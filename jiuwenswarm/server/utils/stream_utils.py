@@ -46,7 +46,7 @@ def _finite_number(value: Any) -> int | float | None:
         return None
 
 
-def _normalize_occupancy_rate(value: Any) -> float | None:
+def normalize_occupancy_rate(value: Any) -> float | None:
     """Normalize ratio or percentage values to a ``[0, 1]`` ratio."""
     numeric_value = _finite_number(value)
     if numeric_value is None:
@@ -80,7 +80,7 @@ def normalize_context_usage_payload(payload: Any) -> dict[str, Any] | None:
     if isinstance(context_window, dict):
         # Compatibility aliases: the frontend's summary card still reads
         # these names while the full category breakdown is carried in parts.
-        occupancy_rate = _normalize_occupancy_rate(
+        occupancy_rate = normalize_occupancy_rate(
             context_window.get("occupancy_rate")
         )
         if usage_payload.get("rate") is None:
@@ -107,7 +107,7 @@ def normalize_context_usage_payload(payload: Any) -> dict[str, Any] | None:
         limit_tokens = _finite_number(summary.get("limit_tokens"))
         if limit_tokens is None:
             limit_tokens = _finite_number(context_window.get("limit_tokens"))
-        summary_rate = _normalize_occupancy_rate(summary.get("occupancy_rate"))
+        summary_rate = normalize_occupancy_rate(summary.get("occupancy_rate"))
         if summary_rate is None:
             summary_rate = occupancy_rate
         if summary_rate is None and used_tokens is not None:

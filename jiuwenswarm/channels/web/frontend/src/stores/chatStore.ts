@@ -1,3 +1,4 @@
+import { withArtifactReferences } from '../features/humanMemberDeliveries';
 /**
  * 聊天状态管理（多 session 版本）
  *
@@ -353,7 +354,8 @@ function assignMessageRenderKeys(
 ): { messages: Message[]; messageRenderKeySeq: number } {
   let messageRenderKeySeq = runtime.messageRenderKeySeq;
   return {
-    messages: messages.map((message) => {
+    messages: messages.map((rawMessage) => {
+      const message = withArtifactReferences(rawMessage);
       if (message.renderKey) {
         return message;
       }
@@ -730,7 +732,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             messages: runtime.messages.map((msg) =>
-              msg.id === id ? { ...msg, ...updates } : msg
+              msg.id === id ? withArtifactReferences({ ...msg, ...updates }) : msg
             ),
           },
         },

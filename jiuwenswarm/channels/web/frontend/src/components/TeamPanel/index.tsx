@@ -11,6 +11,7 @@ import {
 } from '../../services/teamApi';
 import { isEnterprise } from '../../edition';
 import { toDisplaySessionTitle } from '../../utils/documentMessage';
+import { loadTeamPanelSources, teamsAfterLoad } from './teamPanelLoad';
 
 interface SessionListResponse {
   sessions?: unknown[];
@@ -202,13 +203,13 @@ export function TeamPanel({ onSessionsDeleted }: TeamPanelProps) {
   const loadTeams = useCallback(async () => {
     setLoadingTeams(true);
     try {
-      const payload = await webRequest<SessionListResponse>('session.list', {});
-      let nextTeams = Array.isArray(payload?.sessions) ? toTeamInfos(payload.sessions) : [];
-      try {
-        nextTeams = mergeControlPlaneTeams(nextTeams, await listTeams());
-      } catch (controlError) {
-        console.debug('[teams] control-plane list unavailable:', controlError);
-      }
+      const { sessionRows, controlTeams, outcome } = await loadTeamPanelSources(
+        async () => {
+          const payload = await webRequest<SessionListResponse>('session.list', {});
+          return Array.isArray(payload?.sessions) ? payload.sessions : [];
+        },
+        async () => listTeams(),
+      );
       if (enterprise) {
         try {
           setQuota(await getTeamQuota());
@@ -223,12 +224,22 @@ export function TeamPanel({ onSessionsDeleted }: TeamPanelProps) {
         setQuota(null);
         setQuotaError('');
       }
-      setTeams(nextTeams);
-      setError(null);
-    } catch (loadError) {
-      console.error('Failed to load teams:', loadError);
-      setTeams([]);
-      setError(t('teams.errors.loadTeams'));
+      setTeams((previous) => {
+        // A failed session source keeps the previously rendered session titles
+        // and still applies any control-plane teams returned by `team.list`.
+        const baseTeams = Array.isArray(sessionRows) ? toTeamInfos(sessionRows) : previous;
+        const merged = Array.isArray(controlTeams) ? mergeControlPlaneTeams(baseTeams, controlTeams) : baseTeams;
+        return teamsAfterLoad(previous, merged, outcome.status);
+      });
+      if (outcome.status === 'failed') {
+        console.error('Failed to load teams: both session.list and team.list failed');
+        setError(t('teams.errors.loadTeams'));
+      } else if (outcome.status === 'partial') {
+        console.error('Failed to load teams partially:', outcome.failedSources.join(', '));
+        setError(t('teams.errors.partialLoad'));
+      } else {
+        setError(null);
+      }
     } finally {
       setLoadingTeams(false);
     }

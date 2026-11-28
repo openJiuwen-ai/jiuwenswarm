@@ -291,6 +291,43 @@ def test_shipped_catalog_has_one_discovery_entry_and_all_leaf_links_work(tmp_pat
     assert "capabilities/deepseek-harness-plugin-converter/SKILL.md" in links
     assert not (skills / "jiuwen-system-plugin-dev").exists()
     assert (root / "references" / "capabilities" / "workswarm-app-builder" / "scripts" / "publish.py").is_file()
+    # 入口是唯一被注入的技能描述：要能读到每个内置能力的名称与用途，
+    # 否则模型只能看到「按目录检索」，无法把用户提到的能力名映射过去。
+    skill_md = (root / "SKILL.md").read_text(encoding="utf-8")
+    description = re.search(r"^description:\s*(.+)$", skill_md, re.MULTILINE).group(1)
+    entries = dict(re.findall(r"([A-Za-z0-9_-]+)（([^）]*)）", description))
+    assert set(entries) == shipped_names
+    assert f"（{len(shipped_names)} 项" in description or f"收录 {len(shipped_names)} 项" in description
+    assert all(4 <= len(blurb) <= 24 for blurb in entries.values())
+    # 只允许名称与短简介，不退回逐个注入完整描述的量级。
+    assert len(description) < 1800
+
+
+def test_catalog_description_carries_names_and_intros_into_the_prompt():
+    """唯一注入的技能条目里要能直接读到内置能力名称与简介。"""
+    from types import SimpleNamespace
+
+    from openjiuwen.harness.rails import SkillUseRail
+
+    class _Fs:
+        async def read_file(self, path, **_kwargs):
+            try:
+                content = Path(path).read_text(encoding="utf-8")
+            except OSError as exc:
+                return SimpleNamespace(code=1, message=str(exc), data=None)
+            return SimpleNamespace(code=0, message="", data=SimpleNamespace(content=content))
+
+    skills = _resource_path(utils.get_builtin_skills_dir())
+    rail = SkillUseRail(skills_dir=str(skills), skill_mode="all")
+    rail.sys_operation = SimpleNamespace(fs=lambda: _Fs())
+    rail.system_prompt_builder = SimpleNamespace(language="cn")
+    asyncio.run(rail._prepare_skills())
+    prompt = rail._build_all_mode_prompt()
+
+    assert [skill.name for skill in rail.skills] == [BUILTIN_CATALOG_NAME]
+    assert "xlsx（Excel、表格、公式与图表）" in prompt
+    assert "swarmskill-creator（团队技能、SwarmFlow、多角色工作流）" in prompt
+    assert len(prompt) < 1700
 
 
 @pytest.mark.parametrize("customized", [False, True])

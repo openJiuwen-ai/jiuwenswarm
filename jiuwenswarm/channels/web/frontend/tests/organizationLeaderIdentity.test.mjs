@@ -37,6 +37,7 @@ globalThis.document = bootstrapDom.window.document;
 const {
   ChatTimelineList, MessageItem, useChatStore, useSessionStore, useTeamSelectorStore,
   applyTeamSnapshotToSession, setTeamOrganizationUiEnabled,
+  humanMemberDeliveries, withArtifactReferences,
 } = await import('../node_modules/.cache/organization-leader-identity/identity.mjs');
 
 async function withOrganizationIdentity(run) {
@@ -99,6 +100,46 @@ const summaryMessage = {
   id: 'team-leader-summary', role: 'system', content: 'Summary response',
   timestamp: '2026-10-26T08:40:00Z',
 };
+
+test('human deliveries render one addressed message per human and omit AI recipients', async () => {
+  await withOrganizationIdentity(async ({ root }) => {
+    const members = [{ member_id: 'reader', mode: 'human' }, { member_id: 'reviewer', role: 'human_agent' }, { member_id: 'designer', mode: 'teammate' }];
+    const call = { member_id: 'writer', kind: 'tool_call', timestamp: 1, tool_name: 'send_message', tool_call_id: 'group',
+      tool_arguments: { targets: ['reader', 'designer', 'reviewer'], content: 'Please review the shared report' } };
+    const result = { member_id: 'writer', kind: 'tool_result', timestamp: 2, tool_call_id: 'group', tool_success: true };
+    const messages = humanMemberDeliveries([call, result], members);
+    await act(async () => root.render(createElement(A2UIProvider, null,
+      messages.map(message => createElement(MessageItem, { key: message.id, message, hideMeta: true, showAvatar: false })),
+    )));
+    assert.deepEqual([...document.querySelectorAll('[data-testid="chat-panel-human-delivery-recipient"]')]
+      .map(element => element.dataset.variant), ['reader', 'reviewer']);
+    const visible = [...document.querySelectorAll('[data-testid="chat-panel-team-leader-message-plain"]')];
+    assert.equal(visible.length, 2);
+    assert.ok(visible.every(element => element.textContent.includes('Please review the shared report')));
+    assert.equal(document.body.textContent.includes('designer'), false);
+  });
+});
+
+test('path-derived file cards render only in enterprise while ordinary personal file cards remain', async () => {
+  await withOrganizationIdentity(async ({ root }) => {
+    const path = '/home/app/team-workspace/artifacts/report.md';
+    const render = async message => act(async () => root.render(createElement(A2UIProvider, null,
+      createElement(MessageItem, { key: message.id, message, hideMeta: true, showAvatar: false }),
+    )));
+    const raw = { id: 'personal-path', role: 'assistant', timestamp: '2026-11-27T00:00:00Z', content: path };
+    window.__JIUWENSWARM_EDITION__ = 'personal';
+    await render(withArtifactReferences(raw));
+    assert.equal(document.querySelector('[data-testid="chat-panel-file-download-btn"]'), null);
+    assert.ok(document.body.textContent.includes(path));
+    await render(withArtifactReferences({ ...raw, id: 'personal-file', fileItems: [{
+      name: 'report.md', path, size: 0, mime_type: 'text/markdown', download_url: '/file-api/download?token=real', download_token: 'real',
+    }] }));
+    assert.ok(document.querySelector('[data-testid="chat-panel-file-download-btn"]'));
+    window.__JIUWENSWARM_EDITION__ = 'enterprise';
+    await render(withArtifactReferences({ ...raw, id: 'enterprise-path' }));
+    assert.ok(document.querySelector('[data-testid="chat-panel-file-download-btn"]'));
+  });
+});
 
 for (const surface of ['timeline', 'message', 'tools']) {
   test(`organization ${surface} uses its own identity across switching and restored snapshots`, async () => {

@@ -655,6 +655,9 @@ export interface TeamMemberExecutionEvent {
   content?: string;
   tool_name?: string;
   tool_call_id?: string;
+  tool_arguments?: unknown;
+  tool_success?: boolean;
+  tool_output?: unknown;
   files?: Array<{
     name: string;
     size?: number;
