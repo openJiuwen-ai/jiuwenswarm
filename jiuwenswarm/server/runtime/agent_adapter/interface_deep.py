@@ -9282,8 +9282,12 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated key=%s",
                 wanted_key,
             )
-        elif permission_config.get("enabled", False):
-            # 建轨失败 → None（与迁仓前一致）；有 stale 时保留旧轨，不抬异常。
+        else:
+            # 【设计契约，勿改回 elif enabled】enabled=false 也必须建轨（S_17 N1）：
+            # 总开关裁决下沉 agent_shield 引擎，disabled 配置仅保留
+            # always_on_components 白名单判定。若此处跳过建轨，security 将完全不
+            # 参与判定、hostguard 随总开关失效（历史缺陷，见 F_02）。建轨失败 →
+            # None（与迁仓前一致）；有 stale 时保留旧轨，不抬异常。
             new_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
                 llm=self._model,
@@ -9321,7 +9325,8 @@ class JiuWenSwarmDeepAdapter:
                 self._permission_rail = stale_rail
                 stale_rail = None
         if stale_rail is not None and self._permission_rail is not stale_rail:
-            # 重建成功或权限被显式关闭后才注销旧 key。
+            # 重建成功后注销旧 key（enabled=false 现在也会建新轨接管服务，
+            # 不再有"权限被显式关闭后旧轨空转"的分支）。
             release = getattr(stale_rail, "_release_registration", None)
             if callable(release):
                 release()

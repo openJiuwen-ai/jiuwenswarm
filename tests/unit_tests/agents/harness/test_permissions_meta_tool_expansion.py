@@ -129,19 +129,130 @@ def test_build_permission_rail_registers_expander(monkeypatch):
     assert "invoke_tool" in registered_meta_tools()
 
 
-def test_build_permission_rail_disabled_does_not_register(monkeypatch):
+def test_build_permission_rail_disabled_still_builds_and_registers(monkeypatch):
+    """enabled=false 不再短路（S_17 N1）：rail 照常构建并注册展开契约，
+    always_on_components 随配置发布给 agent_shield 引擎裁决。"""
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
         build_permission_rail,
     )
 
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
-        lambda **_kwargs: {"enabled": False},
+        lambda **_kwargs: {
+            "enabled": False,
+            "always_on_components": ["host_guard"],
+            "tools": {},
+            "rules": [],
+        },
     )
     unregister_meta_tool("invoke_tool")
     rail = build_permission_rail({"permissions": {"enabled": False}})
-    assert rail is None
-    assert "invoke_tool" not in registered_meta_tools()
+    assert rail is not None
+    assert "invoke_tool" in registered_meta_tools()
+    static_cfg = getattr(rail, "_static_config", {})
+    assert static_cfg.get("enabled") is False
+    assert static_cfg.get("always_on_components") == ["host_guard"]
+
+
+def test_build_permission_rail_disabled_seeds_default_and_respects_explicit_empty(monkeypatch):
+    """disabled 缺键时播种模板默认 ["host_guard"]（企业旧模板 body 兜底）；
+    用户显式 [] 表示主动关闭底线，不被覆盖。"""
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        build_permission_rail,
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {"enabled": False, "tools": {}, "rules": []},
+    )
+    rail = build_permission_rail({"permissions": {"enabled": False}})
+    assert rail is not None
+    assert getattr(rail, "_static_config", {}).get("always_on_components") == ["host_guard"]
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {"enabled": False, "always_on_components": [], "tools": {}, "rules": []},
+    )
+    rail_empty = build_permission_rail({"permissions": {"enabled": False}})
+    assert rail_empty is not None
+    assert getattr(rail_empty, "_static_config", {}).get("always_on_components") == []
+
+
+def test_build_permission_rail_disabled_warns_on_malformed_always_on(monkeypatch, caplog):
+    """非 list 值（YAML 误写成标量）与未知组件名走告警分支：误配标量与缺键同样
+    兜底播种 ["host_guard"]（引擎对非 list 静默置空，只告警透传会让一个字符级
+    误配重新打开"关审批即失守卫"缺口，检视意见 2）。"""
+    import logging
+
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        build_permission_rail,
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {
+            "enabled": False,
+            "always_on_components": "host_guard",
+            "tools": {},
+            "rules": [],
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
+        rail = build_permission_rail({"permissions": {"enabled": False}})
+    assert rail is not None
+    # 误配标量兜底播种，与缺键同向（显式 [] 才是主动关闭底线）。
+    assert getattr(rail, "_static_config", {}).get("always_on_components") == ["host_guard"]
+    assert "must be a list" in caplog.text
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {
+            "enabled": False,
+            "always_on_components": ["host_gaurd"],
+            "tools": {},
+            "rules": [],
+        },
+    )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
+        rail_unknown = build_permission_rail({"permissions": {"enabled": False}})
+    assert rail_unknown is not None
+    assert "unknown names" in caplog.text
+
+    # strip 归一正向：引擎先 strip 再收录，带空白的合法名不告警。
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {
+            "enabled": False,
+            "always_on_components": ["  host_guard  "],
+            "tools": {},
+            "rules": [],
+        },
+    )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
+        rail_padded = build_permission_rail({"permissions": {"enabled": False}})
+    assert rail_padded is not None
+    assert "unknown names" not in caplog.text
+
+
+def test_permissions_snapshot_normalizes_disabled_floor(monkeypatch):
+    """检视意见 1：effective 快照在 persist 合并等刷新点被重新消费——配置源缺键时
+    归一兜底，构建期播种的底线不被无键快照冲掉（引擎置空 → 底线全关）。"""
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        build_permission_rail,
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {"enabled": False, "tools": {}, "rules": []},
+    )
+    rail = build_permission_rail({"permissions": {"enabled": False}})
+    assert rail is not None
+
+    snapshot = rail._host.get_permissions_snapshot()
+    assert snapshot["enabled"] is False
+    assert snapshot["always_on_components"] == ["host_guard"]
 
 
 @pytest.mark.parametrize("exc", [RuntimeError, ImportError])

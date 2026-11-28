@@ -451,6 +451,10 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # 总开关关闭时仍参与判定的组件白名单（必须出现在模板里，否则用户 override
+  # 会在 merge 后被丢掉；详见包内 config.yaml 同键注释）。
+  always_on_components:
+    - host_guard
 
   defaults:
     "*": "allow"

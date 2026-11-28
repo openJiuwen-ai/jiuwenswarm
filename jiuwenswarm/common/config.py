@@ -2987,12 +2987,14 @@ def migrate_config_from_template(
 
 # permissions 段可由 agent_shield / E2E fixture 注入、且不在包内模板中的键。
 # 启动 cleanup_override_against_template 不得把它们当「废弃字段」剪掉，
-# 否则 shell_allowlist: null/[] 丢失后会回落到 default-30，host_guard 也会被摘掉。
+# 否则 shell_allowlist: null/[] 丢失后会回落到 default-30，host_guard 也会被摘掉，
+# always_on_components（disabled 底线白名单）丢失后守卫底线静默失效。
 _PERMISSIONS_OVERRIDE_KEEP_KEYS = frozenset(
     {
         "shell_allowlist",
         "host_guard",
         "package_builtin_rules",
+        "always_on_components",
         "agents",
         "approval_overrides",
     }

@@ -433,6 +433,14 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
             saved_config = dict(getattr(rail, "_static_config", None) or {})
             suspended_config = dict(saved_config)
             suspended_config["enabled"] = False
+            # 【勿删】挂起 = 子代理完全不参与权限审批（S_03 N13）：置 enabled=False
+            # 的同时必须显式清空 always_on_components——新契约下 disabled 不再等价
+            # 全放行（用户总开关路径宿主会播种 host_guard 底线，_static_config 必含
+            # 该键）；挂起快照若保留它，headless fallback 子代理会被 host_guard 重
+            # 新 DENY/ASK（ASK 无人作答 → RuntimeError），破坏降级链。显式 [] 是把
+            # "全放行"这一裁决本身交回引擎（配置仍传给 security，只是底线为空），
+            # 与用户总开关路径的语义刻意不同。
+            suspended_config["always_on_components"] = []
             host = getattr(rail, "_host", None)
             saved_snapshot = (
                 host.get_permissions_snapshot if host is not None else None

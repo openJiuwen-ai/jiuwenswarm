@@ -8,14 +8,14 @@
 | 编号 / slug | S_17 / host-assembly-and-interaction-conversion |
 | 关联模块（agent-core 仓） | `openjiuwen/harness/security/host.py`（`ToolPermissionHost` 回调接口——本 spec 管宿主侧实现）、`openjiuwen/harness/security/models.py`（`PermissionConfirmResponse`）、`openjiuwen/harness/security/skill_authorization`（`SKILL_APPROVAL_CARD_EXTENSION_KEY` / 子代理审批注册表） |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py`（1529 行：`build_permission_rail` / `convert_interactions_to_ask_user_question` / scene hook / hosted confirm 闭包族）、`common/rails/permissions/config_loader.py`（`get_effective_permissions_config` / `merge_session_permissions_overlay` / `persist_permissions_mutate`）、`common/rails/permissions/owner_scopes.py`（`TOOL_PERMISSION_CONTEXT` / `check_avatar_permission`）、`common/rails/permissions/tool_permission_context.py`（`TOOL_PERMISSION_CHANNEL_ID`）、`common/rails/subagent_skill_authorization_rail.py`（`emit_subagent_approval`）、`openjiuwen_streaming_tool_patch.py`（`streaming_tool_wait_timeout_paused`）、`code/rails/code_plan_approval_interrupt_rail.py`（plan approval 提取） |
-| 最近一次修订日期 | 2026-11-17（装配点：build_permission_rail 增加 meta-tool 展开契约注册，见 B_06 / issue #6499；同日 review 修正：注册失败 fail-open 降级 + 提取器 strip 归一） |
-| 关联 feature | issue #1976（ask_user 豁免）、#2331（非数组 options 防字符迭代） |
+| 最近一次修订日期 | 2026-11-28（N1 改写：enabled 不再门控装配，总开关裁决下沉 agent_shield 引擎 + always_on_components 透传，见 F_02；新增 N23 三处 keep_keys 保留约束；N1 补未知名封闭集告警语义） |
+| 关联 feature | issue #1976（ask_user 豁免）、#2331（非数组 options 防字符迭代）、F_02_permission-always-on-components.md（disabled 底线白名单） |
 
 ## 范围 / 边界
 
 本规约管 **jiuwenswarm 宿主对 agent-core 中断体系的装配与前后端交互转换**——`ToolPermissionHost` 全部回调的实现、权限 rail 的构建与三级变体选择、interrupt 结果到 `chat.ask_user_question` 前端卡片的转换：
 
-- **rail 构建**（`build_permission_rail`）：配置来源二分、enabled 门、**meta-tool 展开契约注册**（enabled 门通过后经 `permission_runtime.install_meta_tool_expanders` 把 invoke_tool 等转发器注册进 agent_shield——外层判定展开到内层真实调用并取最严，堵外层 `defaults` 放行携带内层命令穿透的绕过路径，B_06 / issue #6499；**注册失败不冒泡**——import 与调用一并包 try/except，告警降级为仅外层判定、rail 照常构建，铁律 34 同一 fail-open 语义）、tool_names 标签收集、host 闭包族组装、三级 rail 变体选择
+- **rail 构建**（`build_permission_rail`）：配置来源二分、**meta-tool 展开契约注册**（无论 enabled 与否都经 `permission_runtime.install_meta_tool_expanders` 把 invoke_tool 等转发器注册进 agent_shield——外层判定展开到内层真实调用并取最严，堵外层 `defaults` 放行携带内层命令穿透的绕过路径，B_06 / issue #6499；**注册失败不冒泡**——import 与调用一并包 try/except，告警降级为仅外层判定、rail 照常构建，铁律 34 同一 fail-open 语义）、tool_names 标签收集、host 闭包族组装、三级 rail 变体选择。**enabled 不门控装配**（N1）：disabled 时 rail 照常构建并发布 `enabled:false + always_on_components`，由 agent_shield 引擎裁决
 - **hosted confirm 通道分流**（`_request_permission_confirmation`）：hosted parent-card（web / officeclaw / tui）/ interrupt 弹卡 / ACP 原生 JSON-RPC 三路
 - **场景豁免链**（`_permission_scene_hook`）：ask_user 豁免、deepresearch workflow 状态、数字分身、owner_scopes
 - **持久化回调**（`_persist_allow_rule`）：只 mutate 三键的磁盘写
@@ -36,7 +36,7 @@
 
 ## 不变量
 
-- **N1（配置来源二分）**：`build_permission_rail` 收到 dict 型 `permission_config`（Agent 模板 body）→ 企业版叠加当前会话 overlay（`merge_session_permissions_overlay`）、非企业版 deepcopy，`config_source="agent_template"`；未收到 → `get_effective_permissions_config()`，`config_source="effective"`。`enabled` 为假 → 返回 None（不装 rail）。
+- **N1（配置来源二分）**：`build_permission_rail` 收到 dict 型 `permission_config`（Agent 模板 body）→ 企业版叠加当前会话 overlay（`merge_session_permissions_overlay`）、非企业版 deepcopy，`config_source="agent_template"`；未收到 → `get_effective_permissions_config()`，`config_source="effective"`。**enabled 不门控装配**：enabled 为假时 rail 照常构建并发布 `enabled:false + always_on_components`——总开关裁决下沉 agent_shield 引擎（`engine.check_permission`：disabled 时仅 `always_on_components` 白名单内组件继续判定，其余快速 ALLOW；组件名白名单 host_guard / file_guard / deletion_guard / high_risk_command）。`always_on_components` 真源是三份 yaml 模板（`resources/config.yaml` / `config.team.distributed.leader.yaml` / `config.team.distributed.teammate.yaml`），默认 `["host_guard"]`；session overlay 不含该键（不可经会话放宽底线）。**disabled 缺键兜底播种**：配置源（含企业部署侧旧模板 body）未携带该键时宿主播种 `["host_guard"]`；显式 `[]`（键存在）表示主动关闭底线，不被覆盖；非 list 值（YAML 误配标量）与缺键/null **同向兜底播种** `["host_guard"]` 并告警（引擎对非 list 静默置空，只告警透传会让字符级误配重新打开底线缺口——失效方向必须一致，检视意见 2）；list 内封闭集外未知名告警（宿主侧 `_ALWAYS_ON_COMPONENT_NAMES` 封闭集、strip 归一比对，引擎会静默跳过 → 底线收窄）。**快照归一**：`_get_permissions_snapshot` 的 effective 分支在 persist 合并（agent-core `_persist_allow_always` 以快照为 base_cfg 整体 update_config）等刷新点被重新消费，返回前经 `_normalize_disabled_always_on_floor` 同源兜底——配置源缺键/误配时不归一，构建期播种的底线会被无键快照冲掉（检视意见 1）。**挂起例外**：`_suspend_subagent_permission_rails`（spawn_fallback headless 子代理）置 `enabled=False` 时**显式清空** `always_on_components`——挂起契约 = 子代理完全不参与审批（S_03 N13），保留底线会让 headless 上下文被 host_guard 重新 DENY/ASK（ASK 无人作答 → RuntimeError）；显式 `[]` 是把"全放行"裁决交回引擎，与用户总开关路径刻意不同（检视意见 3）。仅构建失败返回 None（warning + None，fail-open 不变）。team member 路径（TeamPermissionRail，[[S_13]] 三层 spec 级门控）不在本契约覆盖内——enabled=false 时 team member 仍不装权限 rail（已知不对称，见 F_02）。
 - **N2（tool_names 仅标签）**：`_collect_optional_tool_tags` 从 tools 键 + rules[].tools 收集，仅作展示 / 日志——拦截范围由 rail 本体决定（[[S_16]] N1）。
 - **N3（persist 只 mutate 三键）**：`_persist_allow_rule` 经 `persist_permissions_mutate` 只把 `approval_overrides` / `file_guard` / `external_directory` 三键 deepcopy 进持久化目标 body（yaml `agents[id]` 命中时，否则 global）——**不得整盘替换**（会复活已删工具或丢 `agents` 表）。persist_scope：企业版 `session`、否则 `base`。失败返回 False（触发 [[S_16]] N8 回滚）。
 - **N4（hosted 通道白名单）**：`_HOSTED_PERMISSION_CHANNELS = {web, officeclaw, tui}`——hosted 卡片需 `chat.ask_user_question` 渲染；**ACP 保留原生 `session/request_permission` JSON-RPC，不得劫持**。parent-card 路径仅当 `resolve_subagent_permission_parent_session` 返回非 None（嵌套代理 + 会话 id 不同 + parent 可 write_stream）且 channel ∈ 白名单。
@@ -58,6 +58,7 @@
 - **N20（序号后缀剥离语义）**：`strip_hitl_seq_suffix` 剥 `{id}#{n}` 恢复 harness 原始 tool_call id，仅用于**作答对齐**与「base 当前代卡」判定；**权限账本去重 key 不做此归一化**——`#{n}` 是顺序门的不同代次（不同权限内容），归一化会把下一个合法门误判为重复（CR-1）。未命中后缀原样返回。
 - **N21（resume 源判定）**：`INTERRUPT_RESUME_SOURCES = {permission_interrupt, confirm_interrupt, ask_user_interrupt, evolution_interrupt}`；`is_interrupt_resume_source` **有意排除** skill-evolution 源（保持 active skill / skill_envs 注入跨安全 HITL）；legacy `skill_evolution_approval` 源须 `evolution_meta.approval_transport == "interrupt"` 才算 resume 载荷。
 - **N22（选项构造防呆）**：`_build_multi_questions`——有选项的问题末尾追加自定义输入选项，后端只追加 `{"label": "Other", "description": "Custom input"}`（**无 value 键**）；哨兵值 `__other__` 是**前端** `InlineQuestionCard` 的识别标记（`OTHER_VALUE`，另兼容仅 label 的旧形态 `!value && label === 'Other'`）；无选项不追加（前端直接自由输入）；**非数组 options（如 "a,b"）不得按字符迭代**（#2331，置空处理）。
+- **N23（always_on_components 三处 keep_keys 保留）**：稀疏快照发布（agent-core rail `update_config` 的 trusted_dirs / workspace_root 热补、HITL persist、yaml persist 的 `persist_permissions_mutate`）与启动 override 清理不得抹掉 `always_on_components`——agent-core `tool_security_rail.update_config`、jiuwenswarm `config_loader._persist_global_permissions_to_yaml`、`common/config._PERMISSIONS_OVERRIDE_KEEP_KEYS` **三处** keep_keys 均已登记该键，任一处漏登记 = disabled 底线静默失效（引擎键缺失时 `_parse_always_on_components` 得空 → disabled 全放行）。session overlay 合并不含该键（overlay 只合并 tools / approval_overrides / file_guard / net_guard 四类键）。
 
 ## 接口契约
 
@@ -65,7 +66,7 @@
 
 | 函数 | 契约 |
 |---|---|
-| `build_permission_rail(config, options) -> rail \| None` | N1 配置二分 + enabled 门；N13 三级选择；N22 整体失败 None |
+| `build_permission_rail(config, options) -> rail \| None` | N1 配置二分（enabled 不门控装配，disabled 照常建轨）；N13 三级选择；N22 整体失败 None |
 | `PermissionRailBuildOptions` | llm / model_name / permission_config / resolve_workspace_dir / persist_target_agent_id_provider / rail_factory（测试注入） |
 
 ### host 闭包族（装配进 `ToolPermissionHost`）
@@ -75,7 +76,7 @@
 | `_persist_allow_rule(permissions) -> bool` | N3 只 mutate 三键；scope 企业 session / 否则 base |
 | `_request_permission_confirmation(req)` | N4 通道分流：parent-card（hosted 白名单）→ N19；非 acp → `"interrupt"`；acp → N5/N6/N7 JSON-RPC |
 | `_permission_scene_hook(inp) -> tuple \| None` | N8 ask_user 豁免 → N9 workflow 状态 → N10 数字分身 → N11 owner_scopes；None 回落主序 |
-| `_get_permissions_snapshot() -> dict \| None` | N12 agent_template 返回 None；effective 源返回 get_effective |
+| `_get_permissions_snapshot() -> dict \| None` | N12 agent_template 返回 None；effective 源返回 get_effective 并经 `_normalize_disabled_always_on_floor` 快照归一（disabled 缺键/误配兜底，显式 [] 尊重） |
 | `resolve_workspace_dir` / `permission_yaml_path` | 默认 `get_workspace_dir` / `get_config_file()` |
 
 ### 交互转换
@@ -104,7 +105,7 @@
 
 ## 执行路径
 
-1. **P1 rail 构建**：装配点调 `build_permission_rail` → N1 配置二分 → enabled 门 → **meta-tool 展开契约注册**（B_06；失败告警降级仅外层判定，不阻断构建）→ tool_names 标签 → 闭包族（persist / confirm / scene_hook / snapshot）→ host 组装 → N13 三级 rail 选择 → 实例化（失败 None）
+1. **P1 rail 构建**：装配点调 `build_permission_rail` → N1 配置二分 →（disabled 记可观测日志，不返回）→ **meta-tool 展开契约注册**（B_06；无论 enabled 与否注册，失败告警降级仅外层判定，不阻断构建）→ tool_names 标签 → 闭包族（persist / confirm / scene_hook / snapshot）→ host 组装 → N13 三级 rail 选择 → 实例化（失败 None）
 2. **P2 hosted confirm**：rail ASK → `_request_permission_confirmation` → channel 读取（`TOOL_PERMISSION_CHANNEL_ID`，默认 web）→ parent_session 解析 → N4 分流：hosted parent-card（N19 注册表审批）/ 非 acp `"interrupt"` / acp JSON-RPC（N6 预算保护 + N7 响应分类）
 3. **P3 scene hook 豁免**：rail 首查先过 hook → N8 ask_user → N9 workflow → N10 数字分身 → N11 owner_scopes → None 回落 [[S_16]] N3 主序
 4. **P4 交互转换**：agent 返回 interrupt dict → `convert_interactions_to_ask_user_question` → N14 三轮扫描 → structured / plain / permission-confirm 分类 → N15 plan 附加 / N16 Skill 卡透传 → 前端 `chat.ask_user_question` 事件
@@ -156,6 +157,11 @@
 - [ ] 子代理 hosted 审批仍永不返回 "interrupt"（N19）？
 - [ ] 序号后缀剥离未用于账本去重 key（N20）？
 - [ ] 新增 resume source 时 `is_interrupt_resume_source` 的排除语义复核（N21）？
+- [ ] enabled=false 时 rail 照常构建并发布 always_on_components（N1）？
+- [ ] disabled 缺键/误配标量兜底播种 ["host_guard"]、显式 [] 不被覆盖、未知名（strip 归一）告警（N1）？
+- [ ] effective 快照刷新经 `_normalize_disabled_always_on_floor` 归一，底线不被无键快照冲掉（N1）？
+- [ ] 挂起路径（spawn_fallback）置 enabled=False 时显式清空 always_on_components（N1 挂起例外）？
+- [ ] 稀疏快照 / persist / 启动 override 清理三处 keep_keys 均保留 always_on_components（N23）？
 
 ## spec 关系
 

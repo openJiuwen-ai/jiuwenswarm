@@ -2,8 +2,11 @@
 
 """spawn_fallback 权限挂起保全与 interrupt 结果识别的回归测试。
 
-- ``_suspend_subagent_permission_rails`` 挂起时只应翻转 enabled，不得清空
-  tools/file_guard（agent-core update_config 是整体替换语义）；并同步替换
+- ``_suspend_subagent_permission_rails`` 挂起时翻转 enabled 并**显式清空
+  always_on_components**（新契约下 disabled 不再等价全放行，用户总开关路径
+  宿主会播种 host_guard 底线；不清空会让 headless fallback 子代理被重新
+  DENY/ASK，ASK 无人作答 → RuntimeError），但不得清空 tools/file_guard
+  （agent-core update_config 是整体替换语义）；并同步替换
   ``host.get_permissions_snapshot``，避免 resolve_interrupt 用旧快照刷回。
 - interrupt result（``result_type == "interrupt"``）无 output 字段，
   ``spawn_fallback`` 应显式报错而非吞成空输出。
@@ -52,7 +55,7 @@ class _FakeSubagent:
 
 
 def test_suspend_preserves_full_config_only_flips_enabled() -> None:
-    """挂起只翻转 enabled，tools/file_guard 必须保留在引擎配置中。"""
+    """挂起翻转 enabled 并清空 always_on 底线，tools/file_guard 必须保留。"""
     rail = PermissionInterruptRail(
         {
             "enabled": True,
@@ -65,11 +68,34 @@ def test_suspend_preserves_full_config_only_flips_enabled() -> None:
     restore = _suspend_subagent_permission_rails(subagent)
 
     assert rail.engine_config["enabled"] is False
+    assert rail.engine_config["always_on_components"] == []
     assert rail.engine_config["tools"] == {
         "web_search": "allow",
         "skill_acceleration_exec": "ask",
     }
     assert rail.engine_config["file_guard"] == {"workspace": {"read": "allow"}}
+
+
+def test_suspend_clears_seeded_always_on_floor() -> None:
+    """新契约下 _static_config 必含宿主播种的 always_on_components——挂起必须
+    清空它，否则 fallback 子代理被 host_guard 重新拦截/中断（检视意见 3）。"""
+    rail = PermissionInterruptRail(
+        {
+            "enabled": True,
+            "always_on_components": ["host_guard"],
+            "tools": {"bash": "ask"},
+        }
+    )
+    subagent = _FakeSubagent([rail])
+
+    restore = _suspend_subagent_permission_rails(subagent)
+
+    assert rail.engine_config["enabled"] is False
+    assert rail.engine_config["always_on_components"] == []
+    assert rail._host.get_permissions_snapshot()["always_on_components"] == []
+    restore()
+    # 恢复后回到挂起前（底线随用户总开关语义回来）。
+    assert rail.engine_config["always_on_components"] == ["host_guard"]
 
 
 def test_suspend_patches_host_snapshot_to_disabled_full_config() -> None:
@@ -89,6 +115,7 @@ def test_suspend_patches_host_snapshot_to_disabled_full_config() -> None:
     assert rail.engine_config["enabled"] is False
     assert rail._host.get_permissions_snapshot() == {
         "enabled": False,
+        "always_on_components": [],
         "tools": {"web_search": "allow"},
         "file_guard": {"workspace": {"read": "allow"}},
     }
