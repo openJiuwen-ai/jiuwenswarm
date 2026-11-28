@@ -271,11 +271,12 @@ def _append_daemon_signal_guard(prog: bytearray, syscall_table: dict[str, int]) 
         prog.extend(body)
 
 
-def build_seccomp_filter(policy: SyscallPolicy) -> bytes:
+def build_seccomp_filter(policy: SyscallPolicy, *, protect_daemon_signals: bool = True) -> bytes:
     """Build a seccomp-bpf binary filter from a SyscallPolicy.
 
     Returns raw bytes suitable for writing to a memfd and passing to
-    bwrap via --seccomp <fd>.
+    bwrap via --seccomp <fd>. The daemon guard defaults to enabled for
+    ProcessRuntime. One-shot runtimes can explicitly disable that guard.
     """
     blocked_names = set(_blocked_syscalls_for_current_arch(policy))
 
@@ -288,10 +289,10 @@ def build_seccomp_filter(policy: SyscallPolicy) -> bytes:
             logger.warning("Unknown syscall '%s', skipping", name)
 
     blocked_nrs.sort()
-    return _assemble_bpf(blocked_nrs)
+    return _assemble_bpf(blocked_nrs, protect_daemon_signals=protect_daemon_signals)
 
 
-def _assemble_bpf(blocked_nrs: list[int]) -> bytes:
+def _assemble_bpf(blocked_nrs: list[int], *, protect_daemon_signals: bool = True) -> bytes:
     """Assemble a BPF program that blocks the given syscall numbers.
 
     Structure:
@@ -326,7 +327,8 @@ def _assemble_bpf(blocked_nrs: list[int]) -> bytes:
         errno = ERRNO_ENOSYS if nr == clone3_nr else ERRNO_EPERM
         prog += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | errno)
 
-    _append_daemon_signal_guard(prog, syscall_table)
+    if protect_daemon_signals:
+        _append_daemon_signal_guard(prog, syscall_table)
 
     # Default: allow
     prog += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
