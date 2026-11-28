@@ -114,7 +114,7 @@ def test_create_sandbox_sysop_card_accepts_custom_id_and_team_context(tmp_path: 
     assert card is not None
     launcher = card.gateway_config.launcher_config
     assert launcher.sandbox_type == "jiuwenbox"
-    assert card.gateway_config.isolation.custom_id == "entry_unit-team_browser-usd-sgd"
+    assert card.gateway_config.isolation.custom_id == "entry_unit-team_browser-usd-sgd_cron_ro"
 
 
 def test_network_mode_forwarded_into_policy_fragment(

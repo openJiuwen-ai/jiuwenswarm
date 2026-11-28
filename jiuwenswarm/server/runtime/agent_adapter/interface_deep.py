@@ -12759,6 +12759,16 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] AvatarPromptRail create failed: %s", exc)
             return None
 
+    def _build_cron_storage_rail(self) -> Any:
+        from jiuwenswarm.agents.harness.common.rails.cron_storage_rail import CronStorageRail
+
+        return CronStorageRail(
+            lambda: self._is_cron_execution_session(
+                self._parent_session_id or _CRON_TOOL_SESSION_ID.get(),
+            ),
+            lambda: self._sys_operation_card,
+        )
+
     @staticmethod
     def _build_memory_forbidden_rail() -> Any | None:
         """Build the execution-time sensitive-memory write guard."""
@@ -13340,6 +13350,7 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
+            _RailBuildInfo("_cron_storage_rail", self._build_cron_storage_rail),
             *([] if self._leaves_out(Capability.SUBAGENTS) else [_RailBuildInfo(
                 "_subagent_rail",
                 self._build_subagent_rail,

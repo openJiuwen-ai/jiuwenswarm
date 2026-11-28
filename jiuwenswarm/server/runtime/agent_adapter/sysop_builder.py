@@ -894,6 +894,20 @@ def build_filesystem_policy(
             )
         _record_user_deny_bind(path, path)
 
+    # Keep Gateway state read-only even when a project mount contains it.
+    from agent_gateway.common.paths import get_gateway_cron_dir
+
+    cron_dir = get_gateway_cron_dir().resolve()
+    cron_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for mount in bind_mounts:
+        if mount["mode"] != "rw":
+            continue
+        host = Path(mount["host_path"]).resolve()
+        if host.is_relative_to(cron_dir):
+            raise ValueError("Gateway cron data cannot be mounted writable")
+    cron_path = str(cron_dir)
+    _record_ro_resource_bind(cron_path, cron_path)
+
     fs_policy: dict[str, Any] = {
         "files": allow_files,
         "directories": allow_dirs,
@@ -1069,6 +1083,8 @@ def create_sandbox_sysop_card(
             extra_params["idle_check_interval"] = idle_check_interval
 
         isolation_custom_id = _entry_custom_id(isolation_custom_id, project_dir)
+        # Do not reattach to a pre-upgrade sandbox using the old mount policy.
+        isolation_custom_id = f"{isolation_custom_id}_cron_ro"
         gateway_config = SandboxGatewayConfig(
             isolation=SandboxIsolationConfig(
                 container_scope=ContainerScope.CUSTOM,
