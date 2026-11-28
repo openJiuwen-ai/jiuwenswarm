@@ -68,6 +68,8 @@ def _isolated_state(monkeypatch):
     saved_last_good = dict(stt._last_good_entries)
     monkeypatch.setattr(stt, "_last_good_entries", {})
     monkeypatch.setattr(stt, "_entries_cache", {})
+    monkeypatch.setattr(stt, "_last_good_catalogs", {})
+    monkeypatch.setattr(stt, "_catalog_failed_roots", set())
     yield stt
     stt.skill_turbo.card.description = saved_desc
     stt._last_good_entries.clear()

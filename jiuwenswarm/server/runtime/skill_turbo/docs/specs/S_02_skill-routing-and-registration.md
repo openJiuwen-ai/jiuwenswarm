@@ -7,10 +7,13 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联 feature | F_03_multi-deliverable-todo-guide.md；F_05_enable-turbo-switch.md |
 
 ## 范围 / 边界
+
+
+
 
 ### 本规约管什么
 
@@ -18,7 +21,7 @@
 
 - **三条技能注册路径**：config `tool_cards` 直接注册、内置 skill_codes 目录扫描（`environment._scan_skills_dir`）、外部 turbo 扫描（`environment._scan_external_turbo_skills`），以及两条类级扫描缓存。
 - **skill_root 三级解析链**（`environment._resolve_skill_root`）。
-- **Skill 数据模型**（8 字段）与 meta.json 路由元数据规范（`skill_meta.load_skill_meta`）。
+- **Skill 数据模型**（14 字段）与 meta.json 路由元数据规范（`skill_meta.load_skill_meta`）。
 - **入口文件发现 5 级优先级链**（`skill_meta.find_skill_root_file`）与三消费方收口。
 - **plan_code 组装**（`planner._build_skill_plan_code`）：`from {module} import root` 唯一形态。
 - **planner 路由路径**：前置检查、流式 LLM 调用、解析重试边界、置信度阈值、路由 prompt 的准入/排除规则结构。
@@ -50,11 +53,11 @@
 7. **请求隔离与类级缓存并存**：每次 `skill_acceleration_exec` 调用新建 SkillTurbo/Environment/Executor 实例；`_scan_cache`、`_external_scan_cache`、`_tool_info_last_export` 三个类级缓存跨实例共享。
 8. **缓存命中仍须 ensure_turbo_package**：`_external_scan_cache` 命中只跳过扫盘+校验，动态包 sys.modules 注册必须幂等重做（进程内包注册状态与扫描缓存生命周期不同步）。
 9. **描述与指南双源同一次扫描**：`skill_turbo_tools.refresh_skill_acceleration_description` 在同一次 `_collect_skill_entries` 结果上重建 ToolCard.description **并**生成指南技能清单，两处永不矛盾。
-10. **技能清单绝不闪断**：外部源扫描失败时沿用 `_last_good_entries`（进程级）最近一次成功清单；清单缓存 TTL 60s（`_ENTRIES_CACHE_TTL_SECONDS`，key = 根目录集合 frozenset）。清单为空时指南整段不注入（`remove_section`），禁止注入"暂无可用技能"式空引导。
+10. **同来源展示不闪断**：外部 IO 失败时仅沿用有序规范 roots 对应的 `_last_good_catalogs`，保留原采集时间、来源及 `ok=False`；不跨来源兜底，不作为执行许可。缓存逐文件元数据变化或 60s TTL 到期后重扫；可靠删除、禁用及非法声明不能复活旧候选。清单为空时指南整段不注入（`remove_section`）。
 11. **query 契约**：`skill_acceleration_exec` 的 query 是对**单个任务**的忠实总结——严格基于用户原话与对话上下文，仅做凝练与指代消解，不得扩写脑补（如擅自罗列章节大纲）；多任务必须逐个串行调用，严禁并行。
 12. **workspace_base 显式性**：`inputs["workspace_base"]` 仅当 `request_metadata["output_dir"]` 非空时设置；**禁止任何 agent workspace 兜底**（产物路径跑偏的直接来源）。
 13. **工具执行按全局 tool_id 现取 + 请求级路由**：`environment.get_tool_function` 从 `Runner.resource_mgr` 现取实例（全局 tool_id 后注册覆盖前者）；携带 session 路由的工具（send_file_to_user）执行期必须从请求级 ContextVar 解析，**禁止依赖实例字段**。因此 `load_send_file_tools` 每请求单独刷新（弹出让位本环境绑定；对全局注册表的 remove 仅限环境自注册旧实例，**严禁移除继承的父实例**，[[B_07]]）。
-14. **mtime 计算失败 = 禁用缓存**：`_compute_skill_codes_mtime` 失败返回 0.0，缓存 key 不匹配 → 每次强制重扫。
+14. **读取失败不恢复旧注册**：内置 `_compute_skill_codes_mtime` 失败返回 0.0，禁用缓存；外部元数据或清单 IO 失败清除相应注册缓存并标记 `external_scan_ok=False`，展示 last-good 不回灌注册。
 15. **enable_for_models 与 vendor_map 互不影响**：前者是 DeepAgent 层 ProgressiveToolRail 的工具懒加载白名单，后者是 thinking 注入的模型白名单（见"接口契约"末节）；新模型接入必须**同时核对两处**。
 16. **PlanGenerationError 是无 raise 点的已导出符号**：定义于 planner.py 并经 `__init__.py` re-export，但当前代码无任何抛出点（plan 失败统一返回 None 走降级）。设计不得假设其被抛出，捕获它属于死代码。
 17. **多交付物待办清单强制引导**：指南（`skill_prompt_rail._build_skill_turbo_guide_text`，中英双语同步）规定：单轮需要多份交付物（多次调用 `skill_acceleration_exec`）时，必须先 `todo_create` 建外层待办清单（每份交付物一项），逐项执行——**串行契约：等 `todo_create` 返回成功后（下一轮）再调用 `skill_acceleration_exec`，逐项推进同理（`todo_modify` 等返回成功再 exec），严禁把清单编排与加速通道放在同一批并行调用**；当前项交付成功后立即 `todo_modify`（action=update）把当前项标 `completed`、下一项标 `in_progress`；清单未清空前不得向用户做最终总结，全部完成后一次性统一总结。架构依据：外层 todo 激活（task_execution_rail `_ACTIVE_TASK_ID` 非空）时入口才走 outer_todo 分支（跳过内部 task.* 事件、chat.* 归外层 todo 步骤 segment，分支见 skill_turbo_tools 入口拦截），无 todo 连跑时各次交付的内部任务互相顶替（实证 case：单轮两份 PPT 无 todo 连跑，交付总结一份被下游分拣丢弃、一份过时补发错位）；**同轮并行 `todo_create` + `skill_acceleration_exec` 还会因 `_ACTIVE_TASK_ID` 尚未设置触发入口 gate 误判 forwarded、turbo Stage 快照顶掉 taskProgress 槽位（竞态实证与机制层兜底见 [[S_08]] 边界 case 21、bugfix/B_03）——串行契约从行为层直接消除该竞态触发路径**。与 N11 互补：N11 约束多次调用的形态（逐个串行），本条约束外层状态编排（先建清单 + 串行推进）。指南成功段与 `_PPT_DELIVERY_SUMMARY_*_HINT` / todo_close_nudge 的"先单独调 `todo_modify` 标 `completed`"措辞契约保持一致，改动须同步三处。
@@ -128,7 +131,7 @@ def get_tool_function(self, tool_name) -> Callable | None
 
 ### 入口工具 skill_acceleration_exec（skill_turbo_tools.py）
 
-- `@tool(name="skill_acceleration_exec", stateless=True)`，函数名 `skill_turbo(query: str)`；每次调用新建 SkillTurbo 实例（请求隔离）。
+- `@tool(name="skill_acceleration_exec", stateless=True)`，函数名 `skill_turbo(query: str, fresh_start: bool = False)`；每次调用新建 SkillTurbo 实例（请求隔离）。
 - **超时豁免**：`card.properties["resilience"] = {"timeout_s": None}` 豁免 AbilityManager 默认 300s 工具超时（PPT 流水线常超），仍受 `MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT`（3600s）硬上限约束。
 - **两块临时入口拦截**（均标注删除方式，属待退役层）：
   - 两块仅在 query 含 PPT / PPTX / PowerPoint / 幻灯片 / 演示文稿标识时启用；Word / Excel 请求中的通用模板和编辑用语不属于 PPT 信号。此处仍为启发式兜底，原始请求及上下文的语义判断由指南和 planner 承担。
@@ -149,7 +152,7 @@ def get_tool_function(self, tool_name) -> Callable | None
 
 ## 数据结构
 
-### Skill dataclass（environment.py，8 字段）
+### Skill dataclass（environment.py，14 字段）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -161,15 +164,22 @@ def get_tool_function(self, tool_name) -> Callable | None
 | `external_name` | str | 外部技能目录名（meta.json），如 pptx-craft |
 | `package_name` | str | 动态包名（如 `skill_turbo_codes_ppt`），内置注册为空 |
 | `turbo_codes_dir` | str | turbo_codes 目录绝对路径，内置为空 |
+| `accelerators` | tuple[AcceleratorSpec, ...] | 默认空；来自同一发现记录的阶段声明 |
+| `manifest_fingerprint` | str | 规范声明 JSON 的 SHA256，非源码凭证 |
+| `manifest_source` | str | 独立文件或内联 meta 的来源 |
+| `manifest_valid` | bool | 整份声明是否有效；不表示业务执行许可 |
+| `manifest_errors` | tuple[str, ...] | 声明校验诊断，含独立项丢弃原因 |
+| `full_plan_code` | str \| None | 注册期复用旧 builder 保存的兼容入口，Registry 查询不读盘 |
 
 ### 类级缓存（跨实例共享，均无淘汰机制）
 
 | 缓存 | key | value | 失效条件 |
 |---|---|---|---|
 | `_scan_cache` | skill_codes 目录绝对路径 | (max .py mtime, Skill 列表) | mtime 快照变化；计算失败 0.0 强制重扫 |
-| `_external_scan_cache` | roots 绝对路径 frozenset | (各 turbo_codes 目录 mtime 快照 dict, Skill 列表) | 任一目录 mtime 变化（→ rebind，见 [[S_05]]） |
-| `_entries_cache`（skill_turbo_tools） | 根目录集合 frozenset | (时间戳, {external_name: description}) | TTL 60s |
-| `_last_good_entries`（skill_turbo_tools） | —（单值 dict） | 最近一次成功清单 | 仅被新的成功扫描覆盖；外部源失败时沿用 |
+| `_external_scan_cache` | 有序规范 roots tuple | (逐文件元数据快照, 深拷贝 Skill 列表, 采集时间) | 元数据/来源顺序变化、60s TTL、读取或安全校验失败 |
+| `_entries_cache`（skill_turbo_tools） | 有序规范 roots tuple | 同一次发现的条目、声明、来源、校验状态及时间 | 元数据变化、60s TTL、IO 失败后的恢复重扫 |
+| `_last_good_catalogs`（skill_turbo_tools） | 有序规范 roots tuple | 同来源最近成功展示快照 | 新成功扫描覆盖；失败时保留原时间并标记当前失败 |
+| `_last_good_entries` / `_last_good_roots` | 最近刷新成功的来源 | 旧刷新接口的条目兼容记录 | 整体异常时只限同来源沿用 |
 | `_tool_info_last_export` | 导出路径 | 上次导出内容串 | 内容变化才写盘 |
 
 ### tool_info.json 导出（`environment._export_tool_info`）
@@ -224,7 +234,7 @@ plan 返回 None → `agent.run_stream` 抛 `SkillTurboNotHandled("无匹配skil
 
 ### P7 工具描述动态渲染（请求期）
 
-SkillTurboPromptRail 每次 `before_model_call` 调 `refresh_skill_acceleration_description()`：`_collect_skill_entries`（双源：内置 skill_codes 目录 + 外部 turbo 目录——外部源经 `discover_external_turbo_skills`，`enable_turbo=false` 的技能同样不进清单；同一根目录集合 60s TTL 缓存）→ 外部源失败沿用 `_last_good_entries` → 同一结果重建 ToolCard.description + 指南技能清单 → 空清单整段不注入。
+SkillTurboPromptRail 每次 `before_model_call` 调 `refresh_skill_acceleration_description()`：`_collect_skill_entries` 投影同源声明快照（内置条目 + 外部发现；有序 roots、元数据比较及 60s TTL）→ 外部 IO 失败只沿用同来源 last-good 展示 → 同一结果重建 ToolCard.description + 指南技能清单 → 空清单整段不注入。`collect_accelerator_catalog` 另保留来源、采集时间和当前校验状态；本步不改变可见描述模板。
 
 ### P8 工具装载（executor 开头 `env.register_tools`）
 
@@ -262,17 +272,17 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 | 7 | 路由 LLM 空输出 / 非 JSON | 瞬态失败重试 1 次；仍失败 → None 降级（非错误路径） | test_planner_route_retry |
 | 8 | confidence 不足 / skill_name=null | 模型正常判定，**不重试**，直接 None | test_planner_route_retry |
 | 9 | 拦截层语义击穿 | 两块 TEMP 拦截为正则/关键词启发式，LLM 改写 query 可绕过；主防线在 PromptRail 提示词 | test_entry_gates_and_honesty（拦截正/负例） |
-| 10 | 外部源扫描瞬时失败 | `_last_good_entries` 兜底，清单不闪断为"暂无"；ToolCard 并发最后写生效（per-user sidecar 内目录一致，无实际冲突） | test_description_refresh（last-good 用例） |
-| 11 | `reload()` 不清类级缓存 | 目录变更靠 mtime 快照失效兜住；但旧 key 永久驻留（无淘汰），长驻进程内存缓慢增长面 | 无 |
+| 10 | 外部源扫描瞬时失败 | 同 roots last-good 仅供展示并保留当前失败状态；不同 roots 无旧候选；Environment 不恢复失败来源注册 | test_accelerator_catalog（IO、恢复、来源隔离） |
+| 11 | `reload()` 不清类级缓存 | 内置按 mtime，外部按有序 roots、逐文件元数据和 TTL 失效；旧来源 key 无自动淘汰 | test_accelerator_catalog |
 | 12 | tool_info.json 多实例同路径 | 最后写者胜；CodeGen 可能读到其它实例的 schema，编排须保证工具集一致 | test_environment_export_tool_info |
 | 13 | Word / Excel 与 PPT 同时注册 | 按各技能元数据及目标产物独立匹配，PPT 排除不排除其他技能 | Flash 多技能装配、显式选择、planner 与入口拦截回归 |
 | 14 | PlanGenerationError | 已定义 + re-export 但无 raise 点；按死符号对待，不得在其 except 分支上堆积逻辑 | 无（死符号） |
 | 15 | model_client 缺失 | 路由直接 None（仅 warning），后续表现为"无匹配"降级 | test_planner_route_retry（TestPlannerPrechecks） |
 | 16 | 空 task / 空 query | plan 前置检查返回 None 降级 | test_planner_route_retry（TestPlannerPrechecks） |
 | 17 | meta.json 仅含 `enable_turbo` 无任何已知键 | `load_skill_meta` 返回 `{}`，开关失效、技能保持启用——根因处（无已知键分支）打 warning（文件路径 + 实际键列表），无静默信号黑洞；关停配置必须至少携带一个已知键（如 `external_name`） | test_turbo_package_loader（TestEnableTurboSwitch，含 caplog warning 断言） |
-| 18 | enable_turbo 生效时序 | 注册侧**下一次扫描即刻生效，无需重启**——发现阶段每次重扫（meta.json 每次重读），技能从 discovered 消失/出现即改变 mtime 快照 key 集合，`_external_scan_cache` 必 miss 走全量重扫；描述清单 ≤60s（`_entries_cache` TTL）。窗口内 LLM 按旧描述调用 → planner 无匹配 → SkillTurboNotHandled 降级，无功能损害 | test_environment_external_turbo（开关翻转生效用例） |
+| 18 | enable_turbo 生效时序 | meta.json 逐文件 stat 改变即使注册及描述缓存失效，下一次扫描重新发现；可靠禁用清除旧候选，不按 IO 异常恢复 | test_environment_external_turbo、test_accelerator_catalog |
 | 19 | `enable_turbo` 非严格布尔 | 判定 `is False`：字符串 `"false"` / `0` / `null` 均不触发跳过，技能保持启用 | test_turbo_package_loader（TestEnableTurboSwitch） |
-| 20 | 不改变发现成员的 meta.json 编辑（description / match_keywords / external_name） | 注册侧复用缓存 Skill 对象（路由 payload 的描述/关键词陈旧），需 turbo_codes 内 .py mtime 变化或重启才刷新；描述清单 ≤60s——既有行为，非 enable_turbo 引入 | 无 |
+| 20 | 不改变发现成员的 meta.json 编辑（description / match_keywords / external_name） | 元数据快照改变即重扫并更新同来源条目和声明；未来 Python mtime 不掩盖 JSON 变化 | test_accelerator_catalog（未来 mtime、roots 顺序） |
 | 21 | enable_turbo=false × 跨进程 HITL resume | 自愈重发现被开关过滤 → 被禁技能动态包未注册 → `exec(plan_code)` ImportError → PlanCodeLoadError → chat.error+complete 收口（[[S_05]] 边界 case 7 / [[S_01]] E6），外层可走标准流程重做；同进程 resume（包仍注册于 sys.modules）不经重发现，仍走加速跑完——故障隔离语义：被禁技能不再执行，在途会话显式失败优于静默跑完 | test_turbo_package_loader（TestPlanCodeSelfHeal 开关尊重用例；收口链路由 test_executor_plan_code_import unresolvable 用例锁定） |
 
 ## 修改检查单
@@ -304,3 +314,11 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 | [[S_07]] | 路由级降级（None → SkillTurboNotHandled）是 S_07 降级体系的第一级；重试边界扩大化的风险（循环降级）两 spec 共同守护。 |
 | [[S_08]] | 工具描述渲染与 PromptRail 清单注入的时序（before_model_call）影响事件流前置内容，事件协议本身归 S_08。 |
 | [[S_09]] | `skill_acceleration_exec` 的工具卡注册、PromptRail/PermissionRail 挂载、`build_skill_turbo_config` 装配归 S_09；本 spec 定义工具的对外契约与渲染内容。 |
+
+## 阶段声明与注册快照
+
+第二步增加 AcceleratorSpec 纯声明；ExternalTurboSkill/Skill 末尾默认空 tuple，旧构造不变。独立 accelerators.json 优先于合法 meta 内联，非法独立文件不回退。顶层/身份错误、重复ID/order/入口、启用段覆盖及事实owner冲突、producer依赖断裂整份拒绝；独立坏项移除后重检依赖。声明错误不禁合法legacy，Python整目录安全检查仍可拒绝整个技能。
+
+外部缓存与展示缓存按有序规范roots隔离，元数据集合及逐文件stat参与失效；Environment保留Python安全校验及mtime。Skill保存兼容builder生成的full_plan_code，Registry精确按external_name索引，歧义拒绝；查询深拷贝且不读盘、不调用模型。__full__不在普通段列表。
+
+声明由 Registry 只读索引；实际普通段执行另按 [[S_11]] 无缓存重读当前声明与源码，并复用安全校验。当前公开工具保留 query/fresh_start，目录收集只服务原描述刷新；skill/accelerator/params、批次和请求级模型披露留待后续集成。声明与目录测试入口为 test_accelerator_manifest.py、test_accelerator_catalog.py。

@@ -11,14 +11,18 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from contextvars import ContextVar, Token
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
+from jiuwenswarm.server.runtime.skill_turbo.accelerator_manifest import AcceleratorSpec
 from jiuwenswarm.server.runtime.skill_turbo.task_slot_guard import (
     claim_task_slot,
     peek_leaked_task_slot,
@@ -36,51 +40,60 @@ logger = logging.getLogger(__name__)
 # _collect_skill_entries 扫盘（iterdir + meta.json 读 + glob，同步 IO 阻塞
 # 事件循环）。同一会话连续多轮调用间技能目录集合不变，重复扫描无意义。
 _ENTRIES_CACHE_TTL_SECONDS = 60.0
-_entries_cache: dict[frozenset[str], tuple[float, dict[str, str]]] = {}
 
 
-def _resolve_skill_roots() -> frozenset[str]:
-    """解析当前上下文可见的技能根目录集合（仅作清单缓存 key）。
-
-    与 discover_external_turbo_skills 内部解析同源；失败返回空集
-    （空集 key 只在"解析失败"的场景间共享，语义一致）。
-    """
-    try:
-        from jiuwenswarm.common.utils import resolve_agent_registered_skill_dirs
-
-        return frozenset(
-            str(p) for p in resolve_agent_registered_skill_dirs()
-        )
-    except Exception:
-        return frozenset()
+@dataclass(frozen=True)
+class AcceleratorCatalogSnapshot:
+    entries: dict[str, str] = field(default_factory=dict)
+    accelerators: dict[str, tuple[AcceleratorSpec, ...]] = field(default_factory=dict)
+    sources: dict[str, str] = field(default_factory=dict)
+    manifest_valid: dict[str, bool] = field(default_factory=dict)
+    manifest_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    metadata_snapshot: tuple = ()
+    collected_at: float = 0.0
+    ok: bool = True
+    error: str = ""
+    failed_at: float | None = None
 
 
-def _collect_skill_entries() -> tuple[dict[str, str], bool]:
-    """双源扫描当前可见技能，返回 (external_name -> 条目文案, 外部源扫描是否成功)。
+_entries_cache: dict[tuple[str, ...], AcceleratorCatalogSnapshot] = {}
+_last_good_catalogs: dict[tuple[str, ...], AcceleratorCatalogSnapshot] = {}
+_catalog_failed_roots: set[tuple[str, ...]] = set()
 
-    内置 skill_codes 目录 + 外部技能目录（turbo/turbo_codes，经
-    ``turbo_package_loader.discover_external_turbo_skills`` 走
-    ``resolve_agent_registered_skill_dirs`` 标准链路）下的 meta.json；
-    external_name 同名时外部覆盖内置。外部源扫描异常时返回 ok=False
-    （调用方可据此沿用上次成功清单，避免瞬时故障导致清单闪断）。
 
-    带 TTL 缓存（见 ``_entries_cache``）：同一根目录集合在 TTL 窗口内的
-    重复调用直接返回上次成功结果，不重复扫盘；仅成功结果落缓存。
-    """
-    from pathlib import Path
+def _resolve_skill_roots() -> tuple[str, ...]:
+    from jiuwenswarm.common.utils import resolve_agent_registered_skill_dirs
 
-    from jiuwenswarm.server.runtime.skill_turbo.skill_meta import (
-        find_skill_root_file,
-        load_skill_meta,
+    return tuple(str(Path(p).resolve()) for p in resolve_agent_registered_skill_dirs())
+
+
+def _collect_catalog_snapshot() -> AcceleratorCatalogSnapshot:
+    from jiuwenswarm.server.runtime.skill_turbo.skill_meta import find_skill_root_file, load_skill_meta
+    from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import (
+        discover_external_turbo_skills, external_metadata_snapshot,
     )
 
-    roots = _resolve_skill_roots()
     now = time.monotonic()
-    cached = _entries_cache.get(roots)
-    if cached is not None and now - cached[0] < _ENTRIES_CACHE_TTL_SECONDS:
-        return dict(cached[1]), True
+    roots = None
+    cached = None
+    try:
+        roots = _resolve_skill_roots()
+        cached = _entries_cache.get(roots)
+        metadata = external_metadata_snapshot([Path(p) for p in roots])
+        if cached is not None and roots not in _catalog_failed_roots:
+            if (cached.metadata_snapshot == metadata
+                    and now - cached.collected_at < _ENTRIES_CACHE_TTL_SECONDS):
+                return copy.deepcopy(cached)
+        discovered = discover_external_turbo_skills(skill_roots=[Path(p) for p in roots])
+    except Exception as exc:
+        # 声明扫描没有业务调用，异常仅记为当前无效，绝不授权执行旧快照。
+        if roots is not None:
+            _catalog_failed_roots.add(roots)
+            cached = _last_good_catalogs.get(roots, cached)
+        logger.warning("外部声明快照读取失败: %s", exc)
+        return replace(copy.deepcopy(cached) if cached is not None else AcceleratorCatalogSnapshot(),
+                       ok=False, error=str(exc), failed_at=now)
 
-    # external_name -> 条目文案（外部源后写入覆盖内置同名条目）
     entries_by_external: dict[str, str] = {}
 
     def _add_entry(external_name: str, description: str, match_keywords: list) -> None:
@@ -113,29 +126,42 @@ def _collect_skill_entries() -> tuple[dict[str, str], bool]:
             exc_info=True,
         )
 
-    # ─── 源二：外部 turbo同名覆盖内置 ──
-    external_ok = True
-    try:
-        from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import (
-            discover_external_turbo_skills,
-        )
 
-        for item in discover_external_turbo_skills():
-            _add_entry(
-                item.external_name,
-                str(item.meta.get("description") or f"{item.skill_name} 任务流"),
-                list(item.meta.get("match_keywords") or [item.skill_name]),
-            )
-    except Exception:
-        external_ok = False
-        logger.warning(
-            "[ToolsLoader] external turbo description scan failed",
-            exc_info=True,
-        )
+    accelerators = {}
+    sources = {}
+    validity = {}
+    errors = {}
+    ambiguous = set()
+    for item in discovered:
+        _add_entry(item.external_name, str(item.meta.get("description") or f"{item.skill_name} 任务流"),
+                   list(item.meta.get("match_keywords") or [item.skill_name]))
+        name = item.external_name
+        if name in sources:
+            ambiguous.add(name)
+        sources[name] = item.manifest_source or item.turbo_codes_dir
+        accelerators[name] = item.accelerators
+        validity[name] = item.manifest_valid
+        errors[name] = item.manifest_errors
+    for name in ambiguous:
+        accelerators[name] = ()
+        validity[name] = False
+        errors[name] = ("external_name歧义",)
+    snapshot = AcceleratorCatalogSnapshot(entries_by_external, accelerators, sources, validity, errors,
+                                          metadata, now)
+    _entries_cache[roots] = copy.deepcopy(snapshot)
+    _last_good_catalogs[roots] = copy.deepcopy(snapshot)
+    _catalog_failed_roots.discard(roots)
+    return copy.deepcopy(snapshot)
 
-    if external_ok:
-        _entries_cache[roots] = (now, dict(entries_by_external))
-    return entries_by_external, external_ok
+
+def _collect_skill_entries() -> tuple[dict[str, str], bool]:
+    snapshot = _collect_catalog_snapshot()
+    return snapshot.entries, snapshot.ok
+
+
+def collect_accelerator_catalog() -> AcceleratorCatalogSnapshot:
+    """读取与旧描述同源的声明快照；ok及来源不能在消费时丢弃。"""
+    return _collect_catalog_snapshot()
 
 
 def _render_tool_description(entries: dict[str, str]) -> str:
@@ -180,8 +206,9 @@ def _build_tool_description() -> str:
     return _render_tool_description(entries) + _TEMPLATE_EXCLUSION_SUFFIX
 
 
-# 最近一次外部源扫描成功的技能条目（进程级；瞬时扫描失败时沿用，防清单闪断）
+# 最近一次外部源扫描成功的技能条目；整体异常时仅限同来源沿用。
 _last_good_entries: dict[str, str] = {}
+_last_good_roots: tuple[str, ...] | None = None
 
 
 def refresh_skill_acceleration_description() -> list[str]:
@@ -189,21 +216,20 @@ def refresh_skill_acceleration_description() -> list[str]:
 
     - 请求级上下文（session 绑定目录 / env）此时可见，外部发现能拿到真实清单；
     - 幂等：清单无变化时不产生 card 写入；
-    - 异常安全：外部源扫描失败时沿用最近一次成功清单（``_last_good_entries``），
-      绝不让描述闪断为"暂无"；整体异常时保留 card 旧值并返回最近已知清单；
+    - 异常安全：外部源扫描失败时仅沿用同来源的最近成功快照；
+      整体异常时同样禁止跨来源沿用；
     - 并发语义：ToolCard 为进程级共享对象，多请求并发下"最后写入生效"
       （per-user sidecar 内并发请求可见技能目录一致，无实际冲突）。
 
     Returns:
         当前可见技能的 external_name 列表（排序后；空列表表示无加速技能）。
     """
-    global _last_good_entries
+    global _last_good_entries, _last_good_roots
     try:
         entries, external_ok = _collect_skill_entries()
         if external_ok:
             _last_good_entries = dict(entries)
-        elif _last_good_entries:
-            entries = _last_good_entries
+            _last_good_roots = _resolve_skill_roots()
         card = globals().get("skill_turbo")
         card_obj = getattr(card, "card", None)
         if card_obj is not None:
@@ -213,10 +239,18 @@ def refresh_skill_acceleration_description() -> list[str]:
         return sorted(entries)
     except Exception:
         logger.warning(
-            "[ToolsLoader] refresh skill_acceleration_exec description failed, keep old",
+            "[ToolsLoader] refresh skill_acceleration_exec description failed",
             exc_info=True,
         )
-        return sorted(_last_good_entries)
+        try:
+            if _last_good_roots == _resolve_skill_roots():
+                return sorted(_last_good_entries)
+        except Exception:
+            logger.warning("[ToolsLoader] skill roots recovery failed", exc_info=True)
+        card_obj = getattr(globals().get("skill_turbo"), "card", None)
+        if card_obj is not None:
+            card_obj.description = _render_tool_description({}) + _TEMPLATE_EXCLUSION_SUFFIX
+        return []
 
 # 通用交付确认收尾：非 PPT 技能（docx/xlsx 等）交付节点产物 info 声明
 # send_file_status=sent 时使用（与 NEUTRAL 的区别：明确文件已发送，

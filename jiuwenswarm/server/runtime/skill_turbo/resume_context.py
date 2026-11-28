@@ -12,9 +12,14 @@ isolated session 通道强制落盘——修复 2 处键空间错误（清不到
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
+import weakref
+from contextlib import asynccontextmanager
 from typing import Any
+
+from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +80,143 @@ def set_skill_turbo_id(session: Any, card: Any) -> None:
         logger.warning("[ResumeContextManager] set_skill_turbo_id failed: %s", exc)
 
 
+class SkillStateError(RuntimeError):
+    """隔离状态的身份、读写或提交确认失败。"""
+
+
+class _SkillStateScope:
+    def __init__(self):
+        self.lock = asyncio.Lock()
+        self.callers = weakref.WeakSet()
+        self.keys: set[str] = set()
+
+
+_state_scopes: weakref.WeakValueDictionary[tuple[str, str], _SkillStateScope] = weakref.WeakValueDictionary()
+_caller_scopes: weakref.WeakKeyDictionary[Any, _SkillStateScope] = weakref.WeakKeyDictionary()
+
+
+def skill_state_identity(session: Any) -> tuple[str, str]:
+    card_id = getattr(_resolve_card(session), "id", None)
+    sid = _get_sid(session)
+    if not card_id or sid == "?":
+        raise SkillStateError("skill state requires card and session identity")
+    return str(card_id), sid
+
+
+def _runtime_agent_id(session: Any) -> str | None:
+    # SDK 的 get_agent_id 读取原始 card，不是隔离后的运行时配置 ID。
+    inner = getattr(session, "_inner", None)
+    return inner.agent_id() if inner is not None else None
+
+
+def _new_isolated_session(session: Any) -> Any:
+    from openjiuwen.core.session.agent import create_agent_session
+
+    card_id, sid = skill_state_identity(session)
+    card = _resolve_card(session)
+    isolated = create_agent_session(session_id=sid, card=card)
+    set_skill_turbo_id(isolated, card)
+    if _runtime_agent_id(isolated) != f"{card_id}{SKILL_TURBO_ID_SUFFIX}":
+        raise SkillStateError("skill state isolation could not be established")
+    return isolated
+
+
+class IsolatedSkillState:
+    """一次隔离读改写；每个替换先删除旧键，提交后独立重读确认。"""
+
+    def __init__(self, caller: Any, session: Any, *, write: bool, scope: _SkillStateScope):
+        self.caller = caller
+        self.session = session
+        self.write = write
+        self.scope = scope
+        self.replacements: dict[str, Any] = {}
+        self.committed = False
+
+    def get(self, key: str) -> Any:
+        self.scope.keys.add(key)
+        return copy.deepcopy(self.session.get_state(key))
+
+    def replace(self, key: str, value: Any) -> None:
+        if not self.write or self.committed:
+            raise SkillStateError("state is read-only or already committed")
+        self.scope.keys.add(key)
+        self.replacements[key] = copy.deepcopy(value)
+        self.session.update_state({key: None})
+        if value is not None:
+            self.session.update_state({key: copy.deepcopy(value)})
+
+    async def commit(self) -> None:
+        if not self.replacements or self.committed:
+            return
+        try:
+            await self.session.post_run()
+            current = await self._read_current()
+            if any(current[key] != value for key, value in self.replacements.items()):
+                raise SkillStateError("skill state commit was not confirmed")
+        except AbortError:
+            raise
+        except Exception:
+            # ACK丢失也不能让调用方finally把实际已写入的身份/失效状态覆盖回旧值。
+            try:
+                self._sync_callers(await self._read_current())
+            except AbortError:
+                raise
+            except Exception:
+                logger.warning("[SkillState] failed commit could not refresh caller snapshots", exc_info=True)
+            raise
+        self.committed = True
+        self._sync_callers(current)
+
+    async def _read_current(self) -> dict:
+        confirmed = _new_isolated_session(self.caller)
+        try:
+            await confirmed.pre_run(inputs=None)
+            return {key: copy.deepcopy(confirmed.get_state(key)) for key in self.scope.keys}
+        finally:
+            await confirmed.close_stream()
+
+    def _sync_callers(self, current: dict) -> None:
+        # 只同步已参与本通道且本身位于turbo键空间的Session，不污染主ReAct。
+        for caller in self.scope.callers:
+            if _runtime_agent_id(caller) != _runtime_agent_id(self.session):
+                continue
+            for key, value in current.items():
+                caller.update_state({key: None})
+                if value is not None:
+                    caller.update_state({key: copy.deepcopy(value)})
+
+
+@asynccontextmanager
+async def isolated_skill_state(session: Any, *, write: bool = False):
+    """台账/新产物桶专用通道；读只关闭流，写单次提交，异常不提交。"""
+    identity = skill_state_identity(session)
+    scope = _state_scopes.get(identity)
+    if scope is None:
+        scope = _SkillStateScope()
+        _state_scopes[identity] = scope
+    scope.callers.add(session)
+    # 调用方仍存活时，后续提交必须同步其快照，不能在单次操作结束时销毁 scope。
+    _caller_scopes[session] = scope
+    lock = scope.lock
+    if write:
+        await lock.acquire()
+    isolated = None
+    try:
+        isolated = _new_isolated_session(session)
+        await isolated.pre_run(inputs=None)
+        state = IsolatedSkillState(session, isolated, write=write, scope=scope)
+        yield state
+        if write:
+            await state.commit()
+    finally:
+        try:
+            if isolated is not None:
+                await isolated.close_stream()
+        finally:
+            if write:
+                lock.release()
+
+
 class ResumeContextManager:
     """resume_ctx 生命周期的单一 owner。
 
@@ -111,6 +253,7 @@ class ResumeContextManager:
         pending_tool_call_id: str,
         task_states: list[dict[str, Any]] | None = None,
         outer_task_id: str | None = None,
+        segment: dict[str, Any] | None = None,
     ) -> None:
         """中断时保存断点上下文（checkpointer 持久化）。
 
@@ -124,11 +267,16 @@ class ResumeContextManager:
             "inputs": dict(inputs),
             "pending_tool_call_id": pending_tool_call_id,
             "resume_in_flight": None,
+            "segment": copy.deepcopy(segment),
         }
-        if task_states:
-            entry["task_states"] = copy.deepcopy(task_states)
+        if task_states or segment is not None:
+            entry["task_states"] = copy.deepcopy(task_states or [])
         if outer_task_id:
             entry["outer_task_id"] = str(outer_task_id).removeprefix("todo:")
+        if segment is not None:
+            async with isolated_skill_state(self._session, write=True) as state:
+                state.replace(SKILL_TURBO_RESUME_CTX_KEY, entry)
+            return
         try:
             await self._session.pre_run(inputs=None)
         except Exception as e:
@@ -175,6 +323,10 @@ class ResumeContextManager:
             return None
         try:
             state = self._session.get_state(SKILL_TURBO_RESUME_CTX_KEY)
+            if isinstance(state, dict) and isinstance(state.get('segment'), dict):
+                # SDK Session 的重复 pre_run 不保证刷新；段控制状态必须读独立快照。
+                async with isolated_skill_state(self._session) as current:
+                    state = current.get(SKILL_TURBO_RESUME_CTX_KEY)
         except Exception as e:
             logger.warning(
                 "[ResumeContextManager] load get_state failed: sid=%s err=%s", self._sid, e
@@ -260,6 +412,12 @@ class ResumeContextManager:
             return
         marked = dict(resume_ctx)
         marked["resume_in_flight"] = True
+        if isinstance(resume_ctx.get('segment'), dict):
+            async with isolated_skill_state(self._session, write=True) as state:
+                if state.get(SKILL_TURBO_RESUME_CTX_KEY) != resume_ctx:
+                    raise SkillStateError('checkpoint_changed_before_resume')
+                state.replace(SKILL_TURBO_RESUME_CTX_KEY, marked)
+            return
         if self._card is None:
             # 无 card 时降级原 session 落盘（无 isolated 键空间，仍须 post_run 持久化）
             try:
@@ -308,6 +466,16 @@ class ResumeContextManager:
         """
         if self._session is None:
             return
+        if self._card is not None:
+            async with isolated_skill_state(self._session) as state:
+                current = state.get(SKILL_TURBO_RESUME_CTX_KEY)
+            if isinstance(current, dict) and isinstance(current.get('segment'), dict):
+                async with isolated_skill_state(self._session, write=True) as state:
+                    current = state.get(SKILL_TURBO_RESUME_CTX_KEY)
+                    if isinstance(current, dict) and current.get('resume_in_flight'):
+                        current.pop('resume_in_flight', None)
+                        state.replace(SKILL_TURBO_RESUME_CTX_KEY, current)
+                return
         if self._card is None:
             # 无 card 时降级原 session 清理
             try:
@@ -320,7 +488,7 @@ class ResumeContextManager:
             if not isinstance(state, dict) or not state.get("resume_in_flight"):
                 return
             cleaned = dict(state)
-            cleaned.pop("resume_in_flight", None)
+            cleaned["resume_in_flight"] = None
             try:
                 self._session.update_state({SKILL_TURBO_RESUME_CTX_KEY: cleaned})
             except Exception:
@@ -328,6 +496,7 @@ class ResumeContextManager:
                     "[ResumeContextManager] clear_in_flight (no card) update_state failed",
                     exc_info=True,
                 )
+
             return
         from openjiuwen.core.session.agent import create_agent_session
 
@@ -338,7 +507,7 @@ class ResumeContextManager:
             state = isolated.get_state(SKILL_TURBO_RESUME_CTX_KEY)
             if isinstance(state, dict) and state.get("resume_in_flight"):
                 cleaned = dict(state)
-                cleaned.pop("resume_in_flight", None)
+                cleaned["resume_in_flight"] = None
                 isolated.update_state({SKILL_TURBO_RESUME_CTX_KEY: cleaned})
         finally:
             try:
@@ -349,6 +518,13 @@ class ResumeContextManager:
                     self._sid,
                     exc_info=True,
                 )
+
+
+    async def clear_matching(self, expected: dict) -> None:
+        """只清理已核实归属的原断点，避免并发拒绝误清正在恢复的新状态。"""
+        async with isolated_skill_state(self._session, write=True) as state:
+            if state.get(SKILL_TURBO_RESUME_CTX_KEY) == expected:
+                state.replace(SKILL_TURBO_RESUME_CTX_KEY, None)
 
 
 # ── 薄委托：保留原函数签名供逐步迁移调用方 ──
