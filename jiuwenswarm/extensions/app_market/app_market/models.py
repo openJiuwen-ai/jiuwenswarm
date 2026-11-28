@@ -67,7 +67,7 @@ class AppManifest:
     project_id: str = ""
     project_dir: str = ""
     project_work_mode: str = ""
-    local_release_id: str = ""  # Directory ownership retained after Hub conversion.
+    local_release_id: str = ""  # Release marker kept as provenance after Hub conversion.
 
     def __post_init__(self) -> None:
         timeout = self.startup_timeout_seconds

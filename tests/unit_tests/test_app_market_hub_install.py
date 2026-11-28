@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import io
 import os
 import shutil
+import stat
+import subprocess
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
@@ -372,7 +375,9 @@ def test_convert_hub_app_keeps_one_registration_and_directory(tmp_path, monkeypa
     assert republished["app_id"] == app_id
     assert len(manager.storage.list_apps()) == 1
     assert (source_dir / "data" / "save.json").is_file()
-    removed = asyncio.run(manager.delete_app(app_id, OWNER, remove_files=True))
+    removed = asyncio.run(
+        manager.delete_app(app_id, OWNER, remove_files=True, confirm_work_dir=str(source_dir))
+    )
     assert removed["removed_files"] is True
     assert not source_dir.exists()
     archive = Path(removed["preserved_dir"])
@@ -1100,14 +1105,14 @@ def test_uninstall_keeps_files_by_default_and_archives_on_cleanup(tmp_path, monk
     (destination / "data").mkdir()
     (destination / "data" / "save.json").write_text("{}", encoding="utf-8")
     if cleanup_fails:
-        remove_tree = hub_install.shutil.rmtree
+        def remove_locked_app(path):
+            assert path == destination
+            assert manager.service.get_app(app_id) is None
+            error = PermissionError("Application files are locked")
+            error.winerror = 32
+            raise error
 
-        def remove_except_locked_app(path, *args, **kwargs):
-            if Path(path) == destination:
-                raise PermissionError("Application files are locked")
-            return remove_tree(path, *args, **kwargs)
-
-        monkeypatch.setattr(hub_install.shutil, "rmtree", remove_except_locked_app)
+        monkeypatch.setattr(hub_install, "_remove_tree", remove_locked_app)
 
     removed = asyncio.run(
         manager.uninstall_app(app_id, OWNER, remove_files=True)
@@ -1116,6 +1121,7 @@ def test_uninstall_keeps_files_by_default_and_archives_on_cleanup(tmp_path, monk
     assert destination.exists() is cleanup_fails
     assert removed["work_dir"] == str(destination)
     assert removed["cleanup_warning"] == ("Application files are locked" if cleanup_fails else "")
+    assert removed["cleanup_code"] == ("filesystem_busy" if cleanup_fails else "")
     archived = Path(removed["preserved_dir"])
     assert (archived / "data" / "save.json").is_file()
     assert manager.service.get_app(app_id) is None
@@ -1282,7 +1288,9 @@ def test_local_delete_clean_removes_app_owned_dir_and_archives_data(tmp_path, mo
     manifest.project_work_mode = "code"
     manager.storage.save_manifest(app_id, manifest)
 
-    result = asyncio.run(manager.delete_app(app_id, OWNER, remove_files=True))
+    result = asyncio.run(
+        manager.delete_app(app_id, OWNER, remove_files=True, confirm_work_dir=str(source))
+    )
     assert result["deleted"] is True
     assert result["removed_files"] is True
     assert result["project_retained"] is True
@@ -1292,7 +1300,7 @@ def test_local_delete_clean_removes_app_owned_dir_and_archives_data(tmp_path, mo
     assert manager.service.get_app(app_id) is None
 
 
-def test_local_delete_clean_keeps_user_source_directory(tmp_path):
+def test_local_delete_clean_removes_user_source_directory(tmp_path):
     manager = _manager(tmp_path)
     source = tmp_path / "workspace" / "demo"
     source.mkdir(parents=True)
@@ -1301,19 +1309,78 @@ def test_local_delete_clean_keeps_user_source_directory(tmp_path):
     published = asyncio.run(manager.publish_app(str(source / "index.html"), "session", OWNER))
     app_id = published["app_id"]
 
-    result = asyncio.run(manager.delete_app(app_id, OWNER, remove_files=True))
+    result = asyncio.run(
+        manager.delete_app(app_id, OWNER, remove_files=True, confirm_work_dir=str(source))
+    )
     assert result["deleted"] is True
-    assert result["removed_files"] is False
-    assert result["cleanup_warning"]
-    assert source.is_dir()
+    assert result["removed_files"] is True
+    assert result["cleanup_warning"] == ""
+    assert not source.exists()
     assert manager.service.get_app(app_id) is None
 
 
+def test_local_delete_clean_removes_read_only_files(tmp_path):
+    manager = _manager(tmp_path)
+    source = tmp_path / "workspace" / "demo"
+    (source / "data").mkdir(parents=True)
+    (source / "index.html").write_text("<html></html>", encoding="utf-8")
+    locked = source / "data" / "save.json"
+    locked.write_text("{}", encoding="utf-8")
+    os.chmod(locked, stat.S_IREAD)
+    published = asyncio.run(manager.publish_app(str(source / "index.html"), "session", OWNER))
+
+    result = asyncio.run(
+        manager.delete_app(published["app_id"], OWNER, remove_files=True, confirm_work_dir=str(source))
+    )
+
+    assert result["removed_files"] is True
+    assert result["cleanup_warning"] == ""
+    assert not source.exists()
+    assert (Path(result["preserved_dir"]) / "data" / "save.json").is_file()
+
+
+def test_local_delete_clean_does_not_follow_directory_links(tmp_path):
+    manager = _manager(tmp_path)
+    source = tmp_path / "workspace" / "demo"
+    source.mkdir(parents=True)
+    (source / "index.html").write_text("<html></html>", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    if os.name == "nt":
+        linked = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(source / "linked"), str(outside)],
+            capture_output=True,
+        )
+        if linked.returncode != 0:
+            pytest.skip("directory junctions are unavailable")
+    else:
+        try:
+            os.symlink(outside, source / "linked", target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory links are unavailable: {exc}")
+    published = asyncio.run(manager.publish_app(str(source / "index.html"), "session", OWNER))
+
+    result = asyncio.run(
+        manager.delete_app(published["app_id"], OWNER, remove_files=True, confirm_work_dir=str(source))
+    )
+
+    assert result["removed_files"] is True
+    assert not source.exists()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
 @pytest.mark.parametrize(
-    "app_path,other_entry,registered",
-    [(".", "other/index.html", False), ("demo", "demo/nested/index.html", True), ("demo", "demo/other.html", True)],
+    "app_path,other_entry,registered,cleanup_code",
+    [
+        (".", "other/index.html", False, "protected_directory"),
+        ("demo", "demo/nested/index.html", True, "directory_in_use"),
+        ("demo", "demo/other.html", True, "directory_in_use"),
+    ],
 )
-def test_local_delete_clean_protects_other_files(tmp_path, monkeypatch, app_path, other_entry, registered):
+def test_local_delete_clean_protects_other_files(
+    tmp_path, monkeypatch, app_path, other_entry, registered, cleanup_code
+):
     install_root = tmp_path / "apps"
     monkeypatch.setenv("APP_MARKET_INSTALL_ROOT", str(install_root))
     manager = _manager(tmp_path)
@@ -1325,9 +1392,12 @@ def test_local_delete_clean_protects_other_files(tmp_path, monkeypatch, app_path
     app = asyncio.run(manager.publish_app(str(entry), "", OWNER))
     other_app = asyncio.run(manager.publish_app(str(other), "", "bob")) if registered else None
 
-    result = asyncio.run(manager.delete_app(app["app_id"], OWNER, remove_files=True))
+    result = asyncio.run(
+        manager.delete_app(app["app_id"], OWNER, remove_files=True, confirm_work_dir=str(entry.parent))
+    )
     assert result["deleted"] is True
     assert result["removed_files"] is False
+    assert result["cleanup_code"] == cleanup_code
     assert result["cleanup_warning"]
     assert entry.is_file() and other.is_file()
     assert manager.service.get_app(app["app_id"]) is None
@@ -1375,7 +1445,81 @@ def test_local_delete_clean_keeps_files_when_deregistration_fails(tmp_path, monk
         return rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "rmtree", fail_registry_removal)
-    result = asyncio.run(manager.delete_app(app["app_id"], OWNER, remove_files=True))
+    result = asyncio.run(
+        manager.delete_app(app["app_id"], OWNER, remove_files=True, confirm_work_dir=str(entry.parent))
+    )
     assert result == {"deleted": False}
     assert entry.is_file()
     assert manager.service.get_app(app["app_id"]) is not None
+
+
+def test_local_delete_clean_requires_directory_confirmation(tmp_path):
+    manager = _manager(tmp_path)
+    source = tmp_path / "workspace" / "demo"
+    source.mkdir(parents=True)
+    (source / "index.html").write_text("<html></html>", encoding="utf-8")
+    published = asyncio.run(manager.publish_app(str(source / "index.html"), "session", OWNER))
+
+    for confirmation in ("", str(tmp_path / "workspace"), str(source / "index.html")):
+        with pytest.raises(AppMarketError) as error:
+            asyncio.run(
+                manager.delete_app(published["app_id"], OWNER, remove_files=True, confirm_work_dir=confirmation)
+            )
+        assert error.value.code == "app_delete_confirm_required"
+
+    assert source.is_dir() and (source / "index.html").is_file()
+    assert manager.service.get_app(published["app_id"]) is not None
+
+
+def test_local_delete_clean_keeps_the_current_working_directory(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    source = tmp_path / "workspace" / "demo"
+    source.mkdir(parents=True)
+    (source / "index.html").write_text("<html></html>", encoding="utf-8")
+    published = asyncio.run(manager.publish_app(str(source / "index.html"), "session", OWNER))
+    monkeypatch.chdir(source)
+
+    result = asyncio.run(
+        manager.delete_app(published["app_id"], OWNER, remove_files=True, confirm_work_dir=str(source))
+    )
+
+    assert result["deleted"] is True
+    assert result["removed_files"] is False
+    assert result["cleanup_code"] == "protected_directory"
+    assert (source / "index.html").is_file()
+
+
+@pytest.mark.parametrize("path", [Path.home(), Path(Path.cwd().anchor)])
+def test_protected_directory_guard_rejects_roots_and_home(path):
+    assert hub_install._protected_directory_reason(path)
+    assert hub_install._protected_directory_reason(Path.home() / "wrong") == ""
+
+
+@pytest.mark.parametrize(
+    "error_number,cleanup_code",
+    [(errno.EBUSY, "filesystem_busy"), (errno.EACCES, "filesystem_error")],
+)
+def test_local_delete_deregisters_even_if_cleanup_fails(tmp_path, monkeypatch, error_number, cleanup_code):
+    manager = _manager(tmp_path)
+    source = tmp_path / "workspace" / "demo"
+    (source / "data").mkdir(parents=True)
+    (source / "index.html").write_text("<html></html>", encoding="utf-8")
+    (source / "data" / "save.json").write_text("{}", encoding="utf-8")
+    published = asyncio.run(manager.publish_app(str(source / "index.html"), "session", OWNER))
+    app_id = published["app_id"]
+
+    def remove_failed(path):
+        assert path == source
+        assert manager.service.get_app(app_id) is None
+        raise OSError(error_number, "Could not remove application directory")
+
+    monkeypatch.setattr(hub_install, "_remove_tree", remove_failed)
+    result = asyncio.run(
+        manager.delete_app(app_id, OWNER, remove_files=True, confirm_work_dir=str(source))
+    )
+    assert result["deleted"] is True
+    assert result["removed_files"] is False
+    assert result["cleanup_code"] == cleanup_code
+    assert result["work_dir"] == str(source)
+    assert (source / "index.html").is_file()
+    assert (Path(result["preserved_dir"]) / "data" / "save.json").is_file()

@@ -55,6 +55,7 @@ const app = {
   version: '1.2.3',
   description: 'Play five in a row',
   icon_url: '/gomoku.png',
+  entry_path: '/workspace/apps/gomoku/index.html',
 };
 const running = {
   instance_id: 'active',
@@ -65,7 +66,12 @@ const running = {
   created_at: '2026-10-23',
   url: 'http://127.0.0.1:8080/gomoku.html',
 };
-const secondApp = { ...app, app_id: 'second', name: 'Second' };
+const secondApp = {
+  ...app,
+  app_id: 'second',
+  name: 'Second',
+  entry_path: '/workspace/apps/second/index.html',
+};
 const secondInstance = { ...running, app_id: 'second', instance_id: 'second-active', port: 8081,
   url: 'http://127.0.0.1:8081/index.html', web_url: 'http://workswarm-app-second.localhost:8081/index.html' };
 const card = id => document.querySelector(`[data-testid="app-market-card"][data-variant="${id}"]`);
@@ -411,30 +417,83 @@ test('independent AI roles share a grid with notes in their cards while team rol
   }
 });
 
-test('uninstall leaves app details and reports incomplete local cleanup', async () => {
+for (const cleanupCode of ['filesystem_error', 'filesystem_busy']) {
+  test(`uninstall removes the card and reports ${cleanupCode}`, async () => {
+    const directory = '/workspace/apps/gomoku';
+    const error = 'Could not remove application directory';
+    const archive = cleanupCode === 'filesystem_busy' ? '/workspace/apps/.app-archive/gomoku-abc123' : '';
+    const ctx = await mount(method => {
+      if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
+      if (method === 'app_market.uninstall') {
+        return { cleanup_code: cleanupCode, cleanup_warning: error, work_dir: directory, preserved_dir: archive };
+      }
+      return response(method);
+    });
+    try {
+      await click(card('gomoku'));
+      await click(find('app-market-more'));
+      await click(find('app-market-delete'));
+      assert.equal(find('app-market-detail-page'), null);
+      assert.ok(find('app-market-tabs'));
+      assert.equal(card('gomoku'), null);
+      assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
+        app_id: 'gomoku', remove_files: true,
+      });
+      const expectedNotice = archive
+        ? i18next.t('appMarket.cleanupWithArchive', {
+            message: i18next.t('appMarket.cleanupFilesystemBusy', { directory }), directory: archive,
+          })
+        : i18next.t('appMarket.cleanupFailed', { directory, error });
+      assert.equal(actionNotice().textContent, expectedNotice);
+      assert.equal(actionNotice().dataset.variant, 'error');
+      assert.equal(actionNotice().parentElement, find('ui-toast-stack-right'));
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
+test('cleaning local files names the directory and reports the archive', async () => {
+  const archived = '/workspace/apps/.app-archive/gomoku-abc123';
+  const ctx = await mount((method) => {
+    if (method === 'app_market.delete') return { deleted: true, preserved_dir: archived };
+    return response(method);
+  });
+  try {
+    await menuClick('app-market-delete');
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
+      app_id: 'gomoku', remove_files: true, confirm_work_dir: '/workspace/apps/gomoku',
+    });
+    assert.equal(
+      actionNotice().textContent,
+      i18next.t('appMarket.deleteCleanArchived', { directory: archived }),
+    );
+    assert.equal(actionNotice().dataset.variant, 'success');
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('known cleanup refusals use localized explanations', async () => {
   const directory = '/workspace/apps/gomoku';
-  const ctx = await mount(method => {
+  const ctx = await mount((method) => {
     if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
     if (method === 'app_market.uninstall') {
-      return { cleanup_warning: 'Application files are locked', work_dir: directory };
+      return {
+        cleanup_warning: 'The application directory is still used by another application',
+        cleanup_code: 'directory_in_use',
+        work_dir: directory,
+      };
     }
     return response(method);
   });
   try {
-    await click(card('gomoku'));
-    await click(find('app-market-more'));
-    await click(find('app-market-delete'));
-    assert.equal(find('app-market-detail-page'), null);
-    assert.ok(find('app-market-tabs'));
-    assert.equal(card('gomoku'), null);
-    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
-      app_id: 'gomoku', remove_files: true,
-    });
+    await menuClick('app-market-delete');
     assert.equal(
       actionNotice().textContent,
-      i18next.t('appMarket.uninstallCleanupWarning', { directory }),
+      i18next.t('appMarket.cleanupKeptInUse', { directory }),
     );
-    assert.equal(actionNotice().dataset.variant, 'warning');
+    assert.equal(actionNotice().dataset.variant, 'error');
   } finally {
     await ctx.close();
   }
@@ -723,7 +782,9 @@ for (const action of ['stop', 'delete']) {
       const requests = ctx.calls.filter(({ method }) => ['app_market.stop', 'app_market.delete'].includes(method));
       assert.deepEqual(requests, [{
         method: `app_market.${action}`,
-        params: action === 'stop' ? { instance_id: 'second-active' } : { app_id: 'second', remove_files: true },
+        params: action === 'stop' ? { instance_id: 'second-active' } : {
+          app_id: 'second', remove_files: true, confirm_work_dir: '/workspace/apps/second',
+        },
       }]);
       assert.equal(instances.some(item => item.instance_id === running.instance_id), true);
     } finally {
@@ -1352,7 +1413,7 @@ test('delete keeps app details on cancellation and returns to the list on succes
     assert.ok(find('app-market-tabs'));
     assert.equal(find('app-market-card'), null);
     assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
-      app_id: 'gomoku', remove_files: true,
+      app_id: 'gomoku', remove_files: true, confirm_work_dir: '/workspace/apps/gomoku',
     });
     const notice = actionNotice();
     assert.equal(notice.textContent, i18next.t('appMarket.deleteCleanSuccess'));
