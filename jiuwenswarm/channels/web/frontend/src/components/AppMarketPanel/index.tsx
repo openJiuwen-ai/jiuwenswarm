@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { AppWindow, ArrowLeft, Circle, CircleCheck, Download, Ellipsis, HardDrive, Info, Loader2, LogOut, Pencil, Pin, PinOff, Play, RefreshCw, Square, Trash2, ExternalLink, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import ReactMarkdown from 'react-markdown';
 import { webRequest } from '../../services/webClient';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { matchesAssetName } from '../../features/assetNameSearch';
 import { Pagination } from '../common/Pagination';
-import { EntityHeader } from '../ui/EntityHeader/EntityHeader';
+import { EntityHeader, type EntityHeaderTagItem } from '../ui/EntityHeader/EntityHeader';
 import { PageCard } from '../ui/PageCard/PageCard';
 import { PageHeader } from '../ui/PageHeader/PageHeader';
 import { PageToolbar } from '../ui/PageToolbar/PageToolbar';
@@ -200,6 +201,17 @@ function appDescriptionParts(description: string) {
   return { summary, introduction: details.join('\n\n') };
 }
 
+/** Source tag shown next to the version so Hub and local apps are distinguishable. */
+function appSourceTag(app: AppInfo, t: TFunction, testId: string): EntityHeaderTagItem {
+  const hub = app.source === 'hub';
+  return {
+    label: t(hub ? 'appMarket.sourceHub' : 'appMarket.sourceLocal'),
+    testId,
+    variant: hub ? 'source-hub' : 'source-local',
+    tooltip: t(hub ? 'appMarket.sourceHubHint' : 'appMarket.sourceLocalHint'),
+  };
+}
+
 function DetailPageShell({ backLabel, onBack, children }: {
   backLabel: string;
   onBack: () => void;
@@ -238,7 +250,7 @@ function InstalledAppDetailPage({ app, state, onBack, actions, memoryLabel }: {
         variant="card"
         avatar={{ name: app.name, iconUrl: app.icon_url }}
         title={app.name}
-        tags={[`v${app.version}`, ...(memoryLabel ? [memoryLabel] : [])]}
+        tags={[`v${app.version}`, appSourceTag(app, t, 'app-market-detail-source'), ...(memoryLabel ? [memoryLabel] : [])]}
         titleEnd={state !== 'stopped' ? <StateIcon state={state} label={t(`appMarket.states.${state}`)} /> : undefined}
         actions={actions}
       />
@@ -263,6 +275,7 @@ function InstalledAppDetailPage({ app, state, onBack, actions, memoryLabel }: {
       )}
       <dl className="app-market-detail__grid">
         <DetailRow label={t('appMarket.detail.source')} value={t(app.source === 'hub' ? 'appMarket.sourceHub' : 'appMarket.sourceLocal')} />
+        <DetailRow label={t('appMarket.detail.appId')} value={app.app_id} mono />
         <DetailRow label={t('appMarket.detail.status')} value={t(`appMarket.states.${state}`)} />
         <DetailRow label={t('appMarket.detail.directory')} value={appDirectory(app)} mono />
       </dl>
@@ -1350,6 +1363,9 @@ export function AppMarketPanel({
                   title={app.name}
                   label={[
                     `v${app.version}`,
+                    // The tag row is single-line and drops trailing tags on narrow cards, so a
+                    // running card keeps the memory tag visible and hides the source tag instead.
+                    ...(memoryLabel ? [] : [appSourceTag(app, t, 'app-market-card-source')]),
                     ...(memoryLabel ? [memoryLabel] : []),
                     ...(missing ? [t('appMarket.workDirMissing')] : []),
                   ]}
