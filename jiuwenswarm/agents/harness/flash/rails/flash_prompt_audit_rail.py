@@ -344,8 +344,15 @@ class FlashPromptAuditRail(DeepAgentRail):
                     mentioned.add(token)
         # 只把「看起来像工具名且工具面确实没有」的记作幽灵工具；反引号里的路径/
         # 变量/普通标识符不误报——因此额外要求命中一个已知工具名时才视为工具语境。
+        # _KNOWN_SAFE_PLACEHOLDERS（510 段 JSON schema 示例的参数名）此前只豁免
+        # unrendered_vars；幽灵检查一并豁免，否则 memory_id/tool_name/target_channels
+        # 这类参数名会被当工具误报，淹没真幽灵信号。
         report.ghost_tools = sorted(
-            token for token in mentioned if token not in known and self._looks_like_tool(token, known)
+            token
+            for token in mentioned
+            if token not in known
+            and token not in _KNOWN_SAFE_PLACEHOLDERS
+            and self._looks_like_tool(token, known)
         )
 
     @staticmethod

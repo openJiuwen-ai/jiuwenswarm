@@ -249,17 +249,29 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 "web_search",
                 "fetch_webpage",
                 "ask_user",
+                # task_tool 必须常驻可见，否则 ProgressiveToolRail 会滤掉、
+                # flash 无法把任务委派给 subagent（FlashSubagentRail 每轮提示
+                # “一次性发出全部 task_tool 调用”，deep eager 同名常驻）。
+                "task_tool",
+                # 公共 prompt「文件发送」段强制引导调用，不可见即成幽灵调用。
+                "send_file_to_user",
                 "read_file",
                 "write_file",
                 "edit_file",
                 "glob",
                 "grep",
                 "bash",
+                # 技能总则（flash_skill_rail _OVERVIEW）引导用 search_skill
+                # 检索已安装技能，不 eager 则该引导指向不可见工具。
+                "search_skill",
                 "skill_tool",
                 "skill_complete",
                 "todo",
                 "memory",
                 "office_claw_list_wishes",
+                # FlashMemoryRail 每轮注入 memory(mode=search) 提示，
+                # 不 eager 则该 rail 引导形同虚设（deep eager 五件套同理）。
+                "memory",
             ],
         },
     }

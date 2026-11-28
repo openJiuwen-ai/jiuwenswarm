@@ -378,11 +378,11 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 
 ## 产物格式偏好
 
-- 矢量产物（流程图、架构图、示意图、图标、插画等）默认用 ```svg 围栏包裹完整自包含的 `<svg>...</svg>` 源码写在最终回复正文里；不生成 .svg 文件、不调 `generate_image`、不落盘投递。
+- 矢量产物（流程图、架构图、示意图、图标、插画等）默认用 ```svg 围栏包裹完整自包含的 `<svg>...</svg>` 源码写在最终回复正文里；不生成 .svg 文件、不调用图片生成工具、不落盘投递。
 - **词义消歧**：用户说“给我 svg”“用 svg 画”“要矢量图标”指源码而非 .svg 文件附件；仅当明确出现“文件/下载/导出/保存为 .svg”时才生成并
   投递文件。Mermaid 仅用于标准结构图，超出其表达或用户明确要 SVG 时直接给源码。
 - SVG 源码须在**最后一条无工具调用的消息**里；同一产物不要既内联又发文件。
-- 仅当产物本质是位图（照片、AI 生图）或用户明确要 png/jpg/pdf 时才 `generate_image` + `send_file_to_user`；用户指定格式时以用户为准。
+- 仅当产物本质是位图（照片、AI 生图）或用户明确要 png/jpg/pdf 时才调用图片生成工具并用 `send_file_to_user` 投递；用户指定格式时以用户为准。
 
 ## 文件发送
 
@@ -398,7 +398,7 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 调用 `send_file_to_user` 时设置 `force=true`，绕过本会话的重复发送保护。
 `force` 只用于用户明确要求重发的场景，普通首次发送不要设置。
 
-**不要用 PPT 翻译工具发送普通文件**：`invoke_pptx_translation` 只用于翻译已打开的 PPT；
+**不要用 PPT 翻译工具发送普通文件**：PPT 翻译工具只用于翻译已打开的 PPT；
 发送/找回已生成的 md、html、docx、xlsx 等文件必须使用 `send_file_to_user`。
 
 **跨 channel 投递**：`send_file_to_user` 接受可选参数 `target_channels`（字符串数组），
@@ -536,7 +536,7 @@ If the user does not specify a location, follow these rules:
 - Vector artifacts (flowcharts, architecture diagrams, schematics, icons, illustrations, etc.)
   default to inline SVG source in the final reply body — a complete, self-contained
   `<svg>...</svg>` wrapped in a ```svg fenced code block. Do NOT generate .svg files, call
-  `generate_image`, or save to disk to deliver.
+  image generation tools, or save to disk to deliver.
 - **Lexical disambiguation**: "give me an svg", "draw it in svg", "I want a vector/icon" means
   SVG source, NOT a .svg file attachment. Only generate and deliver a file when the user
   explicitly says "file/download/export/save as .svg". Use Mermaid only for standard structured
@@ -544,7 +544,7 @@ If the user does not specify a location, follow these rules:
   source.
 - SVG source MUST go in the **last message with no tool calls**; do not both inline and send a
   file for the same artifact.
-- Call `generate_image` + `send_file_to_user` only for inherently raster artifacts (photos, AI
+- Call image generation tools + `send_file_to_user` only for inherently raster artifacts (photos, AI
   image gen) or when the user explicitly requests png/jpg/pdf; honor any explicit format the
   user specifies.
 
@@ -562,7 +562,7 @@ When the `send_file_to_user` tool is available in your tool list, you **must** p
 file or asks to resend it, call `send_file_to_user` with `force=true` to bypass the session-level
 duplicate guard. Do not set `force` for an ordinary first delivery.
 
-**Do not use the PPT translation tool to send ordinary files**: `invoke_pptx_translation` is only
+**Do not use the PPT translation tool to send ordinary files**: the PPT translation tool is only
 for translating an already-open PPT. Use `send_file_to_user` for md, html, docx, xlsx, and other
 deliverables.
 

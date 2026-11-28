@@ -21,8 +21,7 @@
 
 ### 生成代码兼容性
 在Windows 系统下，Emoji、特殊符号等在 GBK 中无法编码，生成的代码需要避免这些字符。
-若必须使用，优先使用code工具执行而不是bash。
-注意：文件读写操作请使用 read_file / write_file / edit_file 工具，不要通过 code 工具进行文件 I/O。
+注意：文件读写操作请使用 read_file / write_file / edit_file 工具。
 
 ## 任务管理
 在 `todo/` 中跟踪任务，保持有条理。
