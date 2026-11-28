@@ -1,27 +1,62 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Verify JiuwenMemory SDK assembly and video tools in an isolated frozen backend."""
+"""Verify JiuwenMemory SDK tools and the HTTP Portal in an isolated frozen backend."""
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import subprocess
 import sys
 import traceback
-from importlib.resources import files
+from importlib import import_module
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 
-def verify_memory_portal_resources() -> None:
-    """Fail if the browser entry page was omitted from the frozen bundle."""
-    files("jiuwen_memory_entry.portal").joinpath("index.html").read_bytes()
+def verify_memory_portal(url: str | None) -> None:
+    """Load the loopback page and exchange its one-time launch token."""
+    page = urlsplit(url or "")
+    if page.scheme != "http" or page.hostname != "127.0.0.1" or not page.port:
+        raise RuntimeError("JiuwenMemory Portal did not issue a loopback launch link")
+    token = parse_qs(page.fragment).get("access", [""])[0]
+    if not token:
+        raise RuntimeError("JiuwenMemory Portal launch link is missing its access token")
+    authority = f"127.0.0.1:{page.port}"
+    origin = urlunsplit(("http", authority, "", "", ""))
+    page_url = urlunsplit(("http", authority, page.path, page.query, ""))
+    bootstrap_url = urlunsplit(("http", authority, "/portal/api/bootstrap", "", ""))
+    opener = build_opener(ProxyHandler({}))
+    request = Request(
+        bootstrap_url,
+        data=json.dumps({"token": token, "embedded": True}).encode(),
+        headers={"Content-Type": "application/json", "Origin": origin, "X-Memory-Portal-Browser": "1"},
+    )
+    try:
+        with opener.open(page_url, timeout=10) as response:
+            if response.status != 200 or response.headers.get_content_type() != "text/html" or not response.read(1):
+                raise RuntimeError("JiuwenMemory Portal did not serve its entry page")
+        with opener.open(request, timeout=10) as response:
+            session = json.load(response)
+            if response.status != 200 or not isinstance(session, dict) or not session.get("session_token"):
+                raise RuntimeError("JiuwenMemory Portal did not accept its launch token")
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("JiuwenMemory Portal returned an invalid bootstrap response") from exc
+    except OSError as exc:
+        raise RuntimeError("JiuwenMemory Portal HTTP request failed") from exc
 
 
-async def verify_memory_runtime(root: Path) -> None:
+async def verify_memory_runtime(root: Path, *, check_portal: bool = False) -> None:
     """Assemble the real provider without sending model requests or ingesting media."""
     from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
     from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import _build_security_provider
+
+    supports_portal = hasattr(AgentMemoryMemoryProvider, "open_portal")
+    if check_portal and not supports_portal:
+        logging.warning("Skipping HTTP Portal check because the bundled JiuwenMemory SDK lacks Portal support")
+    verify_portal = check_portal and supports_portal
 
     for video in (False, True):
         profile_root = root / ("video" if video else "text")
@@ -46,6 +81,9 @@ async def verify_memory_runtime(root: Path) -> None:
                 "video_model": "bundle-check",
                 "video_api_key": "bundle-check",
             })
+        portal_options = {}
+        if supports_portal:
+            portal_options["portal"] = {"enabled": verify_portal and not video}
         provider = AgentMemoryMemoryProvider(
             user_id="bundle-check",
             security_provider=_build_security_provider("local", "bundle-check"),
@@ -55,6 +93,7 @@ async def verify_memory_runtime(root: Path) -> None:
                     "root": str(profile_root / "markdown"),
                 }}},
             },
+            **portal_options,
         )
         try:
             await provider.initialize(scope_id="local", session_id="bundle-check")
@@ -69,6 +108,8 @@ async def verify_memory_runtime(root: Path) -> None:
                 raise RuntimeError(f"Missing video memory tools: {sorted(video_tools - names)}")
             if not video and video_tools & names:
                 raise RuntimeError("Video tools registered without a video profile")
+            if verify_portal and not video:
+                await asyncio.to_thread(verify_memory_portal, await provider.open_portal())
         finally:
             await provider.shutdown()
 
@@ -108,16 +149,17 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if getattr(sys, "frozen", False):
         try:
-            verify_memory_portal_resources()
+            # Check the HTTP entry's flat imports even when the SDK hosts Portal directly.
+            import_module("jiuwen_memory_entry.http_server.__main__")
             with TemporaryDirectory(prefix="memory-profile-check-") as directory:
-                asyncio.run(verify_memory_runtime(Path(directory)))
+                asyncio.run(verify_memory_runtime(Path(directory), check_portal=True))
         except Exception:
             # Third-party imports can replace stderr and the exception hook.
             # Preserve diagnostics for the launcher independently of logging.
             root = Path(os.environ.get("JIUWENSWARM_DATA_DIR", os.getcwd()))
             (root / "memory-bundle-check.log").write_text(traceback.format_exc(), encoding="utf-8")
             return 1
-        logging.info("JiuwenMemory frozen SDK and video tool verification passed")
+        logging.info("JiuwenMemory frozen bundle verification passed")
         return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True, type=Path)

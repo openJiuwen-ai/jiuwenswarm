@@ -1,9 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Regression coverage for the frozen memory SDK verification gate."""
+"""Regression coverage for the frozen Memory verification gate."""
 
 import os
 import subprocess
 import sys
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,15 +15,51 @@ from scripts import memory_bundle, verify_memory_bundle as verifier
 
 
 @pytest.mark.asyncio
-async def test_real_memory_sdk_registers_video_tools_only_when_configured(tmp_path, monkeypatch):
+@pytest.mark.parametrize("check_portal", [False, True], ids=["sdk", "portal"])
+async def test_real_memory_bundle_verifier(tmp_path, monkeypatch, caplog, check_portal):
+    from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
+
     for key in list(verifier.os.environ):
         if key.startswith(("JIUWEN_MEMORY_", "EMBED_")):
             monkeypatch.delenv(key)
-    await verifier.verify_memory_runtime(tmp_path)
+    await verifier.verify_memory_runtime(tmp_path, check_portal=check_portal)
+    skipped = "bundled JiuwenMemory SDK lacks Portal support" in caplog.text
+    assert skipped == (check_portal and not hasattr(AgentMemoryMemoryProvider, "open_portal"))
+
+
+@pytest.mark.parametrize(("homepage", "bootstrap", "error"), [
+    (b"<html></html>", b'{"session_token":"test-session"}', None),
+    (b"", b"", "did not serve its entry page"),
+    (b"<html></html>", b"<html></html>", "invalid bootstrap response"),
+    (b"<html></html>", b"{}", "did not accept its launch token"),
+])
+def test_portal_http_check(monkeypatch, homepage, bootstrap, error):
+    def open_portal(request, *, timeout):
+        assert timeout == 10
+        response = BytesIO(homepage if isinstance(request, str) else bootstrap)
+        response.status = 200
+        response.headers = Message()
+        if isinstance(request, str):
+            assert request == "http://127.0.0.1:8137/portal/?language=zh"
+            response.headers["Content-Type"] = "text/html"
+        else:
+            assert request.full_url == "http://127.0.0.1:8137/portal/api/bootstrap"
+            assert request.get_method() == "POST"
+            assert request.get_header("Origin") == "http://127.0.0.1:8137"
+            assert request.data == b'{"token": "test-access", "embedded": true}'
+        return response
+
+    monkeypatch.setattr(verifier, "build_opener", lambda *_: SimpleNamespace(open=open_portal))
+    url = "http://127.0.0.1:8137/portal/?language=zh#access=test-access"
+    if error is None:
+        verifier.verify_memory_portal(url)
+    else:
+        with pytest.raises(RuntimeError, match=error):
+            verifier.verify_memory_portal(url)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["initialize", "text_tools", "video_tools"])
+@pytest.mark.parametrize("failure", ["initialize", "text_tools", "video_tools", "portal"])
 async def test_verifier_rejects_sdk_failures_and_closes_provider(monkeypatch, tmp_path, failure):
     instances = []
 
@@ -46,6 +84,9 @@ async def test_verifier_rejects_sdk_failures_and_closes_provider(monkeypatch, tm
         async def shutdown(self):
             self.closed = True
 
+        async def open_portal(self):
+            return None
+
     monkeypatch.setitem(sys.modules, "jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider", SimpleNamespace(
         AgentMemoryMemoryProvider=Provider,
     ))
@@ -53,7 +94,7 @@ async def test_verifier_rejects_sdk_failures_and_closes_provider(monkeypatch, tm
         _build_security_provider=lambda org, user: object(),
     ))
     with pytest.raises(RuntimeError):
-        await verifier.verify_memory_runtime(tmp_path)
+        await verifier.verify_memory_runtime(tmp_path, check_portal=failure == "portal")
     assert instances and all(provider.closed for provider in instances)
 
 
@@ -93,27 +134,16 @@ def test_collection_scope_covers_security_and_excludes_optional_model_backends()
     assert not any("bge" in name or "spacy" in name or "milvus" in name for name in modules)
 
 
-@pytest.mark.parametrize("present", [False, True])
-def test_portal_resource_check_rejects_missing_homepage(monkeypatch, tmp_path, present):
-    monkeypatch.setattr(verifier, "files", lambda package: tmp_path)
-    if present:
-        (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
-        verifier.verify_memory_portal_resources()
-    else:
-        with pytest.raises(FileNotFoundError):
-            verifier.verify_memory_portal_resources()
-
-
 def test_frozen_failure_preserves_diagnostics_without_logging(monkeypatch, tmp_path):
-    async def fail(root):
-        raise RuntimeError("missing frozen implementation")
+    def fail(module):
+        assert module == "jiuwen_memory_entry.http_server.__main__"
+        raise ModuleNotFoundError("No module named 'config_loader'")
 
     monkeypatch.setattr(verifier.sys, "frozen", True, raising=False)
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(verifier, "verify_memory_portal_resources", lambda: None)
-    monkeypatch.setattr(verifier, "verify_memory_runtime", fail)
+    monkeypatch.setattr(verifier, "import_module", fail)
     assert verifier.main() == 1
-    assert "missing frozen implementation" in (tmp_path / "memory-bundle-check.log").read_text(encoding="utf-8")
+    assert "No module named 'config_loader'" in (tmp_path / "memory-bundle-check.log").read_text(encoding="utf-8")
 
 
 def test_all_desktop_build_entries_verify_memory():
