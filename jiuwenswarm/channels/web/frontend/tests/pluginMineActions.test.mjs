@@ -14,6 +14,7 @@ await build({
     'src/components/ConnectorMarket/MarketplacePage.tsx',
     'src/components/ConnectorMarket/PluginDetailPage.tsx',
     'src/components/ConnectorMarket/SystemPluginDetailPage.tsx',
+    'src/components/ConnectorMarket/UploadFileCreateModal.tsx',
     'src/multi-session/state/createConversationSession.ts',
   ],
   bundle: true,
@@ -41,7 +42,10 @@ await build({
             `export { FilePreviewTree, findDefaultPreviewFile } from ${JSON.stringify(resolve('src/components/ui/FilePreviewPanel/FilePreviewTree.tsx'))};`,
             `export { getPreviewFileLabel } from ${JSON.stringify(resolve('src/components/ui/FilePreviewPanel/filePreviewShared.ts'))};`,
           ].join('\n')
-          : `export { useHorizontalScrollEdges } from ${JSON.stringify(resolve('src/hooks/useHorizontalScrollEdges.ts'))};`,
+          : [
+            `export { useHorizontalScrollEdges } from ${JSON.stringify(resolve('src/hooks/useHorizontalScrollEdges.ts'))};`,
+            'export const useDesktopLocalFilePickerReady = () => false;',
+          ].join('\n'),
         loader: 'js',
         resolveDir: process.cwd(),
       }));
@@ -67,7 +71,11 @@ await build({
       }));
       builder.onLoad({ filter: /.*/, namespace: 'action-api' }, ({ path }) => ({
         contents: path === 'extensionsV2Api'
-          ? 'export const EXTENSION_PACKAGE_BUSY = "EXTENSION_PACKAGE_BUSY"; export const systemPluginApi = { catalog: (...args) => globalThis.systemPluginActionApi.catalog(...args) };'
+          ? `export const EXTENSION_PACKAGE_BUSY = 'EXTENSION_PACKAGE_BUSY';
+          export const systemPluginApi = {
+            catalog: (...args) => globalThis.systemPluginActionApi.catalog(...args),
+            inspectImportPath: (...args) => globalThis.systemPluginActionApi.inspectImportPath(...args),
+          };`
           : `export const ${path} = {};`,
         loader: 'js',
       }));
@@ -78,6 +86,17 @@ await build({
           'export const toast = { open: record, close() {}, closeAll() {} };',
           'export const toastStore = { open() {}, close() {}, closeAll() {}, subscribe: () => () => {}, getSnapshot: () => [] };',
         ].join('\n'),
+        loader: 'js',
+      }));
+      builder.onResolve({ filter: /features\/workspace\/localFilePicker$/ }, () => ({
+        path: 'localFilePicker', namespace: 'action-file-picker',
+      }));
+      builder.onLoad({ filter: /.*/, namespace: 'action-file-picker' }, () => ({
+        contents: `
+          export const DESKTOP_FILE_DRAG_EVENT = 'jiuwen-desktop-file-drag';
+          export const selectLocalFiles = () => ({ ok: true, files: [globalThis.pluginActionFilePick] });
+          export const registerDesktopLocalFilesConsumer = () => () => {};
+        `,
         loader: 'js',
       }));
       builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'action-svg' }));
@@ -114,6 +133,7 @@ after(() => {
   delete globalThis.systemPluginActionState;
   delete globalThis.systemPluginActionApi;
   delete globalThis.connectorToastCalls;
+  delete globalThis.pluginActionFilePick;
   dom.window.close();
 });
 
@@ -129,6 +149,7 @@ await i18next.use(initReactI18next).init({
 const { MarketplacePage } = await import('../node_modules/.cache/plugin-mine-actions/MarketplacePage.mjs');
 const { PluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/PluginDetailPage.mjs');
 const { SystemPluginDetailPage } = await import('../node_modules/.cache/plugin-mine-actions/SystemPluginDetailPage.mjs');
+const { UploadFileCreateModal } = await import('../node_modules/.cache/plugin-mine-actions/UploadFileCreateModal.mjs');
 const { createConversationSession } = await import('../node_modules/.cache/plugin-mine-actions/createConversationSession.mjs');
 const plugin = {
   id: 'legacy-plugin', runtimePackageName: 'legacy-plugin', source: 'local',
@@ -326,6 +347,61 @@ test('system plugin marketplace installs directly when no plugin is enabled', as
     assert.equal(document.querySelector('[data-testid="connector-market-confirm-dialog"]'), null);
   });
 });
+
+for (const [packageId, filename] of [['target-plugin', 'system-plugin.zip'], [null, 'agent-plugin.zip']]) {
+  test(`ZIP upload checks for enabled system plugins (${filename})`, async () => {
+    await i18next.changeLanguage('zh');
+    resetState();
+    globalThis.systemPluginActionState.mine = [{
+      id: 'enabled-plugin', packageId: 'enabled-plugin', installed: true, enabled: true,
+    }];
+    const path = `/tmp/${filename}`;
+    globalThis.pluginActionFilePick = { path, filename, size: 100, mime_type: 'application/zip', kind: 'document' };
+    const inspected = [];
+    globalThis.systemPluginActionApi.inspectImportPath = async filePath => {
+      inspected.push(filePath);
+      return packageId;
+    };
+    const catalog = globalThis.systemPluginActionApi.catalog;
+    const catalogCalls = [];
+    globalThis.systemPluginActionApi.catalog = async (...args) => {
+      catalogCalls.push(args);
+      return catalog(...args);
+    };
+    const imported = [];
+    await render(UploadFileCreateModal, {
+      onCancel() {},
+      onConfirm: async filePath => { imported.push(filePath); },
+    }, async () => {
+      const upload = document.querySelector('[data-testid="connector-market-upload-modal"]');
+      const confirm = upload.querySelector('[data-testid="connector-market-upload-confirm"]');
+      const getWarning = () => document.querySelector('[data-testid="connector-market-confirm-dialog"]');
+      await act(async () => upload.querySelector('[data-testid="connector-market-upload-dropzone"]').click());
+      await act(async () => confirm.click());
+      assert.deepEqual(inspected, [path]);
+
+      if (packageId === null) {
+        assert.equal(getWarning(), null);
+        assert.deepEqual(catalogCalls, []);
+      } else {
+        assert.deepEqual(catalogCalls, [['mine', true]]);
+        assert.deepEqual(imported, []);
+        const warning = getWarning();
+        assert.equal(warning.querySelector('h2').textContent, '开启多个系统插件');
+        assert.equal(warning.querySelector('p').textContent, '同时开启多个系统插件可能导致功能冲突，是否确认开启此插件？');
+        await act(async () => warning.querySelector('[data-testid="connector-market-confirm-cancel"]').click());
+        assert.equal(getWarning(), null);
+        assert.deepEqual(imported, []);
+
+        await act(async () => confirm.click());
+        const proceed = getWarning().querySelector('[data-testid="connector-market-confirm-ok"]');
+        assert.equal(proceed.textContent, '确认开启');
+        await act(async () => proceed.click());
+      }
+      assert.deepEqual(imported, [path]);
+    });
+  });
+}
 
 test('system plugin marketplace install continues when conflict discovery fails', async () => {
   const calls = resetState();
