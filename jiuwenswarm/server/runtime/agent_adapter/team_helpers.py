@@ -2890,10 +2890,14 @@ async def _apply_enterprise_runtime_ready_hooks(
                             if isinstance(channel_metadata, dict)
                             else {}
                         ) or {}
-                        candidate = OwnerIdentity(
-                            user_id=str(metadata.get("user_id") or "").strip(),
-                            group_id=str(routing.get("group_id") or "").strip(),
-                            bot_id=str(routing.get("bot_id") or "").strip(),
+                        # Reuse the central helper so group_id/bot_id fall back
+                        # to the channel metadata top level when routing is
+                        # absent (issue #110).
+                        from jiuwenswarm.enterprise.team.handlers import owner_from_metadata
+
+                        candidate = owner_from_metadata(
+                            channel_metadata if isinstance(channel_metadata, dict) else {},
+                            routing,
                         )
                         if candidate.user_id:
                             owner = candidate

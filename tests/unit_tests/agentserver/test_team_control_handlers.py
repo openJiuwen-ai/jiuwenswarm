@@ -107,6 +107,23 @@ def test_request_identity_falls_back_to_metadata_top_level():
     assert identity.bot_id == "bot"
 
 
+def test_owner_from_metadata_falls_back_to_top_level():
+    """Session-metadata owner reconstruction honors top-level routing fields (issue #110).
+
+    ``member_limits`` and ``team_helpers`` rebuild the owner from session
+    metadata via ``owner_from_metadata``; this mirrors the fallback that
+    ``request_identity`` uses so the org-team quota check is not silently
+    skipped when ``channel_metadata.routing`` is absent.
+    """
+    identity = handlers.owner_from_metadata(
+        {"user_id": "u-owner", "group_id": "grp", "bot_id": "bot"},
+        {},
+    )
+    assert identity.user_id == "u-owner"
+    assert identity.group_id == "grp"
+    assert identity.bot_id == "bot"
+
+
 @pytest.mark.asyncio
 async def test_team_get_by_session_for_owner(store, entity):
     ok, payload = await _call(handlers.handle_team_get, _request(ReqMethod.TEAM_GET, OWNER, {}, session_id="sess-1"))
