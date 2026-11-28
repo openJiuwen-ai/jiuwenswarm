@@ -216,10 +216,13 @@
     "backToMarket": "Back to App Plaza",
     "sourceHub": "Hub",
     "sourceLocal": "Local",
+    "sourceHubHint": "Installed from the Hub; can be updated from it or converted to a local app",
+    "sourceLocalHint": "Local app; editable and publishable to the Hub",
     "yes": "Yes",
     "no": "No",
     "detail": {
       "source": "Source",
+      "appId": "App ID",
       "version": "Version",
       "status": "Status",
       "directory": "App directory",

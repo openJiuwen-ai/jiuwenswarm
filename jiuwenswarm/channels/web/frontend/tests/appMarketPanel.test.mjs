@@ -56,6 +56,7 @@ const app = {
   description: 'Play five in a row',
   icon_url: '/gomoku.png',
   entry_path: '/workspace/apps/gomoku/index.html',
+  source: 'local',
 };
 const running = {
   instance_id: 'active',
@@ -75,6 +76,9 @@ const secondApp = {
 const secondInstance = { ...running, app_id: 'second', instance_id: 'second-active', port: 8081,
   url: 'http://127.0.0.1:8081/index.html', web_url: 'http://workswarm-app-second.localhost:8081/index.html' };
 const card = id => document.querySelector(`[data-testid="app-market-card"][data-variant="${id}"]`);
+// Visible tag row only: the hidden measurement copy also renders .entity-header__tag.
+const cardTagTexts = (id) =>
+  [...card(id).querySelectorAll('.entity-header__tags > .entity-header__tag')].map(tag => tag.textContent);
 const find = (id) => document.querySelector(`[data-testid="${id}"]`);
 const actionNotice = () => document.querySelector('[data-testid="app-market-action-notice"]:not(.ui-toast--closing)');
 const click = async (element) => act(async () => element.click());
@@ -1110,7 +1114,8 @@ test('app cards open a detail page with the app directory and return to My Apps'
     assert.ok(page);
     assert.match(page.textContent, /Local/);
     assert.match(page.textContent, /C:\\workspace\\gomoku/);
-    assert.doesNotMatch(page.textContent, /App ID|Entry|artifact digest|Package digest/i);
+    assert.match(page.textContent, /App ID\s*gomoku/);
+    assert.doesNotMatch(page.textContent, /Entry|artifact digest|Package digest/i);
     assert.equal(card('gomoku'), null);
     assert.equal(find('app-market-detail-back').textContent.trim(), 'Back to My Apps');
     await click(find('app-market-detail-back'));
@@ -2167,8 +2172,8 @@ test('Web market shows machine totals and running cards show only app memory', a
   } : response(method, [running]));
   try {
     assert.match(find('app-market-resources').textContent, /This computer \(total\) CPU 65.0% \u00b7 RAM 70.0%/);
-    const tags = card('gomoku').querySelectorAll('[data-testid="entity-header-tag"]');
-    assert.deepEqual([...tags].map(tag => tag.textContent), ['v1.2.3', 'RAM 10 MiB']);
+    assert.deepEqual(cardTagTexts('gomoku'), ['v1.2.3', 'RAM 10 MiB']);
+    assert.equal(card('gomoku').querySelector('[data-testid="app-market-card-source"]'), null);
     await menuClick('app-market-open');
     const metrics = document.querySelectorAll('[data-testid="app-market-resources"]');
     assert.equal(metrics.length, 1);
@@ -2189,12 +2194,60 @@ test('desktop cards show service memory before a renderer exists and totals stay
   } : response(method, [running]));
   try {
     assert.match(find('app-market-resources').textContent, /This computer \(total\) CPU 40.0% \u00b7 RAM 50.0%/);
-    const tags = card('gomoku').querySelectorAll('[data-testid="entity-header-tag"]');
-    assert.deepEqual([...tags].map(tag => tag.textContent), ['v1.2.3', 'RAM 24 MiB']);
+    assert.deepEqual(cardTagTexts('gomoku'), ['v1.2.3', 'RAM 24 MiB']);
     assert.equal(find('app-market-resources-note'), null);
     assert.equal(reads, 1);
     assert.equal(ctx.calls.filter(call => call.method === 'app_market.resources').length, 1);
   } finally { await ctx.close(); delete window.jiuwenDesktop; }
+});
+
+test('cards tag the app source so Hub and local apps are distinguishable', async () => {
+  const hubApp = {
+    ...app, app_id: 'hub-app', name: 'Hub App', source: 'hub', hub_asset_id: 'asset-1',
+    entry_path: '/workspace/apps/hub-app/index.html',
+  };
+  const localApp = {
+    ...app, app_id: 'local-app', name: 'Local App', source: 'local',
+    entry_path: '/workspace/apps/local-app/index.html',
+  };
+  const ctx = await mount(method => {
+    if (method === 'app_market.list') return { apps: [hubApp, localApp] };
+    if (method === 'app_market.ai_roles') return { session_groups: [] };
+    return { instances: [] };
+  });
+  const detailRows = () => [...document.querySelectorAll('.app-market-detail__row')]
+    .map(row => [row.querySelector('dt').textContent, row.querySelector('dd').textContent]);
+  try {
+    const hubTag = card('hub-app').querySelector('[data-testid="app-market-card-source"]');
+    const localTag = card('local-app').querySelector('[data-testid="app-market-card-source"]');
+    assert.equal(hubTag.textContent, 'Hub');
+    assert.equal(hubTag.getAttribute('data-variant'), 'source-hub');
+    assert.equal(hubTag.getAttribute('data-tooltip'), i18next.t('appMarket.sourceHubHint'));
+    assert.equal(localTag.textContent, 'Local');
+    assert.equal(localTag.getAttribute('data-variant'), 'source-local');
+    assert.equal(localTag.getAttribute('data-tooltip'), i18next.t('appMarket.sourceLocalHint'));
+    // The tag trails the version so the card reads "v<version> <source>".
+    assert.deepEqual(cardTagTexts('hub-app'), ['v1.2.3', 'Hub']);
+
+    await click(card('local-app'));
+    assert.equal(find('app-market-detail-source').textContent, 'Local');
+    assert.deepEqual(detailRows(), [
+      ['Source', 'Local'],
+      ['App ID', 'local-app'],
+      ['Status', 'Not started'],
+      ['App directory', '/workspace/apps/local-app'],
+    ]);
+    await click(find('app-market-detail-back'));
+
+    await click(card('hub-app'));
+    assert.equal(find('app-market-detail-source').textContent, 'Hub');
+    assert.deepEqual(detailRows(), [
+      ['Source', 'Hub'],
+      ['App ID', 'hub-app'],
+      ['Status', 'Not started'],
+      ['App directory', '/workspace/apps/hub-app'],
+    ]);
+  } finally { await ctx.close(); }
 });
 
 test('failed resource reads display unknown rather than misleading zeros', async () => {

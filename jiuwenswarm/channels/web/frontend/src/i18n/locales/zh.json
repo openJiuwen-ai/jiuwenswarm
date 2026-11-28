@@ -216,10 +216,13 @@
     "backToMarket": "返回应用广场",
     "sourceHub": "Hub",
     "sourceLocal": "本地",
+    "sourceHubHint": "从 Hub 安装的应用，可跟随 Hub 更新或转为本地应用",
+    "sourceLocalHint": "本地应用，可直接编辑或发布到 Hub",
     "yes": "是",
     "no": "否",
     "detail": {
       "source": "来源",
+      "appId": "应用 ID",
       "version": "版本",
       "status": "状态",
       "directory": "应用目录",
