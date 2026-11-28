@@ -9,11 +9,15 @@ Write/validate RPCs stay on the Runtime path.
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import Future
+from copy import deepcopy
 import json
 import logging
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +37,55 @@ from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
 
 logger = logging.getLogger(__name__)
+
+_PANEL_READ_LOCK = threading.Lock()
+_PANEL_READS: dict[tuple, Future[dict[str, Any]]] = {}
+
+
+def _panel_read_scope() -> tuple:
+    """Identify concurrent reads by their live inputs and credential ownership."""
+    from jiuwenswarm.enterprise import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    files = []
+    for getter in (get_config_file, get_env_file):
+        path = Path(getter())
+        try:
+            stamp = path.stat()
+            files.append((str(path), stamp.st_mtime_ns, stamp.st_ctime_ns, stamp.st_size, stamp.st_ino))
+        except OSError:
+            files.append((str(path), None))
+    tenant = None
+    if is_enterprise():
+        tenant = (TenantContext.current_tenant_key(), TenantContext.current_triple(),
+                  TenantContext.current_tenant_root(), TenantContext.current_agent_root(),
+                  TenantContext.current_agent_workspace_root())
+    return tuple(files), tuple(sorted(os.environ.items())), tenant
+
+
+def _get_panel_shared() -> dict[str, Any]:
+    """Coalesce in-flight reads only; completed reads never become a snapshot cache."""
+    try:
+        scope = _panel_read_scope()
+    except OSError:
+        return get_panel()
+    with _PANEL_READ_LOCK:
+        pending = _PANEL_READS.get(scope)
+        owner = False
+        if pending is None:
+            owner = True
+            pending = Future()
+            _PANEL_READS[scope] = pending
+    if owner:
+        try:
+            pending.set_result(get_panel())
+        except BaseException as exc:
+            pending.set_exception(exc)
+            raise
+        finally:
+            with _PANEL_READ_LOCK:
+                _PANEL_READS.pop(scope, None)
+    return deepcopy(pending.result())
 
 
 def get_runtime_version() -> str:
@@ -615,13 +668,18 @@ def get_panel() -> dict[str, Any]:
 
 
 async def handle_config_request(request: AgentRequest) -> AgentResponse:
+    """Read control configuration without blocking the Front event loop."""
+    return await asyncio.to_thread(_handle_config_request, request)
+
+
+def _handle_config_request(request: AgentRequest) -> AgentResponse:
     method = request.req_method
     if method == ReqMethod.CONFIG_GET:
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload=get_panel(),
+            payload=_get_panel_shared(),
             metadata=request.metadata,
         )
     raw = _read_raw_config()

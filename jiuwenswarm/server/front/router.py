@@ -76,9 +76,9 @@ def _load_config_service() -> None:
 def _prepare_config_service() -> None:
     """Prepare the existing config read path without retaining a stale snapshot."""
     _load_config_service()
-    from jiuwenswarm.server.control.config_service import get_panel
+    from jiuwenswarm.server.control.config_service import _get_panel_shared
 
-    get_panel()
+    _get_panel_shared()
 
 
 def _load_history_service() -> None:

@@ -836,7 +836,7 @@ class RuntimeSupervisor:
 
     async def _connect_resident(self) -> tuple[dict, Any, ProcessIdentity]:
         """Elect and validate a resident Worker while retaining the startup lock."""
-        from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+        from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope
         from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
         from jiuwenswarm.server.supervisor.identity_probe import probe_identity
 
@@ -859,7 +859,16 @@ class RuntimeSupervisor:
                     process = None
                     conn = None
                     try:
-                        existing = await try_connect(self._socket_path, timeout=0.05)
+                        expected = None
+                        # A connection starts the Worker's acceptance deadline. Probe
+                        # before opening it, including legacy endpoints without a lease.
+                        if endpoint_is_listening(self._socket_path) or Path(self._socket_path).exists():
+                            expected = (await probe_identity())[0]
+                            if self._stopping or self._terminating:
+                                raise RuntimeError("Worker startup cancelled by supervisor stop")
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("Worker election startup deadline exhausted")
+                            existing = await try_connect(self._socket_path, timeout=0.05)
                         conn = existing
                         if self._stopping or self._terminating:
                             raise RuntimeError("Worker startup cancelled by supervisor stop")
@@ -868,6 +877,12 @@ class RuntimeSupervisor:
                             self._process = None
                             logger.info("[Supervisor] reattached to resident runtime worker")
                         elif endpoint_is_listening(self._socket_path):
+                            if expected is None:
+                                expected = (await probe_identity())[0]
+                            if self._stopping or self._terminating:
+                                raise RuntimeError("Worker startup cancelled by supervisor stop")
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("Worker election startup deadline exhausted")
                             self._owns_process = False
                             self._process = None
                             conn = await connect_with_retry(
@@ -918,7 +933,9 @@ class RuntimeSupervisor:
                             self._fatal = True
                             self._fatal_reason = "resident Worker execution profile mismatch"
                             raise RuntimeError(self._fatal_reason)
-                        expected = launch_identity or (await probe_identity())[0]
+                        expected = launch_identity or expected
+                        if expected is None:
+                            raise RuntimeError("Worker launch identity was not prepared before connecting")
                         if protocol != PROTOCOL_VERSION or hello.get("code_identity") != expected:
                             if existing is None or attempt:
                                 raise RuntimeError("new Worker build identity did not match its parent")

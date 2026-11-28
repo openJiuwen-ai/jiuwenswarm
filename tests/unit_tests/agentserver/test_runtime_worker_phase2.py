@@ -693,6 +693,7 @@ async def test_bring_up_closes_conn_when_hello_is_rejected(
     match: str,
 ) -> None:
     conn = _ScriptedConn(message)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.runtime_supervisor.endpoint_is_listening", lambda _path: True)
 
     async def _try_connect(path: str, timeout: float = 0.5) -> _ScriptedConn:
         _ = path, timeout
@@ -715,6 +716,7 @@ async def test_bring_up_closes_conn_when_hello_times_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = _ScriptedConn(hang=True)
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.runtime_supervisor.endpoint_is_listening", lambda _path: True)
 
     async def _try_connect(path: str, timeout: float = 0.5) -> _ScriptedConn:
         _ = path, timeout

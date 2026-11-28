@@ -210,6 +210,19 @@ async def _run(host: str, port: int) -> None:
         front.attach_runtime_backend(supervisor)
         if websocket_enabled:
             await front.start()
+            logger.info(
+                "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+                host,
+                port,
+                time.monotonic() - startup_t0,
+            )
+            logger.info(
+                "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+                "agent_ws_listening",
+                time.monotonic() - _PROCESS_START_T0,
+                time.monotonic() - startup_t0,
+                front.readiness.snapshot().get("control_ready"),
+            )
         else:
             logger.info("[AgentServer] WebSocket disabled; transport will not listen")
     except BaseException:
@@ -219,20 +232,6 @@ async def _run(host: str, port: int) -> None:
         if front is not None:
             await front.stop()
         raise
-    logger.info(
-        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
-        host,
-        port,
-        time.monotonic() - startup_t0,
-    )
-    logger.info(
-        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
-        "agent_ws_listening",
-        time.monotonic() - _PROCESS_START_T0,
-        time.monotonic() - startup_t0,
-        front.readiness.snapshot().get("control_ready"),
-    )
-
     stop_event = asyncio.Event()
 
     async def _watch_backend() -> None:

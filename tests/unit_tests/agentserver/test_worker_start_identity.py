@@ -270,6 +270,7 @@ async def test_front_attach_accepts_worker_with_older_boot_time_cache(boot_time_
     peer = SimpleNamespace(recv=AsyncMock(return_value=hello), send=AsyncMock(), close=AsyncMock())
     monkeypatch.setattr(identity_probe, "probe_identity", AsyncMock(return_value=("a" * 64, {})))
     monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=peer))
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _path: True)
     _patch_lookup(monkeypatch, front_view)
     front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True)
     monkeypatch.setattr(front, "_start_side_tasks", Mock())

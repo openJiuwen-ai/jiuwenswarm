@@ -199,7 +199,7 @@ async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path
         raise TimeoutError("IPC unavailable")
 
     monkeypatch.setattr(supervisor_module, "try_connect", lookup)
-    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: False)
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: phase == "lookup")
     monkeypatch.setattr(supervisor_module, "connect_with_retry", slow_connect)
     monkeypatch.setattr(supervisor_module, "WorkerProcess", ObservedWorker)
     monkeypatch.setattr(worker_module, "build_worker_command", lambda *a, **kw: [
@@ -260,6 +260,7 @@ async def test_published_pid_retains_the_identity_checked_during_hello(monkeypat
     monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
     monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity", AsyncMock(return_value=("a" * 64, None)))
     monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=peer))
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _path: True)
     monkeypatch.setattr(psutil, "Process", lookup)
     front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True)
     monkeypatch.setattr(front, "_start_side_tasks", Mock())

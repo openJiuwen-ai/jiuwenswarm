@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -35,13 +36,19 @@ class _FakeFront:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("websocket_enabled", [False, True])
 async def test_run_does_not_delete_agent_teams_directory(
     monkeypatch: pytest.MonkeyPatch,
+    websocket_enabled: bool,
 ) -> None:
     removed_paths: list[Path] = []
     fake_front = _FakeFront("127.0.0.1", 18092)
     events = []
     caller = asyncio.current_task()
+    info = Mock(wraps=app_agentserver.logger.info)
+    monkeypatch.setattr(app_agentserver.logger, "info", info)
+    monkeypatch.setattr("jiuwenswarm.server.startup_switches.resolve_websocket_enabled",
+                        lambda **_kwargs: websocket_enabled)
 
     def _fake_rmtree(path, *args, **kwargs) -> None:
         _ = args, kwargs
@@ -75,7 +82,13 @@ async def test_run_does_not_delete_agent_teams_directory(
     assert events == ["worker_started", "detached"]
     assert "attach" in fake_front.events
     assert "front_stop" in fake_front.events
-    assert fake_front.events.index("attach") < fake_front.events.index("front_start")
+    assert ("front_start" in fake_front.events) is websocket_enabled
+    if websocket_enabled:
+        assert fake_front.events.index("attach") < fake_front.events.index("front_start")
+    messages = [call.args[0] % call.args[1:] if len(call.args) > 1 else call.args[0]
+                for call in info.call_args_list]
+    assert any("port listening:" in message for message in messages) is websocket_enabled
+    assert any("startup stage=agent_ws_listening" in message for message in messages) is websocket_enabled
     assert removed_paths == []
 
 
