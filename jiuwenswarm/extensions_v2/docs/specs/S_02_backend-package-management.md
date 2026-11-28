@@ -5,7 +5,7 @@
 | 项 | 内容 |
 | --- | --- |
 | 类型 / 编号 | spec / S_02 |
-| 最近修订 | 2026-11-27 |
+| 最近修订 | 2026-11-28 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
 | 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md)、[F_35](../features/F_35_system-plugin-recovery.md) |
 
@@ -34,6 +34,12 @@
 Plan 或修改安装目录的参数。
 外部安装请求先校验绝对路径、`.zip` 后缀和文件类型，再交给 Core 校验归档、manifest 与依赖。
 此限制只在外部请求入口生效；启动通过 `load_installed()` 加载安装目录内的解压副本，不受影响。
+
+选择已安装版本时，直接重新启用该版本目录，不重新导入文件。启停操作会改写 `manifest.json.enable`，
+不会因此拒绝切回旧版本。安装记录保留原内容摘要；从外部导入相同 ID、相同版本但内容不同的系统插件时，仍拒绝安装。
+禁用或卸载会等包内数据调用结束：仍有在途调用时返回 FAILED Report，`error.code` 为
+`EXTENSION_PACKAGE_BUSY`，包状态不变、可重试；界面按该 code 展示运行中任务的提示，不直接显示 Core 的英文模板。
+旧记录没有原内容摘要时，切换版本不会将安装副本当前内容记作原摘要；外部导入仍与现有安装副本比较，不能据此确认原始 ZIP 的内容。
 
 `extensions.v2.import` 是用户上传 ZIP 的入口，Gateway 仅透传，由 AgentServer 按
 `extensions.v2.install` 的单路径形态处理；只接受已存在的绝对 ZIP 文件，不接受目录，不返回 `kind`。

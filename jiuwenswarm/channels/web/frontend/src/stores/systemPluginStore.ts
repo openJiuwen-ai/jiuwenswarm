@@ -7,7 +7,7 @@ import {
 } from '../services/extensionsV2Api';
 import type { SystemPluginDetail, SystemPluginSummary } from '../types/systemPlugin';
 
-type MutationFailure = { ok: false; error: string };
+type MutationFailure = { ok: false; error: string; code?: string };
 type MutationResult = { ok: true } | MutationFailure;
 type UninstallSuccess = { ok: true; detail: 'removed' | 'updated' | 'unavailable' };
 type UninstallResult = UninstallSuccess | MutationFailure;
@@ -49,6 +49,8 @@ interface SystemPluginState {
   installingIds: Record<string, boolean>;
   loading: boolean;
   error: string | null;
+  /** Stable report code of the last failure, e.g. ``EXTENSION_PACKAGE_BUSY``. */
+  errorCode: string | null;
   loadCatalog: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadMine: (options?: SystemPluginLoadOptions) => Promise<boolean>;
   loadDetail: (id: string, version?: string, cacheId?: string) => Promise<boolean>;
@@ -71,6 +73,12 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
 
 function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }
 
 export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
@@ -124,7 +132,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       return { ok: true, packages };
     } catch (error) {
       if (requestScope !== catalogScope() || listRequestSeq[scope] !== seq) return { ok: true };
-      if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error) });
+      if (!silent && !isTransientManagementError(error)) set({ error: messageOf(error), errorCode: null });
       return { ok: false };
     } finally {
       if (!silent) {
@@ -160,8 +168,9 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
       return await action();
     } catch (error) {
       const message = messageOf(error);
-      if (options?.reportError !== false) set({ error: message });
-      return { ok: false, error: message };
+      const code = errorCodeOf(error);
+      if (options?.reportError !== false) set({ error: message, errorCode: code ?? null });
+      return { ok: false, error: message, code };
     } finally {
       setBusy(id, false);
     }
@@ -199,8 +208,9 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
     installingIds: {},
     loading: false,
     error: null,
+    errorCode: null,
 
-    clearError: () => set({ error: null }),
+    clearError: () => set({ error: null, errorCode: null }),
 
     loadCatalog: async (options) => (await load('catalog', options)).ok,
 
@@ -214,7 +224,7 @@ export const useSystemPluginStore = create<SystemPluginState>((set, get) => {
         set((state) => ({ detailCache: { ...state.detailCache, [id]: next, [cacheId]: next } }));
         return true;
       } catch (error) {
-        if (!isTransientManagementError(error)) set({ error: messageOf(error) });
+        if (!isTransientManagementError(error)) set({ error: messageOf(error), errorCode: null });
         return false;
       }
     },

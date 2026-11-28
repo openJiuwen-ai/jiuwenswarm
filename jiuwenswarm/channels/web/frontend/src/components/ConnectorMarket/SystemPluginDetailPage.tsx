@@ -7,7 +7,7 @@ import { IconAvatar } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DefinitionFilePreview, findDefaultDefinitionFile } from '../AgentManagementPanel/DefinitionFilePreview';
 import type { AgentFileContent, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
-import { systemPluginApi } from '../../services/extensionsV2Api';
+import { EXTENSION_PACKAGE_BUSY, systemPluginApi } from '../../services/extensionsV2Api';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { toast } from '../ui/Toast/toastStore';
 import { localizedText } from '../../types/localized';
@@ -241,8 +241,13 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
         : {}),
     }));
 
+  const failureText = (failure: { error?: string; code?: string }) =>
+    failure.code === EXTENSION_PACKAGE_BUSY
+      ? t('connectorMarket.systemPlugin.busyMessage')
+      : failure.error ?? t('connectorMarket.common.loadFailed');
+
   async function runAction(
-    action: () => Promise<{ ok: boolean; error?: string }>,
+    action: () => Promise<{ ok: boolean; error?: string; code?: string }>,
     onDone?: () => void,
   ): Promise<boolean> {
     setActionError(null);
@@ -251,7 +256,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       onDone?.();
       return true;
     }
-    setActionError(result.error ?? t('connectorMarket.common.loadFailed'));
+    setActionError(failureText(result));
     return false;
   }
 
@@ -294,7 +299,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
     setActionError(null);
     const result = await uninstall(packageId, version, id);
     if (!result.ok) {
-      setActionError(result.error);
+      setActionError(failureText(result));
       return;
     }
     if (result.detail === 'removed') {

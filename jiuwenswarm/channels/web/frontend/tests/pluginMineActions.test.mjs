@@ -67,7 +67,7 @@ await build({
       }));
       builder.onLoad({ filter: /.*/, namespace: 'action-api' }, ({ path }) => ({
         contents: path === 'extensionsV2Api'
-          ? 'export const systemPluginApi = { catalog: (...args) => globalThis.systemPluginActionApi.catalog(...args) };'
+          ? 'export const EXTENSION_PACKAGE_BUSY = "EXTENSION_PACKAGE_BUSY"; export const systemPluginApi = { catalog: (...args) => globalThis.systemPluginActionApi.catalog(...args) };'
           : `export const ${path} = {};`,
         loader: 'js',
       }));
@@ -667,4 +667,27 @@ test('system plugin detail returns to the installed version when a switch fails'
   });
   assert.deepEqual(attempts, [['theme.pkg', '2.0.0', { reportError: false }]]);
   assert.deepEqual(loads.filter(([, version]) => version).at(-1), ['theme.pkg', '2.2.2']);
+});
+
+test('system plugin detail explains a busy package instead of showing the raw error', async () => {
+  await i18next.changeLanguage('zh');
+  resetState();
+  globalThis.systemPluginActionState.detailCache['theme.pkg'] = themeDetail([
+    { version: '2.2.2', status: 'active' },
+  ]);
+  globalThis.systemPluginActionState.setEnabled = async () => ({
+    ok: false,
+    error: "package has in-flight calls, package_id='theme.pkg'",
+    code: 'EXTENSION_PACKAGE_BUSY',
+  });
+
+  await render(SystemPluginDetailPage, { id: 'theme.pkg', onBack() {} }, async host => {
+    const toggle = host.querySelector('[data-testid="connector-market-system-plugin-detail-enabled"] button');
+    assert.ok(toggle);
+    await act(async () => toggle.click());
+    const error = host.querySelector('[data-testid="connector-market-system-plugin-detail-error"]');
+    assert.ok(error);
+    assert.equal(error.textContent, '存在运行中任务使用当前插件，请任务结束或者强制终止后再操作。');
+    assert.doesNotMatch(host.textContent, /in-flight/);
+  });
 });
