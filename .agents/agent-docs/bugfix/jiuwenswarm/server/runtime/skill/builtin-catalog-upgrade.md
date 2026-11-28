@@ -48,6 +48,12 @@ Windows，项目 `.venv` Python 3.12.13，未运行全量 UT、格式化或静�
 
 Web Channel 不暴露 `skills.sync.reload`，首次直接 WS 通知得到 METHOD_NOT_FOUND；改用产品已有 `_call_agent_skill_rpc` 经 AgentServer 的一次性 RPC 连接通知 `SKILL_SYNC_RELOAD`，传 `applied: []`，只重载缓存，不重建 Agent 实例。随后从真实 Web Gateway 再次查询 `skills.list`：builtin 列表严格为 `[workswarm-builtin]`，docx-pro 来源为 local，总目录描述含 App Market。没有重启宿主或中断会话。浏览器页面最终渲染及真实模型自主检索未验证，不将列表 RPC 证据描述为 UI 点击验收。
 
+## 2026-11-26 专家创建器升级补充
+
+旧目录版 `agent-creator` 注册到 `domain/agent/workspace`。上游已将专家写入与读取统一到 `profile/agent/workspace`，已安装的旧目录版缺少可信指纹，升级后可能继续使用旧脚本。将提交 `20b5193f9d97cd4b806161dac548ca3e35bc7c4e` 中该能力整树的指纹加入 `legacy_versions.json`。沿用现有迁移逻辑归档精确匹配的副本并安装当前版本，保留用户修改。此前写入旧目录的专家包仍需单独恢复。
+
+在 macOS 和 Python 3.12 上使用真实历史资源树验证了旧脚本注册到旧目录、升级后注册到运行时工作空间、用户修改保留以及首次安装四个场景。升级场景在未添加指纹的基线复现失败，添加后四项通过。验证覆盖脚本和安装记录，未执行真实对话或浏览器验收。
+
 ## 交接
 
 当前运行数据已修正，刷新技能面板可获取新列表。持续处理以后旧安装残留的代码需要服务下一次重启加载；当前进程的资源与状态已通过既有接口刷新。本次修复尚未提交。当前契约见 `S_01_builtin-catalog`，初次实施见 `F_20261103_1149_builtin-skill-catalog`。
