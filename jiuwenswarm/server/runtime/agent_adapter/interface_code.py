@@ -1959,6 +1959,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             *([_RailBuildInfo("_permission_rail", lambda: group["_permission_rail"])]
               if group is not None else self._permission_interrupt_rail_infos(config_base)),
             _RailBuildInfo("_code_filesystem_rail", self._build_filesystem_rail),
+            _RailBuildInfo("_cron_storage_rail", self._build_cron_storage_rail),
             _RailBuildInfo("_agent_md_prompt_rail", self._build_agent_md_prompt_rail),
             _RailBuildInfo("_coding_memory_rail", self._build_legacy_coding_memory_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
