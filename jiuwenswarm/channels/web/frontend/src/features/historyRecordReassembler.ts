@@ -55,6 +55,64 @@ export class HistoryRecordReassembler {
   }
 }
 
+/**
+ * Cross-stream record dedupe for one history restore handle.
+ *
+ * A session can end up with two concurrent ``history.get`` streams (bootstrap
+ * racing a recovery refresh): ``shouldProcessHistoryPayload`` filters frames
+ * by session/subagent/cursor only, so every listener receives the frames of
+ * both streams and the same record is merged into the timeline twice —
+ * messages render in pairs.
+ *
+ * The identity key mirrors the store-level precedent
+ * ``mergeUniqueMessages`` (``id:content``), strengthened with tool identity:
+ * neither ``id`` nor ``(id, event_type)`` is unique per record.  The backend
+ * builds ``id = f"{request_id}:{role}"`` with no sequence
+ * (session_history.py), so one request's N tool calls, a team round's N+1
+ * finals, or two large finals of the same request all share an id (and
+ * event_type).  Agentic tool-loop frames even share ``content=''`` (verified
+ * 2026-11-22: every chat.tool_call record of one request carried empty
+ * content, distinguished only by ``tool_call.tool_call_id``), so the key
+ * adds the tool identity — ``tool_call.tool_call_id`` for call records,
+ * flattened ``tool_call_id`` for result records, and the nested
+ * ``tool_result.tool_call_id`` shape written when a run is cancelled
+ * (interface_deep.py).  A duplicated stream replays byte-identical records,
+ * so nothing in the key weakens the dedupe.
+ *
+ * Records without an ``id`` are passed through unchanged — dedupe never drops
+ * a frame it cannot identify.  ``event_type`` may legitimately be absent
+ * (user records never carry one — see session_history.py), so it defaults to
+ * ``''`` instead of disabling dedupe; otherwise the duplicated user bubbles
+ * of JW-66 would survive.
+ */
+export class HistoryRecordDeduper {
+  private seen = new Set<string>();
+
+  /**
+   * Returns true when the record was already observed by this handle and
+   * should be dropped; false (and registers it) for first sightings.
+   */
+  isDuplicate(record: Record<string, unknown>): boolean {
+    const id = typeof record.id === 'string' ? record.id : '';
+    if (!id) return false;
+    const eventType = typeof record.event_type === 'string' ? record.event_type : '';
+    const content = record.content;
+    const toolCall = isRecord(record.tool_call) ? record.tool_call : null;
+    const toolResult = isRecord(record.tool_result) ? record.tool_result : null;
+    const toolCallId =
+      (typeof toolCall?.tool_call_id === 'string' && toolCall.tool_call_id) ||
+      (typeof record.tool_call_id === 'string' && record.tool_call_id) ||
+      (typeof toolResult?.tool_call_id === 'string' && toolResult.tool_call_id) ||
+      '';
+    const key = `${id}\u0000${eventType}\u0000${toolCallId}\u0000${
+      typeof content === 'string' ? content : JSON.stringify(content ?? '')
+    }`;
+    if (this.seen.has(key)) return true;
+    this.seen.add(key);
+    return false;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
