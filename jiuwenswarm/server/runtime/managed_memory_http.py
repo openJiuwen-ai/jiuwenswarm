@@ -2,6 +2,7 @@
 
 import logging
 import sqlite3
+from collections.abc import Iterable
 from concurrent.futures import Future
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -260,7 +261,22 @@ class ManagedMemoryHttp:
             listener.httpd.end_management_call()
 
     def revoke_membership(self, kind: str, subject: str, *, team: str = "", project: str = "") -> None:
-        """Journal a revocation before attempting it on the personal listener."""
+        self._record_membership_change(kind, (subject,), team=team, project=project)
+
+    def restore_group_members(self, group: str, templates: Iterable[str]) -> None:
+        """Rejoin the installed package's subjects when this owner has memory history."""
+        if is_enterprise():
+            return
+        root = _memory_root()
+        if not (root / _REVOCATION_DB).is_file() and not (root / "memory/.shadow/members.db").is_file():
+            return
+        from jiuwenswarm.common.team_memory_binding import expert_memory_subject
+
+        agents = ("main_agent", *(expert_memory_subject(group, name) for name in templates))
+        self._record_membership_change("group_rejoin", agents, group=group)
+
+    def _record_membership_change(self, kind: str, subjects: Iterable[str], *,
+                                  team: str = "", project: str = "", group: str = "") -> None:
         with self._lock:
             listener = self._listener
             if listener is None or not listener.thread.is_alive():
@@ -272,26 +288,34 @@ class ManagedMemoryHttp:
             owner = _collective_owner(org, user)
             root = _memory_root()
             root.mkdir(parents=True, exist_ok=True)
-            with closing(sqlite3.connect(root / _REVOCATION_DB, timeout=1, isolation_level=None)) as db:
+            if group:
+                from jiuwenswarm.common.team_memory_binding import team_memory_key
+
+                team = team_memory_key(*owner, group)
+            with closing(sqlite3.connect(root / _REVOCATION_DB, timeout=1)) as db, db:
                 db.execute(
                     "CREATE TABLE IF NOT EXISTS pending (id INTEGER PRIMARY KEY AUTOINCREMENT, "
                     "org TEXT, user TEXT, kind TEXT, subject TEXT, team TEXT, project TEXT)"
                 )
-                db.execute(
+                db.executemany(
                     "INSERT INTO pending (org, user, kind, subject, team, project) VALUES (?, ?, ?, ?, ?, ?)",
-                    (org, user, kind, subject, team, project),
+                    [(org, user, kind, subject, team, project) for subject in subjects],
                 )
             if listener is not None:
                 listener.httpd.begin_management_call()
         if listener is not None:
             try:
-                self._replay_revocations(listener.server.api, root, owner)
+                self._replay_membership_changes(listener.server.api, root, owner)
+            except Exception as exc:
+                if not group:
+                    raise
+                logger.warning("Memory restoration for group %s is queued for retry (%s)", group, type(exc).__name__)
             finally:
                 listener.httpd.end_management_call()
 
-    def _replay_revocations(self, api: Any, root: Path, owner: tuple[str, str, str]) -> None:
+    def _replay_membership_changes(self, api: Any, root: Path, owner: tuple[str, str, str]) -> None:
         from jiuwenswarm.agents.harness.common.memory.team_memory_members import (
-            apply_membership_revocation,
+            apply_membership_change,
             supports_team_memory_membership,
         )
 
@@ -304,7 +328,7 @@ class ManagedMemoryHttp:
                 (owner[0], owner[2]),
             ).fetchall()
             for event_id, kind, subject, team, project in pending:
-                apply_membership_revocation(api, owner, kind, subject, team, project)
+                apply_membership_change(api, owner, kind, subject, team, project)
                 db.execute("DELETE FROM pending WHERE id = ?", (event_id,))
 
     def start(self, host_config: dict[str, Any], options: dict[str, Any], *,
@@ -353,7 +377,7 @@ class ManagedMemoryHttp:
             with self._lock:
                 if startup.cancelled() or (cancelled is not None and cancelled.is_set()):
                     return {"running": False}
-                self._replay_revocations(server.api, root, _collective_owner(org, user))
+                self._replay_membership_changes(server.api, root, _collective_owner(org, user))
                 if cancelled is not None and cancelled.is_set():
                     return {"running": False}
                 httpd = _MemoryHTTPServer((_HOST, 0), _listener_handler(server, org, user))

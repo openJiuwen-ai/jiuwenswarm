@@ -14,7 +14,7 @@ import types
 import zipfile
 from pathlib import Path
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from PIL import Image
@@ -1076,6 +1076,105 @@ class TestAgentGroupLifecycle:
         assert after["source"] == "builtin"
         assert after["installed"] is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("offline_install", [False, True], ids=["online", "offline"])
+    async def test_reinstalled_group_recalls_previous_team_memory(
+        self, extension_workspace, tmp_path, monkeypatch, offline_install, caplog,
+    ):
+        from jiuwenswarm.agents.harness.common.memory import jiuwen_rail_builder, team_memory_members
+        from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+        from jiuwenswarm.common.team_memory_binding import team_memory_key
+        from jiuwenswarm.server.runtime import managed_memory_http as managed
+        from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
+
+        if not team_memory_members.supports_team_memory_membership():
+            pytest.skip("Requires JiuwenMemory collective membership support")
+        from jiuwen_memory.api import Dimension
+        from jiuwen_memory.common.llm.llm_impl.echo_llm import EchoLLM
+
+        group = "review"
+        source = _seed_valid_agent_group(tmp_path / "shelf/agent/workspace", group, under="resources")
+        monkeypatch.setattr(catalog, "get_equipment_resources_agent_groups_dir", lambda: source.parent)
+        config = {"memory": {"builtin": {"provider": "jiuwen"}}}
+        options = {"sdk": {"embedder": {"default": "hashing"}, "globals": {"embedder_dim": 64},
+                           "llm": {"default": "echo"}, "extractor": {"default": "keyword"}}}
+        fact = "Code review requires one approval before merge."
+
+        def chat(_model, messages, **_kwargs):
+            if len(messages) == 2 and "source_segments" in messages[1].content:
+                return json.dumps([{"source_id": "tool", "evidence": fact, "content": fact,
+                                    "kind": "experience", "destination": "team"}])
+            return messages[-1].content
+
+        monkeypatch.setattr(EchoLLM, "chat", chat)
+        manager = managed.ManagedMemoryHttp()
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+        monkeypatch.setattr(managed, "managed_memory_http", manager)
+        monkeypatch.setattr(managed, "get_agent_root_dir", lambda: tmp_path)
+        monkeypatch.setattr(managed, "bundled_memory_http_config", lambda: (config, options))
+        monkeypatch.setattr(jiuwen_rail_builder, "load_memory_config", lambda: config)
+        team = team_memory_key("local", "", "developer", group)
+        dimension = Dimension("local", "", "team", team)
+        admin = team_memory_members._admin_context("local")
+
+        def active_agents():
+            return {row.scope.agent for row in manager.call_collective_management(
+                "list_collective_members", dimension, status="active", security=admin,
+            )}
+
+        def new_session():
+            return SwarmBuildContext(config=config, mode="team.code.normal", memory_group=group,
+                                     memory_team=team, memory_project="project", memory_experts=("leader", "reviewer"))
+
+        async def leader_tool(name, args):
+            connection = {"mode": "http", **manager.connection_options()}
+            rail = jiuwen_rail_builder.build_jiuwen_memory_rail(
+                {"memory": {"builtin": {"jiuwen": connection}}}, scene="team", project="project",
+                team_binding={"team": team}, collective_agent="review:leader",
+            )
+            try:
+                await rail._provider.initialize(**rail._identity)
+                return json.loads(await rail._provider.handle_tool_call(name, args))
+            finally:
+                await rail._provider.shutdown()
+
+        catalog.install_agent_group({"id": group})
+        manager.start(config, options)
+        try:
+            ctx = new_session()
+            assert await team_memory_members.prepare_team_memory(ctx)
+            written = await leader_tool("team_memory_write", {"content": fact})
+            assert written["stored"], written
+            # A contributor from the old runtime is absent from the reinstalled package.
+            await ctx.extras["team.on_explicit_member_change"]("old", {"group": group, "name": "old"}, True)
+            assert "review:old" in active_agents()
+            await uninstall_organization_agent_group({"id": group})
+            assert not active_agents()
+            if not offline_install:
+                with monkeypatch.context() as patch:
+                    patch.setattr(team_memory_members, "apply_membership_change", Mock(side_effect=RuntimeError))
+                    catalog.install_agent_group({"id": group})
+                assert "group review is queued for retry" in caplog.text
+                assert not active_agents()
+        finally:
+            manager.stop()
+
+        if offline_install:
+            catalog.install_agent_group({"id": group})
+        manager.start(config, options)
+        try:
+            ctx = new_session()
+            assert await team_memory_members.prepare_team_memory(ctx)
+            assert active_agents() == {"main_agent", "review:leader", "review:reviewer"}
+            result = await leader_tool("team_memory_search", {"query": "code review", "target": "team"})
+            assert written["item_id"] in {hit["item_id"] for hit in result["hits"]}, result
+            await ctx.extras["team.on_explicit_member_change"]("reviewer", {"group": group, "name": "reviewer"}, False)
+            catalog.install_agent_group({"id": group})
+            assert await team_memory_members.prepare_team_memory(new_session())
+            assert "review:reviewer" not in active_agents()
+        finally:
+            manager.stop()
+
     def test_builtin_shelf_groups_install_once_on_startup(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1101,7 +1200,7 @@ class TestAgentGroupLifecycle:
             / "designer"
         )
         assert installed_copy.is_dir()
-        assert catalog.resolve_agent_group_dir("designer") == installed_copy.resolve()
+        assert catalog.resolve_agent_group_dir("designer").samefile(installed_copy)
         assert catalog.show_agent_group("designer")["installed"] is True
 
         # Second start: already seeded, user edits preserved, nothing re-copied.
@@ -1126,6 +1225,9 @@ class TestAgentGroupLifecycle:
             lambda: resource_package.parent,
         )
 
+        from jiuwenswarm.server.runtime.managed_memory_http import managed_memory_http
+
+        monkeypatch.setattr(managed_memory_http, "restore_group_members", Mock(side_effect=ValueError))
         assert catalog.ensure_builtin_agent_groups_installed() == ["designer"]
         installed_copy = (
             extension_workspace.parent.parent

@@ -4854,7 +4854,8 @@ def install_agent_group(params: dict) -> None:
         raise ValueError(f"agent_group package not found: {package_id}")
     package_dir, _ = resolved
     assert_no_symlinks(package_dir)
-    load_agent_group_package(Path(extended_path(package_dir)))
+    templates = load_agent_group_package(Path(extended_path(package_dir)))
+    already_installed = is_agent_group_installed(package_id)
     _install_package(
         package_id,
         kind=_AGENT_GROUP_KIND,
@@ -4862,6 +4863,17 @@ def install_agent_group(params: dict) -> None:
         package_type="agent_group",
         is_plugin=False,
     )
+    if not already_installed:
+        try:
+            from jiuwenswarm.server.runtime.managed_memory_http import managed_memory_http
+
+            managed_memory_http.restore_group_members(package_id, templates)
+        except Exception as exc:
+            logger.warning(
+                "Installed agent group %s, but could not schedule memory restoration (%s). "
+                "After resolving the memory error, uninstall and reinstall the group to retry.",
+                package_id, type(exc).__name__,
+            )
 
 
 def ensure_builtin_agent_groups_installed() -> list[str]:
