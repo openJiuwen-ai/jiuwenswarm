@@ -77,6 +77,7 @@ generated: true
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-workswarm-app-builder) |
 | [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
+| [jiuwenswarm/runtime/symphony](#module-jiuwenswarm-runtime-symphony) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
 | [jiuwenswarm/server/control/store](#module-jiuwenswarm-server-control-store) |
@@ -576,6 +577,7 @@ generated: true
 | [B_20261126_1631_shared-workspace-dir-metadata](bugfix/jiuwenswarm/common/B_20261126_1631_shared-workspace-dir-metadata.md) | B | 共享卷上工作区准备因已存在目录元数据 EPERM 导致 AgentServer 启动失败 | wangmingqi | 无独立 D：对既有工作区模板播种行为的局部缺陷修复与语义收紧，不新增架构方案。 |
 | [B_20261127_1021_rea-offline-cancel-recovery](bugfix/jiuwenswarm/channels/web/B_20261127_1021_rea-offline-cancel-recovery.md) | B | REA 断网取消后卡死且重装不可恢复 | zhongxiaotian | 无独立 D：修复现有 REA 安装作业的前端恢复语义，不改变后端安装协议或状态机。 |
 | [B_20261127_1636_macos-resident-worker-clock-drift](bugfix/jiuwenswarm/server/supervisor/B_20261127_1636_macos-resident-worker-clock-drift.md) | B | macOS 升级后旧 Worker 因创建时间漂移无法退出 | XINCHEN ZHANG | 无独立 D：在现有 Worker HELLO、部署归属和关闭应答契约内修复旧版兼容路径，无独立设计文档。 |
+| [B_20261128_1100_legacy-skill-graph-migration](bugfix/jiuwenswarm/runtime/B_20261128_1100_legacy-skill-graph-migration.md) | B | 升级后导入旧版技能图谱 | lin-xiaoyu | 无独立 D：恢复技能图谱的升级兼容，由现有 Core 发布流程维护新版图谱。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 | [S_01_process-identity](specs/jiuwenswarm/common/S_01_process-identity.md) | S | 受限系统进程身份与 PID 重用校验 | 刘瑜 | — |
@@ -817,6 +819,14 @@ generated: true
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261121_1817_parked-team-busy-snapshot-reseed](bugfix/jiuwenswarm/B_20261121_1817_parked-team-busy-snapshot-reseed.md) | B | 暂停后页面持续转圈：挂起团队忙闲快照读到内存名册残留 | zhanglongmin | 无独立 D：依据运行日志与逐跳代码核实定位，无独立设计文档；修复走 Core 既有公开契约，不修改 agent-core。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-runtime-symphony"></a>
+
+## jiuwenswarm/runtime/symphony
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261128_1100_legacy-skill-graph-migration](bugfix/jiuwenswarm/runtime/B_20261128_1100_legacy-skill-graph-migration.md) | B | 升级后导入旧版技能图谱 | lin-xiaoyu | 无独立 D：恢复技能图谱的升级兼容，由现有 Core 发布流程维护新版图谱。 |
 
 <a id="module-jiuwenswarm-server"></a>
 

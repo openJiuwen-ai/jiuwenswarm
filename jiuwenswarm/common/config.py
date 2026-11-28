@@ -4044,9 +4044,8 @@ _LEGACY_AGENT_SUBMODE_KEYS: tuple[str, ...] = ("plan", "fast", "agent.plan", "ag
 def _migrate_legacy_symphony_config(
     user_data: dict[str, Any],
     template_data: dict[str, Any],
-    user_config_path: Path,
 ) -> bool:
-    """Convert the Symphony section before merging defaults and back up the original YAML."""
+    """Convert the Symphony section before merging defaults."""
     symphony = user_data.get("symphony")
     if not isinstance(symphony, dict):
         return False
@@ -4057,16 +4056,63 @@ def _migrate_legacy_symphony_config(
         return False
 
     load_symphony_config({"symphony": converted})
+    user_data["symphony"] = converted
+    return True
+
+
+def _backup_legacy_symphony_config(user_config_path: Path) -> None:
     backup = user_config_path.with_name(f"{user_config_path.name}.symphony-legacy.bak")
     if backup.exists():
         backup = backup.with_name(f"{backup.stem}.{uuid.uuid4().hex}.bak")
     shutil.copy2(user_config_path, backup)
-    user_data["symphony"] = converted
     logger.warning(
         "Migrated legacy Symphony settings; original configuration is in %s. "
         "Old indexes need rebuilding; retired builder model/cache options are not used by the Runtime.",
         backup,
     )
+
+
+def _migrate_symphony_graph_on_upgrade(
+    user_config_path: Path,
+    user_data: dict[str, Any],
+    previous_version: object,
+    current_version: str,
+    legacy_symphony: dict[str, Any] | None,
+) -> bool:
+    """Import a legacy workspace graph before committing the new version stamp."""
+    if not isinstance(user_data.get("symphony"), dict) or user_config_path.resolve() != get_config_file().resolve():
+        return True
+    if previous_version is None or previous_version == "":
+        if legacy_symphony is None:
+            return True
+    else:
+        from jiuwenswarm.common.version_source import is_newer_runtime_version_label
+
+        if not isinstance(previous_version, str) or not is_newer_runtime_version_label(
+            current_version, previous_version,
+        ):
+            return True
+
+    from openjiuwen.core.common.exception.errors import BaseError
+
+    from jiuwenswarm.common.paths import get_symphony_dir
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    from jiuwenswarm.runtime.symphony.legacy_graph_migration import migrate_legacy_graph
+
+    try:
+        old_graph_dir = None
+        if legacy_symphony is not None:
+            legacy_paths = legacy_symphony.get("paths")
+            graph_dir = resolve_env_vars(legacy_paths.get("graph_dir")) if isinstance(legacy_paths, dict) else None
+            old_graph_dir = (
+                Path(graph_dir.strip()).expanduser().resolve()
+                if isinstance(graph_dir, str) and graph_dir.strip()
+                else get_symphony_dir() / "graph"
+            )
+        migrate_legacy_graph(load_symphony_config(user_data), legacy_graph_dir=old_graph_dir)
+    except (OSError, ValueError, BaseError):
+        logger.warning("Symphony graph upgrade did not finish; will retry on the next startup", exc_info=True)
+        return False
     return True
 
 
@@ -4185,12 +4231,14 @@ def migrate_config_from_template(
         user_data = load_yaml_round_trip(user_config_path)
         if user_data is None:
             user_data = {}
+        previous_version = user_data.get("config_version")
+        previous_symphony = user_data.get("symphony")
 
         # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
-        legacy_symphony_migrated = _migrate_legacy_symphony_config(user_data, template_data, user_config_path)
+        legacy_symphony_migrated = _migrate_legacy_symphony_config(user_data, template_data)
         # team_observability / agent_observability（以及旧的两个 team/agent 开关）
         # -> observability.enabled
         # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
@@ -4226,16 +4274,23 @@ def migrate_config_from_template(
         if not user_data:
             return False
 
-        # This diagnostic label does not control whether template migration runs.
+        # The template still syncs every startup. The version gates artifact upgrades only.
         from jiuwenswarm.common.version import get_runtime_version_label
 
         version_label = get_runtime_version_label()
+        if not _migrate_symphony_graph_on_upgrade(
+            user_config_path, user_data, previous_version, version_label,
+            previous_symphony if legacy_symphony_migrated else None,
+        ):
+            return False
         if user_data.get("config_version") != version_label:
             user_data["config_version"] = version_label
             changes += 1
 
         # Only write if there are actual changes
         if changes:
+            if legacy_symphony_migrated:
+                _backup_legacy_symphony_config(user_config_path)
             dump_yaml_round_trip(user_config_path, user_data)
             return True
 
