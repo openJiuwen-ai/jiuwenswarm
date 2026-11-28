@@ -36,6 +36,11 @@ from jiuwenswarm.runtime.symphony.llm import (
     reset_request_llm_config,
 )
 from jiuwenswarm.runtime.symphony.planning_inputs import DISPATCH_GRAPH_ATTR, PLANNING_INPUTS_ATTR
+from jiuwenswarm.agents.harness.common.rails.ask_user_disposition import (
+    CANCELLED as ASK_USER_CANCELLED,
+    LEGACY_MARKERS as ASK_USER_LEGACY_MARKERS,
+    SKIPPED as ASK_USER_SKIPPED,
+)
 from .expert_task_plan import ExpertTaskPlan, TASK_PLAN_PROVIDER
 from .skillpack_route import COMPOSE_CHOICE, PackRoute, SkillPackRouter, direct_route_mode
 
@@ -82,9 +87,10 @@ _INVOKE_ROUTE_KEY = "_symphony_orchestration_route"
 _PACK_RESUME_GUARD_KEY = "_skillpack_direct_route_pending"
 _PACK_DECLINE_ANSWERS = frozenset({
     COMPOSE_CHOICE,
-    # InteractionPrompt's existing internal protocol markers, not UI labels.
-    "用户已跳过此题，未选择任何选项。",
-    "用户已取消本次问答，未作答。",
+    # Bare sentinels + legacy InteractionPrompt skip/cancel phrases.
+    ASK_USER_SKIPPED,
+    ASK_USER_CANCELLED,
+    *ASK_USER_LEGACY_MARKERS,
 })
 _PACK_CHOICE_QUESTIONS = frozenset({
     "本地 SkillPack 可以完成该任务，请选择使用方式。",

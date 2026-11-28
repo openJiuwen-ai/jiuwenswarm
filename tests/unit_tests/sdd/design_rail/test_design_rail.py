@@ -799,8 +799,13 @@ def test_review_skill_defines_empty_skip_cancel_semantics(tmp_path: Path) -> Non
     body_end = payload.find("--- Methodology Body End ---")
     body = payload[body_start:body_end]
 
+    assert "[ASK_USER_SKIPPED]" in body
+    assert "[ASK_USER_CANCELLED]" in body
+    # Legacy phrases remain documented for old clients / history.
     assert "用户已跳过此题，未选择任何选项。" in body
     assert "用户已取消本次问答，未作答。" in body
+    assert "Skipped. No option selected." in body
+    assert "Cancelled. No answer provided." in body
     assert "NEVER call `ask_user` again" in body
 
 
@@ -925,6 +930,22 @@ async def test_after_tool_call_ask_user_approve_option_is_not_revision(
     assert rail._is_gate_revision(
         "是否需要修改？如有其他意见请说明，无需修改请直接确认。: 无需修改，进入下一阶段"
     ) is False
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Q: [ASK_USER_SKIPPED]",
+        "Q: [ASK_USER_CANCELLED]",
+        "Q: 用户已跳过此题，未选择任何选项。",
+        "Q: Skipped. No option selected.",
+        "Q: 用户已取消本次问答，未作答。",
+        "Q: Cancelled. No answer provided.",
+    ],
+)
+def test_gate_skip_cancel_sentinel_and_legacy_are_not_revision(answer: str) -> None:
+    rail = _make_rail(Path("/tmp"))
+    assert rail._is_gate_revision(answer) is False
 
 
 # ── Contract: the SKILL's structured questions pass the ask_user validation ──

@@ -778,7 +778,13 @@ async def test_real_session_guard_clear_preserves_another_owner():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answer_text", [
-    COMPOSE_CHOICE, "用户已跳过此题，未选择任何选项。", "用户已取消本次问答，未作答。",
+    COMPOSE_CHOICE,
+    "[ASK_USER_SKIPPED]",
+    "[ASK_USER_CANCELLED]",
+    "用户已跳过此题，未选择任何选项。",
+    "用户已取消本次问答，未作答。",
+    "Skipped. No option selected.",
+    "Cancelled. No answer provided.",
 ])
 async def test_declining_pack_exits_only_this_offer_and_limits_guidance(answer_text):
     session = Session(session_id="s-1")

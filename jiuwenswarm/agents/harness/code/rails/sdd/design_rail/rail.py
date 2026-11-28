@@ -28,6 +28,10 @@ import re
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 
+from jiuwenswarm.agents.harness.common.rails.ask_user_disposition import (
+    is_skipped_or_cancelled,
+)
+
 from jiuwenswarm.agents.harness.code.rails.sdd.design_rail import config_loader
 from jiuwenswarm.agents.harness.code.rails.sdd.common.rail_state_machine import (
     RailStateMachineBase,
@@ -63,15 +67,17 @@ _REGATE_CJK = tuple(kw for kw in _REGATE_KEYWORDS if not kw.isascii())
 # Gate-answer markers for the R3 user gate (SKILL.md). The gate answers with
 # a STRUCTURED question, so the answer text carries the chosen option label:
 #   "无需修改，进入下一阶段"       -> approve (no modifications)
-#   "用户已跳过此题，未选择任何选项。" -> approve (skipped == no modifications)
-#   "用户已取消本次问答，未作答。"     -> approve (cancelled == no modifications)
+#   [ASK_USER_SKIPPED] / legacy zh|en skip phrases
+#       -> approve (skipped == no modifications)
+#   [ASK_USER_CANCELLED] / legacy zh|en cancel phrases
+#       -> approve (cancelled == no modifications)
 #   "跳过复审"                     -> approve (re-gate declined)
 # Anything else is modification feedback (the "需要修改（请补充具体意见）"
 # option or the free text typed into the "Other" field).
-_GATE_APPROVE_MARKERS = (
+# Skip/Cancel sentinels + legacy are recognized via is_skipped_or_cancelled;
+# option labels stay here as substring markers.
+_GATE_APPROVE_OPTION_MARKERS = (
     "无需修改，进入下一阶段",
-    "用户已跳过此题，未选择任何选项。",
-    "用户已取消本次问答，未作答。",
     "跳过复审",
 )
 # Fixed rework map (config lists forward edges only).
@@ -262,7 +268,9 @@ class DesignRail(RailStateMachineBase):
         text = answer or ""
         if not text.strip():
             return False
-        for marker in _GATE_APPROVE_MARKERS:
+        if is_skipped_or_cancelled(text):
+            return False
+        for marker in _GATE_APPROVE_OPTION_MARKERS:
             if marker in text:
                 return False
         return True

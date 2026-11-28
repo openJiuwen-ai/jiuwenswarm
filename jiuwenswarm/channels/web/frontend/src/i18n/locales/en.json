@@ -6069,7 +6069,9 @@
     "confirm": "Confirm",
     "customOption": "Custom",
     "customPlaceholder": "No suitable option? Type your answer...",
-    "skippedSummary": "Skipped"
+    "skippedSummary": "Skipped",
+    "skippedAnswer": "Skipped. No option selected.",
+    "cancelledAnswer": "Cancelled. No answer provided."
   },
   "skillPackagePrompt": {
     "creating": "Creating…",
