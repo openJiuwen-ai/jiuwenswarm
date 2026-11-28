@@ -363,6 +363,38 @@ async def test_import_installs_a_package_from_a_zip(
     assert store.get("test.pkg", "1.0.0") is not None
 
 
+async def test_import_inspection_identifies_zip_without_installing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions_v2.assembly.get_webui_runtime",
+        lambda: SimpleNamespace(notify_packages_changed=notify),
+    )
+    source = archive_package(write_package(tmp_path / "source"))
+    adapter = PackageManagementAdapter()
+
+    inspected = await adapter.handle(
+        _request(ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source), "inspect": True})
+    )
+
+    assert inspected.ok
+    assert inspected.payload == {"package_id": "test.pkg"}
+    assert (await manager.query()).active == ()
+    assert not (manager.install_dir / "test.pkg").exists()
+    store = ExtensionInstallState.for_install_dir(manager.install_dir)
+    assert store.get("test.pkg", "1.0.0") is None
+    notify.assert_not_awaited()
+
+    imported = await adapter.handle(_request(ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}))
+
+    assert imported.ok
+    assert imported.payload["reports"][0]["status"] == "SUCCESS"
+    notify.assert_awaited_once_with(["test.pkg"])
+
+
 async def test_import_installs_a_bundle_and_writes_container_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
