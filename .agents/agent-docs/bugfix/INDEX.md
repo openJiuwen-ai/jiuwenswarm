@@ -237,6 +237,7 @@ generated: true
 | [B_20261126_2208_application-menu-slot-flicker](jiuwenswarm/extensions_v2/B_20261126_2208_application-menu-slot-flicker.md) | B | 左侧导航栏 application.menu 槽位切换会话时入口闪烁 | kusanagima | 无独立 D：依据 GitCode issue |
 | [B_20261127_1547_webui-slot-capacity](extensions/B_20261127_1547_webui-slot-capacity.md) | B | WebUI 槽位容量与投递回滚修复 | kusanagima | 无独立 D：基于现有 WebUI 槽位和投递契约的缺陷修复，无独立设计文档。 |
 | [B_20261128_0955_local-app-delete-safeguards](jiuwenswarm/extensions/app_market/B_20261128_0955_local-app-delete-safeguards.md) | B | 本地应用删除确认、目录保护与清理反馈 | kdgmpw | 无独立 D：在允许删除本地应用目录之后收紧同一删除路径的确认与保护条件，沿用 S_03 契约，无独立设计。 |
+| [B_20261128_1027_skill-graph-disabled-state](jiuwenswarm/channels/web/frontend/B_20261128_1027_skill-graph-disabled-state.md) | B | 技能图谱开关关闭时的页面误报 | lin-xiaoyu | 无独立 D：按现有编排开关和技能检索状态契约修复 Web 消费方。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-SkillPanel"></a>
 

@@ -1,4 +1,4 @@
-export type SkillRetrievalBuildStatus = 'idle' | 'running' | 'success' | 'failed' | 'cancelled';
+export type SkillRetrievalBuildStatus = 'disabled' | 'idle' | 'running' | 'success' | 'failed' | 'cancelled';
 export type SkillRetrievalCandidateScale = 'small' | 'large';
 export type SkillRetrievalStrategy =
   | 'legacy'
@@ -104,11 +104,6 @@ export function parseSkillRetrievalStatus(value: unknown): SkillRetrievalStatus 
     'effective_strategy',
     ['legacy', 'small_full', 'large_flat', 'indexed', 'indexed_stale'] as const,
   );
-  const indexRecommended = requireBoolean(value.index_recommended, 'index_recommended');
-  const expectedRecommendation = enabled && candidateScale === 'large' && !indexEnabled;
-  if (indexRecommended !== expectedRecommendation) {
-    throw new SkillRetrievalStatusContractError('index_recommended is inconsistent with the active switches and candidate scale');
-  }
   return {
     enabled,
     index_enabled: indexEnabled,
@@ -122,7 +117,7 @@ export function parseSkillRetrievalStatus(value: unknown): SkillRetrievalStatus 
       'candidate_budget_tokens',
     ),
     effective_strategy: effectiveStrategy,
-    index_recommended: indexRecommended,
+    index_recommended: requireBoolean(value.index_recommended, 'index_recommended'),
     layout: requireEnum(value.layout, 'layout', ['flat', 'tree'] as const),
     index_state: requireEnum(
       value.index_state,
@@ -133,7 +128,7 @@ export function parseSkillRetrievalStatus(value: unknown): SkillRetrievalStatus 
     build_status: requireEnum(
       value.build_status,
       'build_status',
-      ['idle', 'running', 'success', 'failed', 'cancelled'] as const,
+      ['disabled', 'idle', 'running', 'success', 'failed', 'cancelled'] as const,
     ),
     build_progress: requireProgress(value.build_progress),
     build_message: requireString(value.build_message, 'build_message'),

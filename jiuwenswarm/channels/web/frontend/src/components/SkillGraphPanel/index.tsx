@@ -127,6 +127,7 @@ export type SkillGraphPanelHandle = {
 type SkillGraphPanelProps = {
   /** 页面是否处于激活状态；为 false 时停止后端轮询。 */
   isActive?: boolean;
+  orchestrationEnabled: boolean;
   onReadingChange?: (reading: boolean) => void;
   onBuildAccepted?: (mode: SymphonyBuildMode) => void;
 };
@@ -747,10 +748,11 @@ function buildLogSignature(entries?: BuildLogEntry[]): string {
 }
 
 export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanelProps>(function SkillGraphPanel(
-  { isActive = true, onReadingChange, onBuildAccepted },
+  { isActive = true, orchestrationEnabled, onReadingChange, onBuildAccepted },
   ref,
 ) {
   const { t } = useTranslation();
+  const canReadGraph = isActive && orchestrationEnabled;
   const { ref: panelRef, isFullscreen: isGraphFullscreen, toggle: toggleGraphFullscreen } = useFullscreenPanel<HTMLDivElement>();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const graphRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
@@ -1034,11 +1036,12 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     };
   }, [autoFitRequest, fitView, visible.nodes.length, visible.edges.length]);
 
-  const loadGraph = useCallback(async () => {
+  const loadGraph = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     let keepLoading = false;
     try {
-      const data = await webRequest<SkillGraphPayload>('skills.graph.get', {}, { timeoutMs: 60_000 });
+      const data = await webRequest<SkillGraphPayload>('skills.graph.get', {}, { timeoutMs: 60_000, signal });
+      if (signal?.aborted) return;
       applyBuildLog(data);
       if (isTerminalBuildStatus(data.build_progress?.status)) {
         observedTerminalBuildSignatureRef.current = terminalBuildSignature(data);
@@ -1079,32 +1082,16 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       }
       requestAutoFit();
     } catch (err) {
+      if (signal?.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
       setPayload(null);
       setGraph({ nodes: [], edges: [] });
     } finally {
-      if (!keepLoading) {
+      if (!keepLoading && !signal?.aborted) {
         setLoading(false);
       }
     }
   }, [applyBuildLog, requestAutoFit, t]);
-
-  const restoreBuildStatus = useCallback(async (): Promise<boolean> => {
-    const data = await webRequest<SkillGraphStatus>(
-      'skills.graph.status',
-      {},
-      { timeoutMs: 60_000 },
-    );
-    applyBuildLog(data);
-    const isRunning = isBuildRunningPayload(data);
-    externalBuildRunningRef.current = isRunning;
-    if (isRunning) {
-      setShowBuildLogPanel(true);
-      setLoading(true);
-      return true;
-    }
-    return false;
-  }, [applyBuildLog]);
 
   const rebuildGraph = useCallback(async (mode: SymphonyBuildMode) => {
     const force = mode === 'full';
@@ -1205,28 +1192,33 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   }, [applyBuildLog, resetBuildUiOnTerminalStatus, t]);
 
   useEffect(() => {
-    let stopped = false;
+    if (!canReadGraph) return undefined;
+    const controller = new AbortController();
+    const { signal } = controller;
     const restore = async () => {
       try {
-        const isRunning = await restoreBuildStatus();
-        if (!stopped && !isRunning) {
-          await loadGraph();
+        const data = await webRequest<SkillGraphStatus>('skills.graph.status', {}, { timeoutMs: 60_000, signal });
+        if (signal.aborted) return;
+        applyBuildLog(data);
+        const isRunning = isBuildRunningPayload(data);
+        externalBuildRunningRef.current = isRunning;
+        if (isRunning) {
+          setShowBuildLogPanel(true);
+          setLoading(true);
+          return;
         }
       } catch {
-        if (!stopped) {
-          await loadGraph();
-        }
+        // Read the graph directly if the build status is unavailable.
       }
+      if (!signal.aborted) await loadGraph(signal);
     };
 
     void restore();
-    return () => {
-      stopped = true;
-    };
-  }, [loadGraph, restoreBuildStatus]);
+    return () => controller.abort();
+  }, [applyBuildLog, canReadGraph, loadGraph]);
 
   useEffect(() => {
-    if (!shouldPollSkillGraph({ isActive, updating, whenUpdating: true })) return undefined;
+    if (!shouldPollSkillGraph({ isActive: canReadGraph, updating, whenUpdating: true })) return undefined;
 
     let stopped = false;
     let timer: number | null = null;
@@ -1265,10 +1257,10 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, isActive, loadGraph, resetBuildUiOnTerminalStatus, updating]);
+  }, [applyBuildLog, canReadGraph, loadGraph, resetBuildUiOnTerminalStatus, updating]);
 
   useEffect(() => {
-    if (!shouldPollSkillGraph({ isActive, updating, whenUpdating: false })) return undefined;
+    if (!shouldPollSkillGraph({ isActive: canReadGraph, updating, whenUpdating: false })) return undefined;
 
     let stopped = false;
     let timer: number | null = null;
@@ -1320,7 +1312,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, isActive, loadGraph, resetBuildUiOnTerminalStatus, updating]);
+  }, [applyBuildLog, canReadGraph, loadGraph, resetBuildUiOnTerminalStatus, updating]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1637,8 +1629,8 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const isGraphBuildRunning = buildProgress?.status === 'running';
   const isGraphBuildError = buildProgress?.status === 'error';
   const isGraphBuildCancelled = buildProgress?.status === 'cancelled';
-  const isBusy = loading || updating;
-  const canCancelBuild = (updating || isGraphBuildRunning) && !cancellingBuild;
+  const isBusy = orchestrationEnabled && (loading || updating);
+  const canCancelBuild = orchestrationEnabled && (updating || isGraphBuildRunning) && !cancellingBuild;
   const isIncrementalBuild = updating && buildMode === 'incremental';
   const isFullBuild = updating && buildMode === 'full';
   const manifest = payloadManifest(payload);
@@ -1659,7 +1651,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const buildMetricsText = [tokenUsageText, elapsedText].filter(Boolean).join(' · ');
 
   const detailTasks = selectedNode ? asDetailItems(selectedNode.properties.tasks, t('skills.graph.required')) : [];
-  const visibleError = error;
+  const visibleError = orchestrationEnabled ? error : null;
   const graphIsEmpty = graph.nodes.length === 0;
   const filteredGraphIsEmpty = graph.nodes.length > 0 && visible.nodes.length === 0;
   const showCanvasEmptyState = !isBusy && !visibleError;
@@ -1674,7 +1666,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
 
   useImperativeHandle(ref, () => ({
     refresh: () => {
-      if (isBusy) {
+      if (!canReadGraph || isBusy) {
         return false;
       }
       void loadGraph();
@@ -1682,11 +1674,11 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     },
     startIncrementalBuild: () => rebuildGraph('incremental'),
     cancelActiveBuild,
-  }), [cancelActiveBuild, isBusy, loadGraph, rebuildGraph]);
+  }), [cancelActiveBuild, canReadGraph, isBusy, loadGraph, rebuildGraph]);
 
   useEffect(() => {
-    onReadingChange?.(loading);
-  }, [loading, onReadingChange]);
+    onReadingChange?.(orchestrationEnabled && loading);
+  }, [loading, onReadingChange, orchestrationEnabled]);
 
   useEffect(() => () => {
     onReadingChange?.(false);
@@ -1704,7 +1696,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           <button
             type="button"
             onClick={() => void rebuildGraph('incremental').catch(() => undefined)}
-            disabled={isBusy}
+            disabled={!canReadGraph || isBusy}
             data-testid="skill-graph-panel-action-incremental-build"
             title={t('skills.graph.actions.incrementalBuild')}
           >
@@ -1724,7 +1716,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           <button
             type="button"
             onClick={() => void rebuildGraph('full').catch(() => undefined)}
-            disabled={isBusy}
+            disabled={!canReadGraph || isBusy}
             data-testid="skill-graph-panel-action-full-rebuild"
             title={t('skills.graph.actions.fullRebuild')}
           >
@@ -1745,7 +1737,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           </ul>
         </section>
 
-        {(updating || showBuildLogPanel) ? (
+        {orchestrationEnabled && (updating || showBuildLogPanel) ? (
           <div data-testid="skill-graph-panel-build-log" className="skill-graph-panel__build-log">
             <div data-testid="skill-graph-panel-progress-head" className="skill-graph-panel__progress-head">
               <span data-testid="skill-graph-panel-progress-title">{progressTitle}</span>
@@ -1922,7 +1914,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         />
         {showCanvasEmptyState && graphIsEmpty ? (
           <div data-testid="skill-graph-panel-empty-graph" className="skill-graph-panel__canvas-empty">
-            {t('skills.graph.emptyGraph')}
+            {t(orchestrationEnabled ? 'skills.graph.emptyGraph' : 'skills.graph.orchestration.disabledEmptyGraph')}
           </div>
         ) : showCanvasEmptyState && filteredGraphIsEmpty ? (
           <div data-testid="skill-graph-panel-empty-filtered" className="skill-graph-panel__canvas-empty">
