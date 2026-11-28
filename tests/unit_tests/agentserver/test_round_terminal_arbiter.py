@@ -164,18 +164,70 @@ async def test_settle_true_defers_then_clean_terminal(monkeypatch) -> None:
     terminals = h.terminals()
     assert len(terminals) == 1
     assert "error" not in terminals[0]
+    # 非降级 settle 轮保持旧行为：只发帧，不 park 运行时（是否全部释放待拍板）
+    assert h.cascades == []
 
 
 @pytest.mark.asyncio
-async def test_settle_none_retries_then_abandons(monkeypatch) -> None:
-    """读数持续未就绪超过 3 次 → 放弃（不补终态，维持等 team.completed）。"""
+async def test_settle_true_degraded_cascades_park(monkeypatch) -> None:
+    """降级轮（建团失败）settle 收口后必须级联 park 运行时。"""
+    _fast_windows(monkeypatch)
+    h = _Harness(settled_seq=[True], degraded=True, degraded_detail="build failed")
+    arb = h.build()
+    try:
+        assert await arb.propose({"source": ProposalSource.SETTLE}) == Outcome.DEFERRED
+        for _ in range(100):
+            if h.terminals():
+                break
+            await asyncio.sleep(0.01)
+        terminals = h.terminals()
+        assert len(terminals) == 1
+        # 降级轮按"完成+告警"：终态必须携带降级详情（不是干净完成）
+        assert terminals[0]["error"] == "build failed"
+        assert h.cascades == ["settle-degraded"]
+    finally:
+        arb.close()
+
+
+@pytest.mark.asyncio
+async def test_settle_none_transient_does_not_force_error(monkeypatch) -> None:
+    """读数短暂 None（低于强制预算）→ 仍走正常 settle，不得升级成失败帧。"""
+    _fast_windows(monkeypatch, quiet=0.01)
+    monkeypatch.setattr(arb_mod, "SETTLE_NONE_MAX_ATTEMPTS", 30)
+    h = _Harness(settled_seq=[None, None, None, True])
+    arb = h.build()
+    try:
+        assert await arb.propose({"source": ProposalSource.SETTLE}) == Outcome.DEFERRED
+        for _ in range(200):
+            if h.terminals():
+                break
+            await asyncio.sleep(0.01)
+        terminals = h.terminals()
+        assert len(terminals) == 1
+        assert "error" not in terminals[0]
+    finally:
+        arb.close()
+
+
+@pytest.mark.asyncio
+async def test_settle_none_exhausted_forces_error_terminal(monkeypatch) -> None:
+    """读数持续未就绪超过上限 → 强制 error 终态。
+    """
     _fast_windows(monkeypatch)
     h = _Harness(settled_seq=[None])
     arb = h.build()
-    assert await arb.propose({"source": ProposalSource.SETTLE}) == Outcome.DEFERRED
-    await asyncio.sleep(0.08)
-    assert h.terminals() == []
-    assert arb.completion_signals == 0
+    try:
+        assert await arb.propose({"source": ProposalSource.SETTLE}) == Outcome.DEFERRED
+        for _ in range(100):
+            if h.terminals():
+                break
+            await asyncio.sleep(0.01)
+        terminals = h.terminals()
+        assert len(terminals) == 1
+        assert terminals[0]["error"] == arb_mod.UNCONFIRMED_FINAL_STATE_TEXT
+        assert arb.completion_signals == 1
+    finally:
+        arb.close()
 
 
 @pytest.mark.asyncio
@@ -723,3 +775,32 @@ async def test_member_exhausted_error_terminal_with_cascade() -> None:
     assert outcome == Outcome.EMITTED_ERROR
     assert h.terminals()[0]["error"] == "成员 m1 耗尽后任务无人接棒"
     assert h.cascades == ["member-exhausted"]
+
+
+@pytest.mark.asyncio
+async def test_settle_unknown_exhausted_degraded_soft_terminal(monkeypatch) -> None:
+    """降级标记在场时耗尽兜底按「完成+告警」：终态携带降级详情。"""
+    _fast_windows(monkeypatch, quiet=0.01)
+    monkeypatch.setattr(arb_mod, "SETTLE_NONE_MAX_ATTEMPTS", 2)
+    h = _Harness(
+        settled_seq=[None],
+        degraded=True,
+        degraded_detail="build_team failed: injected leader registration failure",
+    )
+    arb = h.build()
+    try:
+        await arb.propose({"source": ProposalSource.SETTLE})
+        for _ in range(100):
+            if h.terminals():
+                break
+            await asyncio.sleep(0.01)
+        terminals = h.terminals()
+        assert len(terminals) == 1
+        assert terminals[0]["error"] == (
+            "build_team failed: injected leader registration failure"
+        )
+        assert h.terminal_marked is True
+        # 降级未知轮耗尽兜底同样停运行时
+        assert h.cascades == ["settle-unknown-degraded"]
+    finally:
+        arb.close()

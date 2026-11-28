@@ -34,6 +34,22 @@ def _patch_progress(monkeypatch: pytest.MonkeyPatch, value):
     monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot", _progress)
 
 
+def test_read_progress_returns_four_tuple_with_member_count() -> None:
+    """形状契约：_read_progress 返回 (in_flight, pending, recent, member_count)。
+
+    看门狗/DB 对照的 fake 曾出现 3 元/4 元混用（PM-103 检视）；生产形状以
+    本用例为准，调用方用 *extra 兼容旧 3 元 fake。
+    """
+    snapshot = {
+        "members": [
+            {"status": "ready", "execution_status": "idle"},
+            {"status": "busy", "execution_status": "running"},
+        ],
+        "tasks": [],
+    }
+    assert team_stall_watchdog._read_progress(snapshot) == (1, 0, False, 2)
+
+
 def _patch_unread(monkeypatch: pytest.MonkeyPatch, value):
     async def _unread(_cid, _sid):
         return value

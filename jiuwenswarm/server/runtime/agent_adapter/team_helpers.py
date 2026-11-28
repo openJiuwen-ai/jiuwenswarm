@@ -2466,9 +2466,11 @@ _LEADER_ROUND_DEATH_PROBE_SEC = 30.0
 # settle 补判终态的静默确认窗（秒）：settle 是瞬时快照，leader 发言当口任务板
 # 恰空会被误判"回合落定"——终态延迟一个窗口发出，窗口内有新内容帧即作废。
 _SETTLE_TERMINAL_QUIET_SEC = 2.0
-# settle 读数未就绪（None）时的续窗重试上限：monitor 快照/DB 就绪通常在秒级，
-# 超过仍不就绪才放弃（放弃=维持旧行为等 team.completed，不会更糟）。
-_SETTLE_TERMINAL_MAX_ATTEMPTS = 3
+# settle 读数未就绪（None）的续窗上限：耗尽后强制发终态，
+# 不再是旧语义的"放弃等 team.completed"。读数不可得可能是 DB 读池饱和/
+# 30s 看门狗级抖动，3 窗（≈6s）会把瞬时不可用升级成不可逆失败帧；
+# 取 30 窗 ×2s ≈ 60s，覆盖看门狗量级后再兜底。
+_SETTLE_TERMINAL_MAX_ATTEMPTS = 30
 # settle False（确未落定）的两层重评预算：final 当口的 False 多为
 # leader 收尾迁移落库前的毫秒级时序差或成员排空
 # 途中，裸赌 team.completed 会把「边沿未触发/门槛泄漏/零任务门禁」的接续轮
@@ -2872,7 +2874,8 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
                 session_id,
             )
             return None
-        in_flight, pending, _recent = progress
+        # 第四元（成员数）是停摆看门狗新增的读数，settle 不用；兼容旧 3 元。
+        in_flight, pending, _recent, *_ = progress
         if in_flight > 0 or pending > 0:
             logger.info(
                 "[TeamHelpers] settle check not settled: in_flight=%d pending=%d "

@@ -8049,10 +8049,13 @@ def _install_stall_watchdog_fakes(monkeypatch: pytest.MonkeyPatch, broadcasted: 
         "TEAM_PROGRESS_UNAVAILABLE_TERMINAL_WINDOWS",
         3,
     )
+
     # 默认 DB 对照确认“零在途 + 有一项 pending”：停摆类用例走 DB 确认通道，
     # 不再依赖旧的“DB 不可用 → live-only 立即判死”语义。
+    # 形状与生产 team_progress_snapshot_db 一致：四元组，第 4 位是 DB roster
+    # 成员数（看门狗用 *extra 兼容旧 3 元 fake）。
     async def _db_confirmed(_cid, _sid):
-        return (0, 1, False)
+        return (0, 1, False, 0)
 
     monkeypatch.setattr(
         team_stall_watchdog,
@@ -8226,7 +8229,7 @@ async def test_team_stall_watchdog_quiet_when_db_shows_in_flight(monkeypatch: py
 
 @pytest.mark.asyncio
 async def test_team_stall_watchdog_fires_when_progress_data_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """进度读数连续不可用（DB 初始化/读取失败、team_name/快照解析不到）→
     不按 live-only 立即判“停摆”；达到独立门限后按“团队状态数据不可用”收口。"""
@@ -8257,7 +8260,7 @@ async def test_team_stall_watchdog_fires_when_progress_data_unavailable(
 
 @pytest.mark.asyncio
 async def test_team_stall_watchdog_defers_when_progress_unavailable_below_threshold(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """进度读数不可用未达门限 → 不提前收口（保留 live 证据，等下一窗口）。"""
     broadcasted: list[dict] = []
@@ -8281,7 +8284,7 @@ async def test_team_stall_watchdog_defers_when_progress_unavailable_below_thresh
 
 @pytest.mark.asyncio
 async def test_team_stall_watchdog_fires_after_intermittent_progress_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DB 间歇失败（None/确认交替）不会把两个门限互相清零：DB 确认窗口继续
     累计停摆证据，最终仍按“停摆”收口（回归评审 P2）。"""
@@ -8314,8 +8317,12 @@ async def test_team_stall_watchdog_fires_after_intermittent_progress_unavailable
 
 @pytest.mark.asyncio
 async def test_team_stall_watchdog_quiet_when_leader_kernel_running(monkeypatch: pytest.MonkeyPatch) -> None:
-    """leader kernel 协调循环 running = 回合仍在推进（agentic 迭代间隙/leader 长考
-    期间成员与 leader 的状态采样都是 ready，快照判定必误判）→ 不停摆。"""
+    """leader kernel running + leader 确有在途回合 = 回合仍在推进（agentic 迭代
+    间隙/leader 长考期间成员与 leader 的状态采样都是 ready）→ 不停摆。
+
+    问题一后收窄：kernel running 本身不再是赦免证据，零成员形态下还要
+    leader 自身在途（见下方零成员用例）。
+    """
     broadcasted: list[dict] = []
     handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
     _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
@@ -8323,7 +8330,11 @@ async def test_team_stall_watchdog_quiet_when_leader_kernel_running(monkeypatch:
     async def _alive(_cid, _sid):
         return True
 
+    async def _leader_busy(_cid, _sid):
+        return True
+
     monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _alive)
+    monkeypatch.setattr(team_stall_watchdog, "team_leader_in_flight", _leader_busy)
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-kernel", 1, liveness=lambda: 0, completion_signals=lambda: 0,
         # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
@@ -8333,6 +8344,119 @@ async def test_team_stall_watchdog_quiet_when_leader_kernel_running(monkeypatch:
     task.cancel()
 
     assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_fires_when_zero_members_and_leader_idle(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """零成员 + pending + leader 空闲：kernel running 不得永久赦免。
+
+    事故形态：build_team 半初始化（团队行已落库、零成员），leader 转 idle，协调循环仍
+    running——旧判定每窗口都把停摆计数清零，零成员时只有 leader 在途才算活。
+    """
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _alive(_cid, _sid):
+        return True
+
+    async def _leader_idle(_cid, _sid):
+        return False
+
+    async def _db_progress(_cid, _sid):
+        return (0, 1, False, 0)
+
+    monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _alive)
+    monkeypatch.setattr(team_stall_watchdog, "team_leader_in_flight", _leader_idle)
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_progress)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-zero-member", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        propose=_make_probe_arbiter(broadcasted).propose,
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    terminals = [
+        e for e in broadcasted
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete")
+    ]
+    assert len(terminals) == 1
+    assert "可执行成员" in terminals[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_quiet_zero_members_when_db_roster_not_empty(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """live 快照零成员但 DB roster 非空（live 视图滞后）→ 保守不判死。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _alive(_cid, _sid):
+        return True
+
+    async def _leader_idle(_cid, _sid):
+        return False
+
+    async def _db_progress(_cid, _sid):
+        return (0, 1, False, 2)
+
+    monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _alive)
+    monkeypatch.setattr(team_stall_watchdog, "team_leader_in_flight", _leader_idle)
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_progress)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-zero-lag", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        propose=_make_probe_arbiter(broadcasted).propose,
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_fires_when_leader_reading_stays_unreadable(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """leader 读数持续 None：宽限有界且不擦除既有停摆证据 → 最终仍判死。
+
+    旧实现宽限窗口把 stall_windows 清零、耗尽后又把宽限计数
+    归零，读数持续/间歇不可得时会在 1/0 间振荡，永远到不了确认门限。
+    """
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _alive(_cid, _sid):
+        return True
+
+    async def _leader_unreadable(_cid, _sid):
+        return None
+
+    async def _db_progress(_cid, _sid):
+        return (0, 1, False, 0)
+
+    monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _alive)
+    monkeypatch.setattr(
+        team_stall_watchdog, "team_leader_in_flight", _leader_unreadable
+    )
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_progress)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-zero-unreadable", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        propose=_make_probe_arbiter(broadcasted).propose,
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+
+    terminals = [
+        e for e in broadcasted
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete")
+    ]
+    assert len(terminals) == 1
+    assert "可执行成员" in terminals[0]["error"]
 
 
 @pytest.mark.asyncio

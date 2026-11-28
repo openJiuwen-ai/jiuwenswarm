@@ -55,6 +55,10 @@ TEAM_PROGRESS_UNAVAILABLE_TERMINAL_WINDOWS = 6
 # 推进活动。独立于判定窗口常量——测试会压缩判定窗口，判活视野不能跟着缩。
 TASK_ACTIVITY_HORIZON_SEC = 45.0
 
+# 零成员形态下 leader 在途读数不可得（DB 瞬态失败）时的宽限窗口数：
+# 有界宽限，不能因读数读不到就永久按 kernel running 赦免 4 窗 ≈ 3 分钟（默认 45s 窗口）。
+TEAM_STALL_ZERO_MEMBER_LIVENESS_GRACE_WINDOWS = 4
+
 # 任务终态集合：不在其中的都视为"待推进"
 TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
@@ -89,11 +93,19 @@ def _task_is_recently_active(task: dict[str, Any], horizon_ms: float) -> bool:
     return (time.time() * 1000 - updated_ms) < horizon_ms
 
 
-def _read_progress(snapshot: dict[str, Any] | None) -> tuple[int, int, bool] | None:
-    """从任一来源的快照读 (在途成员数, 未终态任务数, 窗口内有任务流转)。"""
+def _read_progress(
+        snapshot: dict[str, Any] | None,
+) -> tuple[int, int, bool, int] | None:
+    """从任一来源的快照读 (在途成员数, 未终态任务数, 窗口内任务流转, 成员数)。
+
+    第四元是快照里的非 leader 成员总数（成员面板语义，leader 已被剔除）：
+    零成员 + 有 pending 任务 + leader 空闲是"无人接棒"的确定性形态，停摆
+    判定不能再被 kernel lifecycle=running 无条件赦免。
+    """
     if not snapshot:
         return None
-    in_flight = sum(1 for m in snapshot.get("members", []) if _member_is_in_flight(m))
+    members = snapshot.get("members", []) or []
+    in_flight = sum(1 for m in members if _member_is_in_flight(m))
     pending = 0
     recent = False
     horizon_ms = TASK_ACTIVITY_HORIZON_SEC * 1000
@@ -103,16 +115,17 @@ def _read_progress(snapshot: dict[str, Any] | None) -> tuple[int, int, bool] | N
         pending += 1
         if _task_is_recently_active(t, horizon_ms):
             recent = True
-    return in_flight, pending, recent
+    return in_flight, pending, recent, len(members)
 
 
 async def team_progress_snapshot(
         channel_id: str | None, session_id: str
-) -> tuple[int, int, bool] | None:
+) -> tuple[int, int, bool, int] | None:
     """live 快照（monitor 内存视图）；不可用返回 None（调用方按"不停摆"退化）。
 
     快照源与死亡探针相同（team_monitor_handler.get_team_snapshot；members 已
     剔除 leader）；停摆判定需要同时看成员与任务，一次快照取齐。
+    返回四元组 (在途成员数, 未终态任务数, 窗口内任务流转, 非 leader 成员数)。
     """
     try:
         tm = get_team_manager(channel_id)
@@ -131,8 +144,11 @@ async def team_progress_snapshot(
 
 async def team_progress_snapshot_db(
         channel_id: str | None, session_id: str
-) -> tuple[int, int, bool] | None:
+) -> tuple[int, int, bool, int] | None:
     """DB 快照对照（team.db 落库真值）：live 判零在途时的第二读数。
+
+    与 live 快照同形：四元组，第 4 位是 DB roster 的非 leader 成员数
+    （零成员判定的 DB 对照真值）。
 
     DAO 直写点（recovery/restart 等路径）不经事件，live 内存视图可能滞后于
     DB；两队任一显示在途都按"不停摆"。team_name 解析链与
@@ -290,7 +306,11 @@ async def team_leader_in_flight(channel_id: str | None, session_id: str) -> bool
                     ) from read_err
                 raise
             if leader_row is None:
-                return None
+                # team_info 行存在（上方已校验）而 leader 成员行缺失 =
+                # 确定性的"不在途"（半建成/被移除），不是读数瞬态。返回
+                # None 会让 settle 复核永久未知、终态永不发出，团队流只剩
+                # keepalive。真正的读失败仍走下方异常路径返回 None。
+                return False
             exec_status = str(getattr(leader_row, "execution_status", "") or "")
             return exec_status in MEMBER_IN_FLIGHT_EXEC_STATUSES
         finally:
@@ -404,6 +424,7 @@ def schedule_team_stall_watchdog(
 
         stall_windows = 0
         progress_unavailable_windows = 0
+        zero_member_grace_windows = 0
         last_chunks = liveness()
         last_signals = completion_signals()
         while True:
@@ -421,6 +442,7 @@ def schedule_team_stall_watchdog(
                     last_signals = signals
                     stall_windows = 0
                     progress_unavailable_windows = 0
+                    zero_member_grace_windows = 0
                     last_chunks = liveness()
                     continue
                 current = liveness()
@@ -428,25 +450,83 @@ def schedule_team_stall_watchdog(
                     last_chunks = current
                     stall_windows = 0
                     progress_unavailable_windows = 0
+                    zero_member_grace_windows = 0
                     continue
                 progress = await team_progress_snapshot(channel_id, session_id)
                 if progress is None:
                     stall_windows = 0
                     progress_unavailable_windows = 0
                     continue
-                in_flight, pending, recent = progress
+                # 第四元兼容旧 3 元 fake（测试/旧接口）：缺失时按"成员数未知"
+                # 处理，退回既有判定，不因未知就误判零成员。
+                in_flight, pending, recent, *extra = progress
+                member_count = extra[0] if extra else None
                 if in_flight > 0 or pending == 0 or recent:
                     stall_windows = 0
                     progress_unavailable_windows = 0
+                    zero_member_grace_windows = 0
                     continue
                 # leader kernel 活性：agentic 迭代间隙/leader 长考期间成员与
                 # leader 的状态采样都是 ready，快照判定必误判——看运行时真值。
                 # None=不可达（信息缺失，继续既有判定）；False=leader 确实停了
                 alive = await team_runtime_liveness(channel_id, session_id)
-                if alive:
+                zero_member_round = False
+                if alive and member_count == 0:
+                    # 零成员特例：kernel lifecycle=running 只说明协调循环在线，
+                    # 并不证明回合还能推进——没有任何非 leader 成员能认领
+                    # pending 任务（建团半成品 + 零成员 + 待召唤）。只有 leader
+                    # 自身确有在途回合（例如即将 spawn/派工）才赦免；读数
+                    # 不可得也只给有界宽限。
+                    zero_member_round = True
+                    try:
+                        leader_busy = await team_leader_in_flight(
+                            channel_id, session_id
+                        )
+                    except TeamNotEstablishedError:
+                        # 团队行已不存在：确定性终结，按"leader 不在途"处理。
+                        leader_busy = False
+                    if leader_busy is True:
+                        zero_member_grace_windows = 0
+                        stall_windows = 0
+                        progress_unavailable_windows = 0
+                        continue
+                    if (
+                            leader_busy is None
+                            and zero_member_grace_windows
+                            < TEAM_STALL_ZERO_MEMBER_LIVENESS_GRACE_WINDOWS
+                    ):
+                        zero_member_grace_windows += 1
+                        logger.info(
+                            "[TeamStallWatchdog] zero-member round with "
+                            "unreadable leader state; bounded grace "
+                            "window=%s/%s session_id=%s",
+                            zero_member_grace_windows,
+                            TEAM_STALL_ZERO_MEMBER_LIVENESS_GRACE_WINDOWS,
+                            session_id,
+                        )
+                        # 本窗口不累加停摆证据，但不清除既有证据——与
+                        # "进度读数不可用"分支同口径（保留已确认窗口）。
+                        # 若在此清零，宽限期会反复擦掉 stall_windows，
+                        # 读数持续/间歇不可得时永远到不了确认门限。
+                        progress_unavailable_windows = 0
+                        continue
+                    logger.warning(
+                        "[TeamStallWatchdog] zero-member round without an "
+                        "in-flight leader (leader_state=%s) — kernel running "
+                        "no longer excuses the stall: session_id=%s",
+                        leader_busy,
+                        session_id,
+                    )
+                    # 不再把宽限计数归零：宽限只有一次预算，耗尽后后续窗口
+                    # 持续走判死累计路径；仅 leader 恢复在途/零成员条件消失
+                    # 时才重置（见上方各分支）。
+                elif alive:
                     stall_windows = 0
                     progress_unavailable_windows = 0
+                    zero_member_grace_windows = 0
                     continue
+                else:
+                    zero_member_grace_windows = 0
                 # live 判零在途：DB 对照复核（live 内存视图滞后于 DAO 直写的
                 # 盲区兜底）。对照不可用分两类：
                 # - TeamNotEstablishedError：团队行已不存在（确定性终结/被删），
@@ -511,8 +591,25 @@ def schedule_team_stall_watchdog(
                     continue
                 progress_unavailable_windows = 0
                 if db_progress is not None:
-                    db_in_flight, db_pending, db_recent = db_progress
+                    db_in_flight, db_pending, db_recent, *db_extra = db_progress
+                    db_member_count = db_extra[0] if db_extra else None
                     if db_in_flight > 0 or db_recent:
+                        stall_windows = 0
+                        continue
+                    if (
+                            zero_member_round
+                            and db_member_count is not None
+                            and db_member_count > 0
+                    ):
+                        # 落库 roster 非空 → live 的“零成员”是滞后视图，
+                        # 不是真没有成员；保守不判死。
+                        logger.info(
+                            "[TeamStallWatchdog] live snapshot shows zero "
+                            "members but DB roster has %s member(s); treating "
+                            "as a stale view: session_id=%s",
+                            db_member_count,
+                            session_id,
+                        )
                         stall_windows = 0
                         continue
                     pending = max(pending, db_pending)
@@ -534,23 +631,32 @@ def schedule_team_stall_watchdog(
                     continue
                 logger.warning(
                     "[TeamStallWatchdog] team round stalled: channel_id=%s session_id=%s "
-                    "round_id=%s pending_tasks=%s idle_windows=%s",
+                    "round_id=%s pending_tasks=%s members=%s idle_windows=%s",
                     channel_id,
                     session_id,
                     round_id,
                     pending,
+                    member_count,
                     stall_windows,
                 )
                 # 判死提案交裁决器：去重/终态发帧/级联收流（追问按新首请求
                 # 走 RESUME_FROM_PAUSE，帧带新 request_id，前端归属链不断）
                 # 单点收口；source 字符串与裁决器决策矩阵对齐
+                if member_count == 0:
+                    stall_error = (
+                        f"团队任务停摆：{pending} 个任务待执行，但团队当前没有"
+                        "任何可执行成员（建团未完成或成员已全部移除）。"
+                        "请重新建团或重新发起任务"
+                    )
+                else:
+                    stall_error = (
+                        f"团队任务停摆：{pending} 个任务已下发但无成员执行，"
+                        "请追问推动或重新发起"
+                    )
                 outcome = await propose(
                     {
                         "source": "stall_watchdog",
-                        "error": (
-                            f"团队任务停摆：{pending} 个任务已下发但无成员执行，"
-                            "请追问推动或重新发起"
-                        ),
+                        "error": stall_error,
                     }
                 )
                 # 提案被否决 ≠ 已收口：去重命中（终态帧已发出、信号已递增）
