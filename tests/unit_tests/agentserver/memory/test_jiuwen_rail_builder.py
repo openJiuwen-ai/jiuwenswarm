@@ -827,6 +827,63 @@ async def test_jiuwen_rail_routes_same_named_projects_by_absolute_path(monkeypat
     assert tool_handler.call_args.args[1]["project"] == "testMemory"
 
 
+@pytest.mark.asyncio
+async def test_work_memory_sync_does_not_hold_next_turn_open(monkeypatch, tmp_path):
+    rail_module = pytest.importorskip("openjiuwen.harness.rails.memory.jiuwen_memory_rail")
+    rail_class = getattr(rail_module, "JiuwenMemoryRail", None)
+    if rail_class is None:
+        pytest.skip("Installed Core does not provide JiuwenMemoryRail")
+    monkeypatch.setattr("openjiuwen.harness.rails.JiuwenMemoryRail", rail_class, raising=False)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    writes = []
+
+    async def sync_turn(query, output, *, project, **_identity):
+        writes.append((query, output, project))
+        if query == "first":
+            started.set()
+            await release.wait()
+
+    factory = jrb._work_memory_spec({}, "").rail_factory
+    provider = SimpleNamespace(sync_turn=sync_turn, shutdown=AsyncMock())
+    rail = factory(provider)
+    rail._initialized = True
+    rail._turn_buffer = SimpleNamespace(finish=lambda ctx: (ctx.query, ctx.output))
+    agent = SimpleNamespace(_jiuwenswarm_memory_project_dir=str(tmp_path / "first"))
+    first = SimpleNamespace(agent=agent, query="first", output="one")
+    second = SimpleNamespace(agent=agent, query="second", output="two")
+
+    await rail.after_invoke(first)
+    drain = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        agent._jiuwenswarm_memory_project_dir = str(tmp_path / "second")
+        await asyncio.wait_for(rail.after_invoke(second), timeout=1)
+        assert [write[0] for write in writes] == ["first"]
+        agent._jiuwenswarm_memory_project_dir = str(tmp_path / "other")
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+        drain = asyncio.create_task(JiuWenSwarmDeepAdapter._drain_jiuwen_memory_rail(rail))
+        await asyncio.sleep(0)
+        assert not drain.done()
+        provider.shutdown.assert_not_awaited()
+        await rail.after_invoke(SimpleNamespace(agent=agent, query="during-close", output="ignored"))
+        assert len(rail._pending_syncs) == 2
+    finally:
+        release.set()
+        await asyncio.wait_for(rail.drain_pending_syncs(), timeout=1)
+        if drain is not None:
+            await asyncio.wait_for(drain, timeout=1)
+
+    provider.shutdown.assert_awaited_once()
+    await rail.after_invoke(SimpleNamespace(agent=agent, query="after-close", output="ignored"))
+    assert not rail._pending_syncs
+    assert writes == [
+        ("first", "one", jrb.resolve_coding_memory_project_name(str(tmp_path / "first"))),
+        ("second", "two", jrb.resolve_coding_memory_project_name(str(tmp_path / "second"))),
+    ]
+
+
 @pytest.mark.parametrize("scene", ["agent", "code", "team"])
 def test_shared_video_root_admits_future_sessions_from_first_assembly(tmp_path, monkeypatch, scene):
     from jiuwen_memory.api import Scope

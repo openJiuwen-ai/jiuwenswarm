@@ -27,7 +27,10 @@ def _work_lifecycle(base: type) -> type:
                 return
             self._closed = True
             try:
-                if self._sync_task is not None:
+                drain = getattr(self, "drain_pending_syncs", None)
+                if callable(drain):
+                    await drain()
+                elif self._sync_task is not None:
                     await self._sync_task
             except asyncio.CancelledError:
                 if asyncio.current_task().cancelling():
