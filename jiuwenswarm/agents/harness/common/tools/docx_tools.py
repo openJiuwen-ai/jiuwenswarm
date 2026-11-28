@@ -176,6 +176,32 @@ def _collect_docx_blocks(
     return blocks, last_processed_idx, truncated, stalled
 
 
+def _empty_read_notice(
+    req: ReadDocxRequest,
+    paragraph_count: int,
+    table_count: int,
+    total_elements: int,
+) -> str:
+    """Explain a read that produced no readable content."""
+    empty_notice = "[Document is empty or contains no readable text/tables.]"
+    if total_elements == 0 or req.start_element == 1:
+        return empty_notice
+    if req.start_element > total_elements:
+        return (
+            f"[start_element={req.start_element} is past the end of the document, which has "
+            f"{total_elements} body elements ({paragraph_count} paragraphs, {table_count} tables). "
+            f"Call read_docx with `start_element<={total_elements}` to read it again.]"
+        )
+    if paragraph_count == 0 and table_count == 0:
+        return empty_notice
+    return (
+        f"[No readable text or tables at or after element {req.start_element}. "
+        f"The document is not empty ({paragraph_count} paragraphs, {table_count} tables, "
+        f"{total_elements} body elements), but nothing readable remains from this position. "
+        f"Call read_docx with a smaller `start_element` (1..{total_elements}) to read earlier content.]"
+    )
+
+
 def _read_docx_sync(req: ReadDocxRequest) -> str:
     """Synchronously parse and format the .docx document contents."""
     path = _resolve_docx_path(req.docx_path)
@@ -209,7 +235,7 @@ def _read_docx_sync(req: ReadDocxRequest) -> str:
             f"Call read_docx with `start_element={last_processed_idx + 1}` to continue reading.]"
         )
     elif not output_body:
-        output_body = "[Document is empty or contains no readable text/tables.]"
+        output_body = _empty_read_notice(req, paragraph_count, table_count, total_elements)
 
     return output_body
 
