@@ -85,6 +85,28 @@ def test_request_identity_reads_routing_triple():
     assert handlers.request_identity(req) == OWNER
 
 
+def test_request_identity_falls_back_to_metadata_top_level():
+    """group_id/bot_id fall back to metadata top level when routing is absent (issue #110).
+
+    Without this fallback the org-team quota check is silently skipped because
+    ``identity.group_id`` is empty, so a team-create over the org cap surfaces
+    as a user-cap rejection (``kind=team_create``) instead of
+    ``kind=org_team_create``.
+    """
+    req = AgentRequest(
+        request_id="req-1",
+        channel_id="web",
+        session_id=None,
+        req_method=ReqMethod.TEAM_CREATE,
+        params={},
+        metadata={"user_id": "u-owner", "group_id": "grp", "bot_id": "bot"},
+    )
+    identity = handlers.request_identity(req)
+    assert identity.user_id == "u-owner"
+    assert identity.group_id == "grp"
+    assert identity.bot_id == "bot"
+
+
 @pytest.mark.asyncio
 async def test_team_get_by_session_for_owner(store, entity):
     ok, payload = await _call(handlers.handle_team_get, _request(ReqMethod.TEAM_GET, OWNER, {}, session_id="sess-1"))

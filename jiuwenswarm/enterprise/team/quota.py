@@ -1159,6 +1159,11 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                                 limit=int(org_limit),
                                 default=int(org_default),
                             )
+                    elif kind == KIND_TEAM_CREATE:
+                        logger.warning(
+                            "[TeamQuota] org check skipped: gid=%r org_limit=%r identity=%s",
+                            gid, org_limit, identity.as_dict(),
+                        )
                     conn.execute(
                         "INSERT OR IGNORE INTO team_quota_account "
                         "(user_id, group_id, bot_id, created_at, updated_at) VALUES (?,?,?,?,?)",
@@ -1461,6 +1466,11 @@ class TeamQuotaService(TeamQuotaPolicyStore):
                                 limit=int(org_limit),
                                 default=int(org_default),
                             )
+                    elif kind == KIND_TEAM_CREATE:
+                        logger.warning(
+                            "[TeamQuota] org check skipped: gid=%r org_limit=%r identity=%s",
+                            gid, org_limit, identity.as_dict(),
+                        )
                     await conn.execute(
                         text(
                             _insert_ignore_sql(
