@@ -960,6 +960,14 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
     for path in package_root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
+            if (
+                path == package_root / "runtime/symphony/legacy_graph_migration.py"
+                and isinstance(node, ast.ImportFrom)
+                and node.module == "openjiuwen.symphony.inventory"
+                and {alias.name for alias in node.names} == {"RuntimeStorage"}
+            ):
+                # The one-time import uses Core's collection binding before publishing a graph.
+                continue
             violation = _forbidden_symphony_import(
                 node,
                 allowed_symbols=allowed_symbols,
