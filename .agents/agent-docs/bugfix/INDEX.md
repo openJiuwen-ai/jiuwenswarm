@@ -22,6 +22,7 @@ generated: true
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
+| [jiuwenswarm/agents/harness/common/prompt](#module-jiuwenswarm-agents-harness-common-prompt) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
 | [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
@@ -148,6 +149,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
+
+<a id="module-jiuwenswarm-agents-harness-common-prompt"></a>
+
+## jiuwenswarm/agents/harness/common/prompt
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261128_1501_thinking-language-match-content](jiuwenswarm/agents/harness/common/prompt/B_20261128_1501_thinking-language-match-content.md) | B | 思考过程语言不跟随 match / 输出语言规则 | whds5279 | 无独立 D：无独立 D；对既有 preferred_response_language（en/zh/match）输出语言契约的小范围补强，使可见思考叙述与最终回复同语。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 

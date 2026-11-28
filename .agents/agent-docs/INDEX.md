@@ -266,6 +266,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [B_20261128_1501_thinking-language-match-content](bugfix/jiuwenswarm/agents/harness/common/prompt/B_20261128_1501_thinking-language-match-content.md) | B | 思考过程语言不跟随 match / 输出语言规则 | whds5279 | 无独立 D：无独立 D；对既有 preferred_response_language（en/zh/match）输出语言契约的小范围补强，使可见思考叙述与最终回复同语。 |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>

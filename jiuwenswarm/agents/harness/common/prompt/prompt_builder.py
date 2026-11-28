@@ -212,7 +212,7 @@ def _output_prompt(
 ## 最终回复规则
 
 - 系统任务完成后，以回复形式通知用户。
-- 用户最终看到的只有最后一条不带工具调用的消息。
+- 用户最终看到的正文只有最后一条不带工具调用的消息。
 
 ## 产物或交付件规则
 
@@ -230,6 +230,7 @@ def _output_prompt(
 - 优先使用用户明确指定的回复语言。
 - 用户未明确指定时，按当前消息的 `preferred_response_language` 处理：`en` 用英文，`zh` 用简体中文，`match` 或未提供该字段时与本轮消息 `content` 同语。
 - 技术术语、代码标识符、路径和工具名称保持原本的语言。
+- 可见的思考过程与推理叙述也遵循本小节，与最终回复同语；不得因模型习惯改用语种。
 
 ## 模型名称回答
 
@@ -290,7 +291,7 @@ def _output_prompt(
 ## Final Response Rules
 
 - After completing a system task, notify the user in a reply.
-- The user sees only the final message that contains no tool calls.
+- The user-visible reply body is only the final message that contains no tool calls.
 
 ## Artifact and Deliverable Rules
 
@@ -314,6 +315,7 @@ def _output_prompt(
 - Prefer the response language explicitly requested by the user.
 - Otherwise, follow `preferred_response_language` in the current message: `en` for English, `zh` for Simplified Chinese, and `match` or a missing field for the same language as this turn's `content`.
 - Keep technical terms, code identifiers, paths, and tool names in their original language.
+- Visible thinking and reasoning narration follow this section and match the final reply language; do not switch language out of model habit.
 
 ## Model Name Answers
 
