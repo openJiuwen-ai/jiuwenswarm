@@ -51,6 +51,17 @@ test('all finished schedule plans are expired while execution outcomes stay inta
   assert.equal(plans[0].lastStatus, 'completed', 'Display filtering must not change the recorded execution outcome');
 });
 
+test('paused plans blocked by expiry appear in the expired filter', () => {
+  const now = Date.parse('2026-11-12T00:00:00Z');
+  const past = '2026-11-12T08:00:00+08:00';
+  const future = '2026-11-13T00:00:00Z';
+  const plan = { ...draft, id: 'recurring', agentId: 'a', lastStatus: 'paused', nextFireAt: future, runCount: 0 };
+  const expired = { ...plan, id: 'expired', endsAt: past };
+  const missed = { ...plan, id: 'missed', scheduleKind: 'once', runAt: future, nextFireAt: past };
+  const completed = { ...plan, id: 'completed', scheduleKind: 'once', nextFireAt: null, runCount: 1, lastStatus: 'completed' };
+  const plans = [plan, expired, missed, completed];
+  assert.deepEqual(state.filterSchedules(plans, '', 'a', 'expired', now).map(p => p.id), ['expired', 'missed', 'completed']);
+});
 
 test('expired plans cannot enable while future paused plans can', () => {
   const now = Date.parse('2026-11-15T08:00:00Z');

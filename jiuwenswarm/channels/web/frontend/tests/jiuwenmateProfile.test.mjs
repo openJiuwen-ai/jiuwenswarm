@@ -2250,7 +2250,7 @@ for (const language of ['zh', 'en']) {
     try {
       await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
       const row = view.find('[data-testid="jiuwenmate-schedule-board-row"]');
-      await view.click([...row.querySelectorAll('button')].find(item => item.textContent === i18n.t('jiuwenmate.schedule.edit')));
+      await view.click(row.querySelector('[data-testid="jiuwenmate-schedule-edit"]'));
       const dateSelector = `[aria-label="${i18n.t('jiuwenmate.schedule.onceDate')}"]`;
       const timeSelector = `[aria-label="${i18n.t('jiuwenmate.schedule.time')}"]`;
       await changeScheduleField(view, dateSelector, '');
@@ -2397,6 +2397,47 @@ for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+test('expired schedules open the execution editor and save the new time before enabling', async () => {
+  const calls = [];
+  const view = await mountDashboard({
+    schedules: [
+      {
+        ...dashboardPlan,
+        id: 'expired-once',
+        scheduleKind: 'once',
+        enabled: false,
+        runAt: '2020-01-01T01:00:00.000Z',
+        nextFireAt: null,
+      },
+      { ...dashboardPlan, id: 'valid-periodic', enabled: false, lastStatus: 'paused' },
+    ],
+    onUpdateSchedule: (id, draft) => { calls.push(['update', id, draft.runAt]); },
+    onSetScheduleEnabled: (id, value) => { calls.push(['enable', id, value]); },
+  });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    const expired = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="expired-once"]');
+    assert.equal(expired.querySelector('[data-testid="jiuwenmate-schedule-toggle"]'), null);
+    const edit = expired.querySelector('[data-testid="jiuwenmate-schedule-edit"]');
+    assert.equal(edit.textContent, i18n.t('jiuwenmate.schedule.editExecutionTime'));
+    await view.click(edit);
+    assert.ok(view.find('[data-testid="jiuwenmate-schedule-dialog"]'));
+    assert.deepEqual(calls, []);
+    await changeScheduleField(view, `input[aria-label="${i18n.t('jiuwenmate.schedule.onceDate')}"]`, '2030-02-01');
+    await view.click(view.find('[data-testid="jiuwenmate-schedule-save-enable"]'));
+    assert.deepEqual(calls, [
+      ['update', 'expired-once', '2030-02-01T01:00:00.000Z'],
+      ['enable', 'expired-once', true],
+    ]);
+    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"]'), null);
+    const valid = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="valid-periodic"]');
+    await view.click(valid.querySelector('[data-testid="jiuwenmate-schedule-toggle"]'));
+    assert.deepEqual(calls.at(-1), ['enable', 'valid-periodic', true]);
+  } finally {
+    await view.close();
+  }
+});
 
 test('activity period dates use the schedule calendar without a clear button and no future days', async () => {
   await i18n.changeLanguage('zh');

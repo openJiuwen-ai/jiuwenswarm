@@ -7855,6 +7855,7 @@
       "delete": "Delete",
       "pause": "Stop",
       "resume": "Enable",
+      "editExecutionTime": "Edit execution time",
       "more": "More",
       "basic": "Details",
       "back": "Back",
