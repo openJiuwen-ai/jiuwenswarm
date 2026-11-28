@@ -56,6 +56,7 @@ from jiuwenbox.server.runtime.base import (
     RuntimeFileOpResult,
 )
 from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError
+from jiuwenbox.server.runtime.output import RuntimeOutput
 from jiuwenbox.server.workspace import SANDBOX_WORKSPACE
 from jiuwenbox.supervisor import cgroup as cgroup_module
 from jiuwenbox.supervisor import network as network_module
@@ -464,6 +465,8 @@ class _DaemonBgExecCall:
     env: dict[str, str] | None
     workdir: str | None
     stdin_bytes: bytes | None
+    inherit_stdout: bool = False
+    inherit_stderr: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -890,18 +893,15 @@ def _summarize_command(command: list[str], max_length: int = 180) -> str:
 class ProcessRuntime(RuntimeAdapter):
     """Runtime that spawns supervisor as a local process.
 
-    Sandbox stdout/stderr (both the daemon and any background ``exec``)
-    is dropped at the kernel level via ``subprocess.DEVNULL``: the
-    historical ``runtime.log`` files were removed in favour of the
-    single structured ``audit.log`` written by :class:`AuditLogger`,
-    which already carries truncated stdout/stderr per command. Anyone
-    needing the raw byte stream should attach a debugger or run the
-    container with ``-it``; we no longer persist it to disk.
+    Creation-time process stdout/stderr paths opt into raw host logs.
+    Background commands inherit those streams; unspecified background
+    output is discarded. Synchronous exec captures its own response.
     """
 
     def __init__(self) -> None:
         self._processes: dict[str, subprocess.Popen] = {}
         self._policy_paths: dict[str, Path] = {}
+        self._output_paths: dict[str, tuple[str, str]] = {}
         self._runtime_policies: dict[str, SecurityPolicy] = {}
         self._policy_binds: dict[str, list[dict[str, str]]] = {}
         self._network_modes: dict[str, NetworkMode] = {}
@@ -2764,6 +2764,8 @@ class ProcessRuntime(RuntimeAdapter):
         sandbox_id: str,
         policy_path: Path,
         env: dict[str, str] | None = None,
+        stdout: str = "",
+        stderr: str = "",
     ) -> int:
         existing = self._processes.get(sandbox_id)
         if existing is not None:
@@ -2776,9 +2778,12 @@ class ProcessRuntime(RuntimeAdapter):
             self._runtime_policies[sandbox_id] = policy
             self._network_modes[sandbox_id] = policy.network.mode
             self._policy_paths[sandbox_id] = Path(policy_path)
-        adopted = await self._try_warm_adopt(sandbox_id, policy, Path(policy_path), env)
-        if adopted is not None:
-            return adopted
+        self._output_paths[sandbox_id] = (stdout, stderr)
+        # Parked stdio descriptors cannot be rebound at checkout.
+        if not stdout and not stderr:
+            adopted = await self._try_warm_adopt(sandbox_id, policy, Path(policy_path), env)
+            if adopted is not None:
+                return adopted
         # A failed checkout destroys the id. Put the request policy back
         # before the cold path builds a new sandbox under the same id.
         self._runtime_policies[sandbox_id] = policy
@@ -2944,33 +2949,26 @@ class ProcessRuntime(RuntimeAdapter):
         # this write is rejected (no CAP_SYS_RESOURCE).
         preexec = _child_preexec(netns_name, cgroup_procs_paths, protect_oom)
 
-        # Capture daemon stdout/stderr into an anonymous tempfile so that
-        # if the supervisor dies before becoming ready we can include the
-        # actual error (Python traceback, bwrap/seccomp/landlock message,
-        # missing binary, ...) in the ``RuntimeError`` surfaced upstream.
-        # The previous implementation routed both streams to ``DEVNULL``,
-        # which left operators with only ``exited with code 1`` to go on.
-        # The file is unlinked at create time so it cannot leak onto disk
-        # under any host path; the parent always closes its handle after
-        # startup verification, and the daemon's own fd is reaped by the
-        # kernel when the supervisor exits.
-        startup_log_file = tempfile.TemporaryFile(
-            prefix=f"jiuwenbox-{sandbox_id}-startup-",
-            suffix=".log",
-        )
+        # Open optional host logs before namespaces/privilege drop. Unspecified
+        # streams retain anonymous startup capture. The view reads only this
+        # launch's stderr, so old ready markers cannot admit an unready daemon.
+        output = None
         try:
+            output = RuntimeOutput(stdout or None, stderr or None)
+            startup_log_file = output.startup_log
             with perf_trace.span("create.popen", sandbox_id):
                 proc = subprocess.Popen(
                     daemon_cmd,
-                    stdout=startup_log_file,
-                    stderr=subprocess.STDOUT,
+                    stdout=output.stdout,
+                    stderr=output.stderr,
                     env=process_env,
                     pass_fds=pass_fds,
                     start_new_session=True,
                     preexec_fn=preexec,
                 )
         except Exception:
-            startup_log_file.close()
+            if output is not None:
+                output.close()
             if seccomp_fd is not None:
                 _safe_close_fd(seccomp_fd)
             if code_fd is not None:
@@ -3008,6 +3006,7 @@ class ProcessRuntime(RuntimeAdapter):
             _close_identity_map_pipes(info_r, info_w, block_r, block_w, install=True)
         except Exception:
             proc.kill()
+            output.close()
             self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
             raise
 
@@ -3021,10 +3020,9 @@ class ProcessRuntime(RuntimeAdapter):
                     sandbox_id, proc, netns_name, startup_log_file,
                 )
         finally:
-            # Parent no longer needs the fd; the daemon keeps writing into
-            # its own (kernel-anonymous) copy until it exits.
+            # Descendants keep their descriptors after the parent closes its copies.
             try:
-                startup_log_file.close()
+                output.close()
             except OSError:
                 pass
         logger.info("Sandbox daemon started for %s (pid=%d)", sandbox_id, proc.pid)
@@ -3200,6 +3198,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._network_modes.pop(sandbox_id, None)
         self._sandbox_ip_addresses.pop(sandbox_id, None)
         self._runtime_policies.pop(sandbox_id, None)
+        self._output_paths.pop(sandbox_id, None)
         self._policy_binds.pop(sandbox_id, None)
         self._seccomp_bpf.pop(sandbox_id, None)
         self._landlock_payloads.pop(sandbox_id, None)
@@ -3338,11 +3337,8 @@ class ProcessRuntime(RuntimeAdapter):
     def get_exit_diagnostics(self, sandbox_id: str) -> str:
         """Return diagnostics for a sandbox whose lifecycle process is not running.
 
-        Per-sandbox runtime stdout/stderr is no longer captured to disk
-        (the legacy ``runtime.log`` was removed; audit.log carries the
-        per-command stdout/stderr instead). Callers should treat this
-        as a short "process gone" signal and rely on ``audit.log`` plus
-        the standard Python logger for context.
+        This is a short process-state signal. Raw output remains in optional
+        creation-time host files; synchronous commands use the audit channel.
         """
         proc = self._processes.get(sandbox_id)
         returncode = None if proc is None else proc.poll()
@@ -3511,6 +3507,8 @@ class ProcessRuntime(RuntimeAdapter):
             "job_id": call.job_id,
             "command": list(call.command),
             "stdin_size": len(call.stdin_bytes or b""),
+            "inherit_stdout": call.inherit_stdout,
+            "inherit_stderr": call.inherit_stderr,
         }
         if call.env:
             request_payload["env"] = dict(call.env)
@@ -4093,6 +4091,7 @@ class ProcessRuntime(RuntimeAdapter):
                 ),
             )
 
+        stdout, stderr = self._output_paths.get(sandbox_id, ("", ""))
         loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(
@@ -4105,6 +4104,8 @@ class ProcessRuntime(RuntimeAdapter):
                     env=dict(request.env) if request.env else None,
                     workdir=request.workdir,
                     stdin_bytes=request.stdin_data,
+                    inherit_stdout=bool(stdout),
+                    inherit_stderr=bool(stderr),
                 ),
             )
         except (ConnectionError, ValueError) as exc:
@@ -4173,6 +4174,8 @@ class ProcessRuntime(RuntimeAdapter):
             command=list(request.command),
             running=running_bool,
             exit_code=exit_code_int,
+            stdout_redirected=response.get("stdout_redirected") is True,
+            stderr_redirected=response.get("stderr_redirected") is True,
         )
 
     async def get_background_job(
@@ -4285,6 +4288,7 @@ class ProcessRuntime(RuntimeAdapter):
         network_mode = self._network_modes.pop(sandbox_id, None)
         self._sandbox_ip_addresses.pop(sandbox_id, None)
         self._runtime_policies.pop(sandbox_id, None)
+        self._output_paths.pop(sandbox_id, None)
         self._policy_binds.pop(sandbox_id, None)
         self._seccomp_bpf.pop(sandbox_id, None)
         self._landlock_payloads.pop(sandbox_id, None)
