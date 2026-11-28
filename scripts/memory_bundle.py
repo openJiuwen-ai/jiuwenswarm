@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Hidden imports for JiuwenMemory's in-process agent and video profiles."""
+"""Hidden imports for JiuwenMemory's agent, video and HTTP Portal runtime."""
 
 # These layers contain the kernel's string-based Producer registrations. Keep
 # optional model runtimes and remote storage backends outside the collected roots.
@@ -14,6 +14,9 @@ MEMORY_RUNTIME_PACKAGES = (
     "jiuwen_memory.ingest",
     "jiuwen_memory.retrieval",
     "jiuwen_memory_adapter.jiuwenswarm",
+    "jiuwen_memory_entry.core",
+    "jiuwen_memory_entry.http_server",
+    "jiuwen_memory_entry.portal",
 )
 
 # The adapter defaults use local Markdown + SQLite shadow indexes, in-memory
