@@ -70,11 +70,10 @@ def test_fresh_workspace_init_does_not_create_logs_in_working_directory(tmp_path
         },
         stdin=subprocess.DEVNULL,
         capture_output=True,
-        text=True,
         timeout=30,
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 0, (result.stdout + result.stderr).decode("utf-8", errors="replace")
     assert (data / "config" / "config.yaml").is_file()
     assert not (command_dir / "logs").exists()
 
