@@ -16,6 +16,7 @@ import { OfficeSuiteDetail, useOfficeSuites } from '../../features/officeAddins/
 import type { SuiteId } from '../../features/officeAddins/officeAddins';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { webClient } from '../../services/webClient';
+import { EXTENSION_PACKAGE_BUSY } from '../../services/extensionsV2Api';
 import { browserClientCapabilities } from '../../features/webui/client/browserClient';
 import { isEnterprise } from '../../edition';
 import {
@@ -145,6 +146,7 @@ export function ConnectorMarketPanel({
   const loadSystemMine = useSystemPluginStore((s) => s.loadMine);
   const importPackagePath = useSystemPluginStore((s) => s.importPath);
   const systemError = useSystemPluginStore((s) => s.error);
+  const systemErrorCode = useSystemPluginStore((s) => s.errorCode);
   const clearSystemError = useSystemPluginStore((s) => s.clearError);
   const pluginError = usePluginPackageStore((s) => s.error);
   const clearPluginError = usePluginPackageStore((s) => s.clearError);
@@ -172,10 +174,19 @@ export function ConnectorMarketPanel({
 
   useEffect(() => {
     if (systemError) {
-      toast.open({ id: CONNECTOR_ERROR_TOAST_ID, content: systemError, variant: 'error', duration: 5 });
+      // Busy packages are a normal, transient state; show the actionable copy
+      // instead of the Core report message.
+      toast.open({
+        id: CONNECTOR_ERROR_TOAST_ID,
+        content: systemErrorCode === EXTENSION_PACKAGE_BUSY
+          ? t('connectorMarket.systemPlugin.busyMessage')
+          : systemError,
+        variant: 'error',
+        duration: 5,
+      });
       clearSystemError();
     }
-  }, [systemError, clearSystemError]);
+  }, [systemError, systemErrorCode, clearSystemError, t]);
 
   useEffect(() => {
     if (pluginError) {
