@@ -441,6 +441,23 @@ def _resolve_logging_levels(
 
 
 
+def get_delivery_ledger_dir() -> Path:
+    """Get the delivery ledger directory (P6 静默吞回复兜底).
+
+    交付台账落盘目录：``{root}/run/delivery-ledger/<request_id>.json``。
+    尊重 ``JIUWENSWARM_DATA_DIR``（多实例隔离），与 ``get_root_dir()`` 同源。
+    契约见 specs/jiuwenswarm/server/supervisor/S_01_delivery-ledger.md。
+    """
+    directory = get_root_dir() / "run" / "delivery-ledger"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # 台账目录不可用（只读盘/权限不足）时静默吞掉会让持久化兜底链失效且
+        # 排查无线索——至少留 warning，调用方仍拿原路径自行面对写入失败。
+        logger.warning("[Utils] delivery ledger dir unavailable: %s", exc)
+    return directory
+
+
 def set_user_home(path: Path, initialized: bool = False) -> None:
     """Set a custom user home directory.
 
