@@ -29,6 +29,7 @@
     "noContextNoTemplate": "No Agent is available for this account. Please ask your administrator to add Agent Templates in the Manager console.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
+    "noOrganization": "No organization",
     "errorTitle": "Unable to enter workspace",
     "loadingTitle": "Loading workspace",
     "loading": "Loading the Agents available to this account.",
